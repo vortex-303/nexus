@@ -1,0 +1,21 @@
+# Binary
+nexus
+nexus-server
+*.exe
+
+# Data
+*.db
+*.db-wal
+*.db-shm
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# SvelteKit (future)
+web/svelte/node_modules/
+web/svelte/.svelte-kit/
+web/svelte/build/
