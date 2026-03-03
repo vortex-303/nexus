@@ -59,6 +59,20 @@ func Load() (*Config, error) {
 	cfg.Domain = *domain
 	cfg.Dev = *dev
 
+	// Layer 3: environment variables (override everything)
+	if v := os.Getenv("LISTEN"); v != "" {
+		cfg.Listen = v
+	}
+	if v := os.Getenv("DATA_DIR"); v != "" {
+		cfg.DataDir = v
+	}
+	if v := os.Getenv("DOMAIN"); v != "" {
+		cfg.Domain = v
+	}
+	if v := os.Getenv("SMTP_LISTEN"); v != "" {
+		cfg.SMTPListen = v
+	}
+
 	// Ensure data directory exists
 	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		return nil, fmt.Errorf("creating data dir: %w", err)

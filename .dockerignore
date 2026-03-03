@@ -1,0 +1,10 @@
+nexus
+nexus-server
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+.git
+web/node_modules
+web/.svelte-kit
+web/build
