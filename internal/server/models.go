@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,14 +13,15 @@ import (
 
 // Model represents a normalized OpenRouter model.
 type Model struct {
-	ID            string        `json:"id"`
-	Name          string        `json:"name"`
-	Provider      string        `json:"provider"`
-	ContextLength int           `json:"context_length"`
-	Pricing       modelPricing  `json:"pricing"`
-	SupportsTools bool          `json:"supports_tools"`
-	IsNew         bool          `json:"is_new"`
-	IsFree        bool          `json:"is_free"`
+	ID             string       `json:"id"`
+	Name           string       `json:"name"`
+	Provider       string       `json:"provider"`
+	ContextLength  int          `json:"context_length"`
+	Pricing        modelPricing `json:"pricing"`
+	SupportsTools  bool         `json:"supports_tools"`
+	SupportsVision bool         `json:"supports_vision"`
+	IsNew          bool         `json:"is_new"`
+	IsFree         bool         `json:"is_free"`
 }
 
 type modelPricing struct {
@@ -71,7 +73,8 @@ func (s *Server) handleBrowseModels(w http.ResponseWriter, r *http.Request) {
 			Architecture struct {
 				Modality string `json:"modality"`
 			} `json:"architecture"`
-			CreatedAt     int64 `json:"created_at"`
+			SupportedParameters []string `json:"supported_parameters"`
+			CreatedAt           int64    `json:"created_at"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -85,15 +88,29 @@ func (s *Server) handleBrowseModels(w http.ResponseWriter, r *http.Request) {
 		parts := splitModelID(m.ID)
 		isFree := m.Pricing.Prompt == "0" || m.Pricing.Prompt == ""
 		isNew := (now - m.CreatedAt) < 30*24*3600 // new if < 30 days
+
+		// Vision: modality contains "image" on input side (e.g. "text+image->text")
+		supportsVision := strings.Contains(m.Architecture.Modality, "image")
+
+		// Tools: check supported_parameters for "tools"
+		supportsTools := false
+		for _, p := range m.SupportedParameters {
+			if p == "tools" {
+				supportsTools = true
+				break
+			}
+		}
+
 		models = append(models, Model{
-			ID:            m.ID,
-			Name:          m.Name,
-			Provider:      parts[0],
-			ContextLength: m.ContextLength,
-			Pricing:       modelPricing{Prompt: m.Pricing.Prompt, Completion: m.Pricing.Completion},
-			SupportsTools: false, // OpenRouter doesn't expose this directly in list
-			IsNew:         isNew,
-			IsFree:        isFree,
+			ID:             m.ID,
+			Name:           m.Name,
+			Provider:       parts[0],
+			ContextLength:  m.ContextLength,
+			Pricing:        modelPricing{Prompt: m.Pricing.Prompt, Completion: m.Pricing.Completion},
+			SupportsTools:  supportsTools,
+			SupportsVision: supportsVision,
+			IsNew:          isNew,
+			IsFree:         isFree,
 		})
 	}
 

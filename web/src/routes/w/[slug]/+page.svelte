@@ -267,6 +267,7 @@
 	let modelSearchQuery = $state('');
 	let modelFilter = $state('');
 	let modelBrowserLoading = $state(false);
+	let addedModels = $state<any[]>([]);
 
 	// Team / Agents state
 	let teamTab = $state<'members' | 'agents' | 'orgchart'>('orgchart');
@@ -1156,7 +1157,8 @@
 			list = list.filter((m: any) => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q));
 		}
 		if (modelFilter === 'free') list = list.filter((m: any) => m.is_free);
-		if (modelFilter === 'new') list = list.filter((m: any) => m.is_new);
+		if (modelFilter === 'vision') list = list.filter((m: any) => m.supports_vision);
+		if (modelFilter === 'tools') list = list.filter((m: any) => m.supports_tools);
 		return list.slice(0, 100); // Limit display
 	}
 
@@ -1671,24 +1673,6 @@ autonomy: reactive
 							>
 								<span class="channel-hash">@</span>
 								<span class="channel-name">{getDMPartnerName(ch)}</span>
-							</button>
-						{/each}
-					</div>
-				{/if}
-
-				<!-- Built-in Agents -->
-				{#if builtinAgents.length > 0}
-					<div class="nav-section">
-						<div class="nav-section-header">
-							<span>Agents</span>
-						</div>
-						{#each builtinAgents as agent}
-							<button
-								class="nav-item"
-								onclick={() => startDMWithAgent(agent)}
-							>
-								<span class="channel-hash">{agent.avatar || '🤖'}</span>
-								<span class="channel-name">{agent.name}</span>
 							</button>
 						{/each}
 					</div>
@@ -2380,6 +2364,9 @@ autonomy: reactive
 								<option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
 								<option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
 							{/if}
+							{#each addedModels.filter(am => !pinnedModels.some(pm => pm.id === am.id)) as m}
+								<option value={m.id}>{m.display_name}</option>
+							{/each}
 						</select>
 						{#if isAdmin}
 							<button class="btn btn-ghost btn-sm" onclick={openModelBrowser}>Browse</button>
@@ -3404,7 +3391,8 @@ autonomy: reactive
 			<div class="model-filters">
 				<button class="btn btn-ghost btn-xs" class:active={modelFilter === ''} onclick={() => modelFilter = ''}>All</button>
 				<button class="btn btn-ghost btn-xs" class:active={modelFilter === 'free'} onclick={() => modelFilter = 'free'}>Free</button>
-				<button class="btn btn-ghost btn-xs" class:active={modelFilter === 'new'} onclick={() => modelFilter = 'new'}>New</button>
+				<button class="btn btn-ghost btn-xs" class:active={modelFilter === 'vision'} onclick={() => modelFilter = 'vision'}>Vision</button>
+				<button class="btn btn-ghost btn-xs" class:active={modelFilter === 'tools'} onclick={() => modelFilter = 'tools'}>Tools</button>
 			</div>
 		</div>
 		{#if modelBrowserLoading}
@@ -3423,14 +3411,21 @@ autonomy: reactive
 								{#if model.is_free}
 									<span class="model-badge free">Free</span>
 								{/if}
-								{#if model.is_new}
-									<span class="model-badge new">New</span>
+								{#if model.supports_vision}
+									<span class="model-badge vision">Vision</span>
+								{/if}
+								{#if model.supports_tools}
+									<span class="model-badge tools">Tools</span>
 								{/if}
 							</span>
 						</div>
-						<button class="btn btn-ghost btn-xs" onclick={() => { brainModel = model.id; showModelBrowser = false; }}>
-							Select
-						</button>
+						{#if addedModels.some(m => m.id === model.id) || pinnedModels.some(m => m.id === model.id)}
+							<span style="font-size: 0.75rem; color: var(--text-dim);">Added</span>
+						{:else}
+							<button class="btn btn-ghost btn-xs" onclick={() => { addedModels = [...addedModels, { id: model.id, display_name: model.name || model.id }]; }}>
+								Add
+							</button>
+						{/if}
 					</div>
 				{/each}
 			</div>
@@ -5340,6 +5335,14 @@ autonomy: reactive
 	.model-badge.new {
 		background: rgba(59,130,246,0.15);
 		color: #60a5fa;
+	}
+	.model-badge.vision {
+		background: rgba(168,85,247,0.15);
+		color: #c084fc;
+	}
+	.model-badge.tools {
+		background: rgba(245,158,11,0.15);
+		color: #fbbf24;
 	}
 
 	/* ================================
