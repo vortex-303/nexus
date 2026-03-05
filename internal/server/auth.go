@@ -60,7 +60,8 @@ type loginReq struct {
 }
 
 type loginResp struct {
-	Token string `json:"token"`
+	Token         string `json:"token"`
+	WorkspaceSlug string `json:"workspace_slug,omitempty"`
 }
 
 // handleLogin authenticates with email/password and issues a JWT.
@@ -99,8 +100,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// If workspace specified, find their member record
 	role := ""
 	userID := accountID
-	if req.WorkspaceSlug != "" {
-		wdb, err := s.ws.Open(req.WorkspaceSlug)
+	wsSlug := req.WorkspaceSlug
+
+	if wsSlug != "" {
+		wdb, err := s.ws.Open(wsSlug)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "workspace not found")
 			return
@@ -112,6 +115,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "not a member of this workspace")
 			return
 		}
+	} else if !isSuperadmin {
+		// Auto-scope: if user belongs to exactly 1 workspace, scope the token directly
+		wsSlug, userID, role = s.findSingleWorkspace(accountID)
 	}
 
 	var opts []func(*auth.Claims)
@@ -119,13 +125,99 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		opts = append(opts, auth.WithSuperAdmin())
 	}
 
-	token, err := s.jwt.Issue(userID, displayName, req.WorkspaceSlug, role, accountID, opts...)
+	token, err := s.jwt.Issue(userID, displayName, wsSlug, role, accountID, opts...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create session")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, loginResp{Token: token, WorkspaceSlug: wsSlug})
+}
+
+// handleSwitchWorkspace exchanges a valid token for a workspace-scoped token.
+func (s *Server) handleSwitchWorkspace(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaims(r)
+	if claims == nil || claims.AccountID == "" {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	var req struct {
+		WorkspaceSlug string `json:"workspace_slug"`
+	}
+	if err := readJSON(r, &req); err != nil || req.WorkspaceSlug == "" {
+		writeError(w, http.StatusBadRequest, "workspace_slug required")
+		return
+	}
+
+	wdb, err := s.ws.Open(req.WorkspaceSlug)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+
+	var userID, role string
+	err = wdb.DB.QueryRow(
+		"SELECT id, role FROM members WHERE account_id = ?", claims.AccountID,
+	).Scan(&userID, &role)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "not a member of this workspace")
+		return
+	}
+
+	// Look up display name
+	var displayName string
+	s.global.DB.QueryRow("SELECT display_name FROM accounts WHERE id = ?", claims.AccountID).Scan(&displayName)
+
+	var opts []func(*auth.Claims)
+	if claims.SuperAdmin {
+		opts = append(opts, auth.WithSuperAdmin())
+	}
+
+	token, err := s.jwt.Issue(userID, displayName, req.WorkspaceSlug, role, claims.AccountID, opts...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create session")
 		return
 	}
 
 	writeJSON(w, http.StatusOK, loginResp{Token: token})
+}
+
+// findSingleWorkspace checks if an account belongs to exactly 1 workspace.
+// Returns (slug, memberID, role) if so, or ("", accountID, "") if not.
+func (s *Server) findSingleWorkspace(accountID string) (string, string, string) {
+	rows, err := s.global.DB.Query("SELECT slug FROM workspaces")
+	if err != nil {
+		return "", accountID, ""
+	}
+	defer rows.Close()
+
+	var matchSlug, matchUserID, matchRole string
+	matches := 0
+	for rows.Next() {
+		var slug string
+		if rows.Scan(&slug) != nil {
+			continue
+		}
+		wdb, err := s.ws.Open(slug)
+		if err != nil {
+			continue
+		}
+		var uid, role string
+		if wdb.DB.QueryRow("SELECT id, role FROM members WHERE account_id = ?", accountID).Scan(&uid, &role) == nil {
+			matches++
+			matchSlug = slug
+			matchUserID = uid
+			matchRole = role
+			if matches > 1 {
+				return "", accountID, ""
+			}
+		}
+	}
+	if matches == 1 {
+		return matchSlug, matchUserID, matchRole
+	}
+	return "", accountID, ""
 }
 
 // handleGetMe returns the authenticated user's profile.

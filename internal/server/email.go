@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"log"
 	"mime"
 	"mime/multipart"
 	"net"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/nexus-chat/nexus/internal/auth"
 	"github.com/nexus-chat/nexus/internal/id"
+	"github.com/nexus-chat/nexus/internal/logger"
 )
 
 // smtpSession accumulates envelope data for a single SMTP transaction.
@@ -39,15 +39,15 @@ func (s *Server) startSMTPServer() {
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Printf("[smtp] failed to listen on %s: %v", addr, err)
+		logger.WithCategory(logger.CatEmail).Error().Err(err).Str("addr", addr).Msg("SMTP failed to listen")
 		return
 	}
-	log.Printf("[smtp] listening on %s", addr)
+	logger.WithCategory(logger.CatEmail).Info().Str("addr", addr).Msg("SMTP listening")
 
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			log.Printf("[smtp] accept error: %v", err)
+			logger.WithCategory(logger.CatEmail).Error().Err(err).Msg("SMTP accept error")
 			continue
 		}
 		go s.handleSMTPConn(conn)
@@ -147,7 +147,7 @@ func (sess *smtpSession) handleData(data []byte) {
 	// Parse the email
 	msg, err := mail.ReadMessage(bytes.NewReader(data))
 	if err != nil {
-		log.Printf("[smtp] failed to parse email: %v", err)
+		logger.WithCategory(logger.CatEmail).Error().Err(err).Msg("failed to parse email")
 		return
 	}
 
@@ -161,19 +161,19 @@ func (sess *smtpSession) handleData(data []byte) {
 		}
 	}
 	if slug == "" {
-		log.Printf("[smtp] no brain-{slug}@ recipient found in %v", sess.to)
+		logger.WithCategory(logger.CatEmail).Warn().Strs("recipients", sess.to).Msg("no brain-{slug}@ recipient found")
 		return
 	}
 
 	// Check email_enabled
 	if s.getBrainSetting(slug, "email_enabled") != "true" {
-		log.Printf("[smtp] email not enabled for workspace %s", slug)
+		logger.WithCategory(logger.CatEmail).Warn().Str("workspace", slug).Msg("email not enabled for workspace")
 		return
 	}
 
 	wdb, err := s.ws.Open(slug)
 	if err != nil {
-		log.Printf("[smtp] workspace error for %s: %v", slug, err)
+		logger.WithCategory(logger.CatEmail).Error().Err(err).Str("workspace", slug).Msg("workspace error")
 		return
 	}
 
@@ -229,7 +229,7 @@ func (sess *smtpSession) handleData(data []byte) {
 			channelID, chName,
 		)
 		if err != nil {
-			log.Printf("[smtp] failed to create channel: %v", err)
+			logger.WithCategory(logger.CatEmail).Error().Err(err).Msg("failed to create email channel")
 			return
 		}
 
@@ -312,7 +312,7 @@ func (s *Server) sendOutboundEmail(slug, to, subject, body, inReplyTo string) {
 	pass := s.getBrainSetting(slug, "email_outbound_pass")
 
 	if host == "" {
-		log.Printf("[email:%s] no outbound SMTP configured, skipping reply", slug)
+		logger.WithCategory(logger.CatEmail).Warn().Str("workspace", slug).Msg("no outbound SMTP configured, skipping reply")
 		return
 	}
 	if port == "" {
@@ -347,9 +347,9 @@ func (s *Server) sendOutboundEmail(slug, to, subject, body, inReplyTo string) {
 	}
 
 	if err := smtp.SendMail(addr, a, from, []string{to}, msg.Bytes()); err != nil {
-		log.Printf("[email:%s] failed to send reply to %s: %v", slug, to, err)
+		logger.WithCategory(logger.CatEmail).Error().Err(err).Str("workspace", slug).Str("to", to).Msg("failed to send reply")
 	} else {
-		log.Printf("[email:%s] sent reply to %s: %s", slug, to, subject)
+		logger.WithCategory(logger.CatEmail).Info().Str("workspace", slug).Str("to", to).Str("subject", subject).Msg("sent reply")
 	}
 }
 

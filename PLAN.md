@@ -1,417 +1,408 @@
-# Nexus — Implementation Plan
+# Nexus — Product Spec, Architecture & Roadmap
 
-This document breaks the SPEC.md vision into concrete, ordered implementation steps. Each phase builds on the previous one and produces a usable product.
+> Last updated: 2026-03-04
 
----
+## What Is Nexus
 
-## Phase 1 — The Living Workspace [~15 weeks]
+An AI-native team workspace — chat, tasks, docs, and a persistent AI Brain — in a single Go binary you own completely. Self-hosted or cloud. Privacy-first. No vendor lock-in.
 
-Goal: A complete team platform — chat, Brain, tasks, docs, contacts — usable from a browser. The Brain is there from second one.
-
-### 1.1 — Server Skeleton
-- [ ] Go project setup (modules, directory structure)
-- [ ] CLI framework (`nexus serve`, `nexus version`, `nexus adduser`)
-- [ ] HTTP server with auto-TLS (Let's Encrypt via `autocert`)
-- [ ] Static file serving via `//go:embed` (placeholder HTML for now)
-- [ ] SQLite setup: global `nexus.db` + per-workspace `workspace.db`
-- [ ] Database migrations framework
-- [ ] Config loading (CLI flags → config.toml → defaults)
-- [ ] Health check endpoint
-
-### 1.2 — Auth & Workspaces
-- [ ] Instant workspace creation (random slug, no auth required)
-- [ ] Anonymous sessions (display name, stored in browser)
-- [ ] Optional account creation (email/password, bcrypt)
-- [ ] JWT session tokens
-- [ ] Workspace invite links (`/w/{id}?invite={token}`)
-- [ ] Admin role assigned to workspace creator
-- [ ] Member role assigned to invited users
-
-### 1.3 — Real-Time Messaging
-- [ ] WebSocket hub (goroutine per connection, in-process pub/sub)
-- [ ] JSON message protocol (`{type, payload}`)
-- [ ] Channels: create, list, join, leave, archive
-- [ ] Channel types: public, private, DM
-- [ ] Messages: send, edit, delete, reactions
-- [ ] Typing indicators, presence (online/offline/busy)
-- [ ] Message history with pagination
-- [ ] Unread counts, last-read tracking
-- [ ] Channel classification field (public/internal/confidential/restricted) — stored, not enforced yet
-
-### 1.4 — Web UI (SvelteKit)
-- [ ] SvelteKit project setup, build pipeline
-- [ ] Embed built assets into Go binary
-- [ ] Landing page: "Start a workspace" button
-- [ ] Workspace view: sidebar (channels, DMs), message area, member list
-- [ ] Channel creation, switching
-- [ ] Real-time messaging (WebSocket client)
-- [ ] Typing indicators, presence dots
-- [ ] User settings (display name, avatar, role display)
-- [ ] Workspace settings (admin only: name, invite links, member management)
-- [ ] Responsive design (mobile browser usable)
-
-### 1.5 — Roles & Permissions
-- [ ] Role system: admin, member, designer, marketing_coordinator, marketing_strategist, researcher, sales, guest, custom
-- [ ] Permission set (22 permissions — chat, tasks, contacts, brain tools, workspace)
-- [ ] Role → default permissions mapping
-- [ ] Admin can override individual permissions
-- [ ] Admin can assign/change roles
-- [ ] Permission checks on all API endpoints
-- [ ] Guest restrictions (invited channels only, no Brain DM, no contacts)
-
-### 1.6 — Tasks
-- [ ] Task CRUD API
-- [ ] Create tasks from chat (Brain or manual)
-- [ ] Assign to humans or Brain
-- [ ] Status: backlog → todo → in_progress → done → cancelled
-- [ ] Priority: low, medium, high, urgent
-- [ ] Due dates, tags
-- [ ] Link tasks to messages, contacts, decisions
-- [ ] Board view in UI (kanban columns by status)
-- [ ] List view in UI (sortable, filterable)
-- [ ] Task notifications (assigned, overdue, completed)
-
-### 1.7 — File Sharing
-- [ ] File upload API (multipart)
-- [ ] Content-addressed storage (SHA-256, blob directory)
-- [ ] Inline preview in messages (images, PDFs)
-- [ ] File list per channel / per workspace
-- [ ] Download links
-- [ ] Size limits (configurable, default 50MB)
-- [ ] Role-gated: designer gets image generation tools alongside upload
-
-### 1.8 — Documents & Notes (Tiptap Block Editor)
-- [ ] Tiptap integration via svelte-tiptap (ProseMirror foundation)
-- [ ] Custom block UI components in Svelte (slash menu, block toolbar, drag-and-drop)
-- [ ] Block types: paragraph, heading, list, checklist, code, image, table, callout, divider
-- [ ] Inline mentions: @person, #channel, [[document]], task links, contact links
-- [ ] Yjs CRDT collaboration (real-time multi-user editing via WebSocket)
-- [ ] Cursor and selection presence (see who's editing where)
-- [ ] Yjs sync server in Go (WebSocket provider)
-- [ ] Document storage in workspace SQLite (Tiptap JSON format)
-- [ ] Document CRUD API (create, read, update, delete, list, search)
-- [ ] Document sharing: workspace-wide, channel-specific, or private
-- [ ] Document templates: meeting notes, project brief, client proposal, weekly report
-- [ ] Link documents to tasks, contacts, channels, messages
-- [ ] Document list view in UI (sortable, filterable, searchable)
-- [ ] Brain reads documents as part of knowledge graph (index Tiptap JSON)
-- [ ] Brain creates and updates documents (via JSON API)
-- [ ] Brain generates documents from templates with context
-
-### 1.9 — Brain Engine (Core)
-- [ ] Brain identity auto-created per workspace
-- [ ] Brain definition files: SOUL.md, INSTRUCTIONS.md, TEAM.md, MEMORY.md, HEARTBEAT.md
-- [ ] System prompt assembly from definition files (with char limits)
-- [ ] OpenRouter integration (HTTP client, streaming responses)
-- [ ] Default text model + default image model configurable per workspace
-- [ ] Brain responds to @mentions in channels
-- [ ] Brain responds to DMs
-- [ ] Brain has its own WebSocket presence (always online)
-- [ ] Attention system: high (@mentions), medium (public channels), low (DMs only if invited)
-- [ ] Configurable attention level per workspace
-- [ ] Role-aware responses (Brain adapts based on who's asking and their role)
-
-### 1.10 — Brain Memory System
-- [ ] Layer 1: Raw messages stored in SQLite (already done by 1.3)
-- [ ] Layer 2: Working memory — per-channel rolling summaries, updated every N messages
-- [ ] Layer 3: Extracted facts — atomic memory extraction (decisions, commitments, people, projects)
-- [ ] Layer 4: Knowledge graph — relationships between entities, stored as SQLite rows
-- [ ] Layer 5: Semantic index — sqlite-vec embeddings for document search (optional, can defer)
-- [ ] Query resolution: working memory → entities → graph → hybrid search
-- [ ] Auto-flush: detect token limit, save context, compact session
-- [ ] Brain-maintained TEAM.md (auto-updates as it learns about members)
-- [ ] Brain-maintained MEMORY.md (long-term curated knowledge)
-
-### 1.11 — Heartbeat Scheduler
-- [ ] Parse HEARTBEAT.md for schedule definitions
-- [ ] Cron goroutine runner (daily, weekly, hourly, on-idle triggers)
-- [ ] Morning brief: overdue tasks, approaching deadlines
-- [ ] Weekly summary: decisions, completed tasks, open items
-- [ ] Hourly: compress working memory for active channels
-- [ ] Idle: run memory consolidation when no messages for 2+ hours
-- [ ] Each heartbeat runs as main-context or isolated session (configurable)
-
-### 1.12 — Core Skills (Bundled)
-- [ ] Skill loading: read SKILL.md files from brain/skills/ directory
-- [ ] YAML frontmatter parsing (name, description, schedule, channels, autonomy, roles, tools)
-- [ ] Bundled skill: **Daily Standup** — async standup, collect responses, compile summary
-- [ ] Bundled skill: **Meeting Notes** — detect multi-person conversations, offer to capture
-- [ ] Bundled skill: **Decision Logger** — detect consensus, confirm, create Decision artifact
-- [ ] Bundled skill: **New Hire Buddy** — welcome new members, DM overview, check-ins
-
-### 1.13 — Contacts & CRM
-- [ ] Contact CRUD API
-- [ ] Contact types: client, lead, vendor, partner, candidate, other
-- [ ] Contact owner (team member who manages relationship)
-- [ ] Deal pipeline: lead → qualified → proposal → negotiation → closed_won/lost
-- [ ] Deal value, expected close date
-- [ ] Link contacts to channels, tasks
-- [ ] Auto-track last interaction date
-- [ ] Contact list view in UI
-- [ ] Pipeline board view in UI (kanban by deal stage)
-- [ ] Contact card sidebar
-- [ ] Role-gated: only sales + admin can manage contacts (others can view)
-
-### 1.14 — Observability
-- [ ] Brain action log (every action: what, why, confidence, outcome)
-- [ ] Action log viewable in UI (admin + member)
-- [ ] Self-critique logging (when Brain reviews its own output)
-- [ ] Token usage tracking per Brain action
-- [ ] Cost estimate per action (based on model pricing)
+**One-liner:** A shared AI brain for your team — instant, private, self-hosted.
 
 ---
 
-## Phase 1 — Build Order
-
-Phase 1 is large. Here's the suggested build order (each step produces something testable):
+## Core Architecture
 
 ```
-Week 1-2:   1.1 Server Skeleton + 1.2 Auth & Workspaces
-            → Result: nexus serve runs, creates workspaces, serves placeholder UI
-
-Week 3-4:   1.3 Real-Time Messaging + 1.4 Web UI (basic)
-            → Result: people can chat in real-time in a browser
-
-Week 5:     1.5 Roles & Permissions
-            → Result: admin assigns roles, permissions enforced
-
-Week 6:     1.6 Tasks
-            → Result: create tasks, assign, board view
-
-Week 7:     1.7 File Sharing
-            → Result: upload and share files in channels
-
-Week 8:     1.8 Documents & Notes (Tiptap)
-            → Result: block editor, real-time collab, document library
-
-Week 9-10:  1.9 Brain Engine (Core)
-            → Result: Brain responds to @mentions, role-aware, OpenRouter
-
-Week 11:    1.10 Brain Memory System
-            → Result: Brain remembers conversations, reads docs, extracts facts
-
-Week 12:    1.11 Heartbeat + 1.12 Core Skills
-            → Result: morning briefs, standup bot, decision logging
-
-Week 13:    1.13 Contacts & CRM
-            → Result: contact management, deal pipeline
-
-Week 14-15: 1.14 Observability + polish
-            → Result: Brain action log, cost tracking, bug fixes
+┌──────────────────────────────────────────────────┐
+│                  Go Binary (~15MB)               │
+│                                                  │
+│  ┌────────────┐  ┌──────────┐  ┌──────────────┐ │
+│  │ HTTP Server │  │ WS Hub   │  │ SMTP Server  │ │
+│  │ :8080      │  │ (per-ws) │  │ :2525        │ │
+│  └─────┬──────┘  └────┬─────┘  └──────┬───────┘ │
+│        │              │               │          │
+│  ┌─────┴──────────────┴───────────────┴───────┐  │
+│  │              Request Router                │  │
+│  │  /api/* → REST  │  /ws → WebSocket        │  │
+│  │  /* → SPA       │  /w/{slug}/hook → Wbhk  │  │
+│  └────────┬───────────────────┬───────────────┘  │
+│           │                   │                  │
+│  ┌────────┴────────┐ ┌───────┴────────────────┐ │
+│  │ Auth (JWT/HS256) │ │ Brain Engine           │ │
+│  │ 9 roles, 31 perm│ │ OpenRouter + Gemini    │ │
+│  └────────┬────────┘ │ Tools, Memory, Skills  │ │
+│           │          │ Agent Runtime           │ │
+│  ┌────────┴────────┐ │ MCP Client (stdio/SSE) │ │
+│  │ SQLite (WAL)    │ │ Heartbeat Scheduler    │ │
+│  │ 1 global DB     │ └────────────────────────┘ │
+│  │ 1 DB per ws     │                            │
+│  │ Blobs on disk   │                            │
+│  └─────────────────┘                            │
+│                                                  │
+│  ┌──────────────────────────────────────────────┐│
+│  │ Embedded SvelteKit SPA (//go:embed all:build)││
+│  └──────────────────────────────────────────────┘│
+└──────────────────────────────────────────────────┘
 ```
 
-**Milestone: End of Week 4** — usable chat platform (no AI yet, but functional)
-**Milestone: End of Week 8** — chat + tasks + docs + files (full collaboration, no AI yet)
-**Milestone: End of Week 10** — Brain is live and responding
-**Milestone: End of Week 15** — full Phase 1, ready for beta users
+### Key Design Decisions
+
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Database | SQLite (WAL, per-workspace) | Zero config, single file, easy backup (`cp`) |
+| Frontend embedding | `//go:embed all:build` | Single binary distribution, no file server |
+| Auth | JWT HS256, 30-day expiry | Stateless, workspace-scoped tokens |
+| LLM | OpenRouter (200+ models) | Model-agnostic, user brings their own key |
+| Image gen | Google Gemini API | Native image generation, separate key |
+| Real-time | WebSocket hub per workspace | Simple, no Redis/NATS dependency |
+| File storage | Content-addressed (SHA-256) | Dedup, immutable URLs, local filesystem |
+| Config | TOML file + env vars + CLI flags | Standard, layered override |
+| Metrics | Prometheus (`/metrics`) | Industry standard, Grafana/Fly Metrics compatible |
+| Task queue | asynq (Redis) | Persistent retries, dedup; goroutine fallback when no Redis |
+| Vector search | Qdrant (gRPC) | Semantic knowledge search; SQL LIKE fallback when no Qdrant |
+| Embeddings | OpenRouter (`text-embedding-3-small`) | 1536-dim, reuses existing API key |
 
 ---
 
-## Phase 2 — The Brain Reaches Out [~8 weeks]
+## Current State — Feature Inventory
 
-Goal: The Brain communicates beyond the web UI — email, Telegram, webhooks. It becomes the team's communication hub.
+### Fully Working
 
-### 2.1 — Email Integration
-- [ ] SMTP inbound server (receive emails to brain-{workspace}@nexus.app)
-- [ ] Email parsing (sender, recipients, subject, body, attachments)
-- [ ] Brain processes inbound email: classify, decide action, route
-- [ ] SMTP outbound (send emails from Brain)
-- [ ] Autonomy controls: autonomous / draft+approve / never
-- [ ] Auto-create contacts from email senders
-- [ ] Email threads linked to contacts and channels
-- [ ] Email restriction settings: only known contacts / only internal / anyone
+| Feature | Details |
+|---------|---------|
+| **Chat** | Channels (public/private), DMs, markdown, reactions (backend only — no picker UI), file upload (50MB), typing indicators, @mention autocomplete, /slash commands |
+| **Brain AI** | @Brain mentions, DM with Brain, 2-round tool calling, system prompt from 5 definition files + memories + skills + knowledge + summaries |
+| **Memory extraction** | Auto-extracts facts/decisions/commitments/people every N messages via asynq task queue (Redis) with goroutine fallback, stores in DB, feeds into Brain context |
+| **Knowledge base** | Text articles, file upload (.txt/.md/.pdf), URL import with preview, semantic vector search (Qdrant) with SQL LIKE fallback |
+| **Brain skills** | Markdown files with YAML frontmatter (trigger/autonomy/roles), enable/disable, AI generation, templates |
+| **Tasks** | Full CRUD, 5 statuses, 4 priorities, tags, assignee, due date, channel/message linking, real-time WS sync |
+| **Documents** | Full CRUD, Tiptap rich editor (headings, lists, code blocks, images, checklists), auto-save, real-time WS sync |
+| **Agents** | Full CRUD, 9 templates, AI-generated configs, per-agent skills, mention/always/all triggers, tool calling, image generation with skill-enriched prompts, delegation |
+| **Built-in agents** | Creative Director (image gen), Caly (exec assistant) — auto-seeded per workspace |
+| **MCP tools** | stdio + SSE transports, template catalog (15+ servers), per-workspace management, auto-reconnect, namespaced tools |
+| **Roles & permissions** | 9 roles (admin→guest), 31 permissions, per-member overrides |
+| **Org chart** | D3 hierarchy, drag-drop reparenting, role slots (vacant/filled), member profiles (title/bio/goals) |
+| **Webhooks** | Token-authenticated inbound, event log, Brain processing with configurable autonomy |
+| **Email** | Inbound SMTP server, thread tracking, auto-channel creation, outbound replies, configurable autonomy |
+| **Telegram** | Bot webhook, auto-channel linking, Brain responses, autonomy settings |
+| **File storage** | Content-addressed blobs, dedup, immutable cache headers, inline display for images/PDFs |
+| **Platform admin** | Superadmin panel: stats, workspace management, account management, model curation, audit log, data export, announcements, impersonation |
+| **Auth** | Anonymous workspace creation, email/password accounts, login, workspace switching (auto-scope for single-ws users), invite links, invite by email |
+| **Heartbeat** | Cron-like scheduler for Brain actions (daily standup, weekly reports, etc.) parsed from HEARTBEAT.md |
+| **Model browsing** | OpenRouter model catalog with 1h cache, admin-pinned models |
 
-### 2.2 — Social Scheduling
-- [ ] .ics calendar file generation for meeting scheduling
-- [ ] Calendar deep links (Google Calendar, Outlook, Apple Calendar)
-- [ ] Brain coordinates via chat + email (asks availability, proposes times)
+### Partially Implemented / UI Gaps
 
-### 2.3 — Telegram Bridge
-- [ ] Telegram Bot API integration (long polling)
-- [ ] Session mapping: Telegram thread → Nexus channel/context
-- [ ] Same Brain identity, same memory, same personality
-- [ ] Telegram-specific formatting (Markdown → Telegram HTML)
+| Feature | What's Missing |
+|---------|---------------|
+| **Reactions** | Backend works, `sendReaction`/`removeReaction` exist in ws.ts, but **no emoji picker UI** — reactions render if they exist but users can't add them |
+| **Message editing** | Backend handles `message.edit` WS event, but **no edit button/UI** in frontend |
+| **Unread counts** | `channel_reads` table tracks last read, but **no unread badge** in sidebar |
+| **Message pagination** | Only loads latest batch — **no infinite scroll / "load more"** |
+| **Task detail view** | Board/list show title+status+priority but **no description, comments, or assignee** in UI |
+| **Task drag-and-drop** | Kanban columns exist but **status change only via dropdown**, no DnD |
+| **Due date editor** | Due dates display if set but **no date picker** in task creation form |
+| **Role editing** | Roles tab displays the permission matrix but **no edit UI** |
+| **Collaborative editing** | Documents are single-writer — **no OT/CRDT, no multi-cursor** |
+| **Appearance/theme** | Preferences modal has "Coming soon" placeholder |
+| **Brain permissions** | `brain.mention`/`brain.dm` permissions defined but **not enforced** |
+| **Contact/CRM** | Permissions defined but **no endpoints or UI** |
+| **Streaming responses** | `CompleteStream` implemented in openrouter.go but **no SSE handler** uses it |
 
-### 2.4 — Webhooks
-- [ ] Webhook endpoint per workspace (`/w/{id}/hook/{secret}`)
-- [ ] Receive JSON payloads from any app
-- [ ] Brain interprets webhook events via LLM
-- [ ] Route to relevant channel, create tasks/contacts as needed
-- [ ] Webhook management UI (regenerate secret, view recent events)
+### Not Implemented (Spec'd but not built)
 
-### 2.5 — Channel Adapter Framework
-- [ ] Adapter interface: normalize → route → format
-- [ ] Foundation for future bridges (WhatsApp, Slack, etc.)
-- [ ] Unified identity: same Brain across all surfaces
-
----
-
-## Phase 3 — Deep Intelligence [~10 weeks]
-
-Goal: Full skills system, sub-agents, think-while-idle, document ingestion. The Brain becomes proactive.
-
-### 3.1 — Full Skills System
-- [ ] Natural language skill creation ("@Brain create an agent that...")
-- [ ] Brain generates SKILL.md from description
-- [ ] Skill marketplace UI (browse, install, customize)
-- [ ] Role-gated skill triggers (only sales can trigger deal skills)
-- [ ] Skill enable/disable per workspace
-
-### 3.2 — Advanced Skills (Bundled)
-- [ ] Client Onboarding — channel creation, checklist, welcome email, CRM entry
-- [ ] Proposal Tracker — follow-up cadence, deal stage updates
-- [ ] Support Triage — categorize, assign, respond, escalate
-- [ ] Campaign Manager — channel, task checklist, asset tracking, daily briefs
-- [ ] Content Calendar — schedule tracking, nudges, weekly summary
-- [ ] Competitive Intel — weekly web search, digest in #strategy
-- [ ] Invoice Reminder — deadline tracking, escalation
-- [ ] Hiring Pipeline — candidate tracking, interview feedback, weekly summary
-- [ ] Expense Tracker — receipt parsing, monthly summaries
-- [ ] Release Notes — compile from completed tasks, draft for review
-
-### 3.3 — Sub-Agent Runtime
-- [ ] Sub-agent goroutines with isolated sessions
-- [ ] Bounded communication (max 5 rounds, skip tokens)
-- [ ] Provenance tracking (human / brain / sub-agent)
-- [ ] Allowlisted tools per sub-agent (from SKILL.md)
-- [ ] Self-critique pass before autonomous actions (extra LLM call)
-
-### 3.4 — Think While Idle
-- [ ] Overnight consolidation pass
-- [ ] Morning synthesis generation (before anyone logs in)
-- [ ] Idle-time entity merging and relationship updates
-- [ ] Gap identification ("discussed but never decided")
-- [ ] Meeting preparation (pre-load context before scheduled meetings)
-
-### 3.5 — Document Ingestion
-- [ ] Upload documents to workspace (PDF, DOCX, XLSX, CSV, TXT)
-- [ ] Text extraction and chunking
-- [ ] Embedding generation (OpenRouter or local model)
-- [ ] sqlite-vec index for semantic search
-- [ ] Brain can answer questions citing documents
-- [ ] Staleness detection ("this doc hasn't been updated in 6 months")
-
-### 3.6 — MCP Client
-- [ ] MCP protocol client in Go
-- [ ] MCP server management (start, stop, health check)
-- [ ] Tool discovery (auto-detect available tools from MCP server)
-- [ ] Google Calendar MCP integration
-- [ ] Google Drive MCP integration
-- [ ] MCP settings UI (add server, view tools, status)
-
-### 3.7 — More Channel Bridges
-- [ ] WhatsApp bridge (Baileys or official API)
-- [ ] Slack bridge (Socket Mode, Bolt framework) — migration path from Slack to Nexus
-- [ ] Session mapping (platform thread → Nexus channel/context)
-
-### 3.8 — Cost Dashboard
-- [ ] Token usage per Brain action, per channel, per user, per skill
-- [ ] Cost estimation based on model pricing
-- [ ] Monthly spend summary
-- [ ] Budget alerts (warn at 80%, pause at 100%)
-- [ ] Cost comparison: OpenRouter vs local llama.cpp savings
-
-### 3.9 — Custom Roles
-- [ ] Admin creates custom roles with selected permissions
-- [ ] Role templates (copy existing role, modify)
-- [ ] Role management UI
+| Feature | Spec Reference |
+|---------|---------------|
+| E2E encryption (MLS) | SPEC.md Phase 5 |
+| SSO / SAML / OAuth | SPEC.md Phase 5 |
+| Compliance exports | SPEC.md Phase 5 |
+| Local LLM (llama.cpp) | SPEC.md Phase 4 — landing page claims "local Llama" |
+| Native iOS/Mac apps | SPEC.md Phase 6 |
+| Offline / CRDT sync | SPEC.md Phase 6 |
+| Skill marketplace | SPEC.md Phase 6 |
+| Document RAG (vector search) | SPEC.md Phase 3 — **knowledge base has semantic vector search (Qdrant), document RAG not yet implemented** |
+| Sub-agent orchestration | SPEC.md Phase 3 — delegation exists but single-pass only |
 
 ---
 
-## Phase 4 — Specialization [~8 weeks]
+## Infrastructure
 
-Goal: Professional roles with custom models, AI agent team members, industry-specific Brain adaptations.
+### Current Cloud Deployment (Fly.io)
 
-### 4.1 — Professional Roles
-- [ ] Role profiles as Markdown (`brain/roles/lawyer.md`) extending Brain behavior
-- [ ] Professional roles: lawyer, creative director, accountant, HR manager, project manager, developer, content writer, customer success, executive
-- [ ] Per-role model routing via OpenRouter (legal → legal model, design → image model)
-- [ ] Role-specific auto-skills (installing role auto-installs relevant skills)
+| Component | Value |
+|-----------|-------|
+| App | `nexus-workspace` on Fly.io |
+| URL | https://nexus-workspace.fly.dev |
+| Machine | `shared-cpu-1x`, 512MB RAM |
+| Region | `ewr` (Newark, NJ), single region |
+| Volume | `nexus_data` mounted at `/data` |
+| Connections | Hard limit 100, soft limit 80 |
+| Ports | 8080 (HTTP, TLS via Fly proxy), 2525→25 (SMTP) |
+| Auto-scaling | min 1 machine, auto-stop on idle |
+| Metrics | `GET /metrics` (Prometheus format) — scrape with Fly Metrics or Grafana Cloud |
 
-### 4.2 — AI Agent Roles
-- [ ] Deploy autonomous agents as workspace members
-- [ ] Agent types: Legal Reviewer, Brand Guardian, Data Analyst, Compliance Officer, Meeting Facilitator, Translator
-- [ ] Agent identity: names, avatars, presence, their own token budget
-- [ ] Agent-to-agent coordination (via Brain as orchestrator)
+### Optional External Services
 
-### 4.3 — llama.cpp Integration
-- [ ] llama.cpp sidecar: `nexus serve --llama-model ./model.gguf`
-- [ ] Spawn and manage llama-server process
-- [ ] Route confidential/restricted channels to local model
-- [ ] Fallback: local → OpenRouter (or OpenRouter → local, configurable)
-- [ ] Model management UI (loaded model, VRAM usage, status)
+All optional — Nexus runs fully standalone without any of these. Set env vars to enable:
 
-### 4.4 — Model Management
-- [ ] Configure which models are available per workspace
-- [ ] Set default models per role
-- [ ] Model routing rules: "legal queries NEVER go to external models"
-- [ ] Confidential channel classification enforced — local LLM only
+| Service | Env Var | Purpose | Fallback |
+|---------|---------|---------|----------|
+| Redis (Upstash) | `REDIS_URL` | asynq task queue — persistent retries, dedup, rate limiting for memory extraction & summarization | Raw goroutines (no retry, no persistence) |
+| Qdrant | `QDRANT_URL` | Vector search — semantic knowledge retrieval using 1536-dim embeddings | SQL `LIKE` keyword search |
 
----
+**Setup:**
+```bash
+fly ext upstash redis create           # auto-sets REDIS_URL
+fly secrets set QDRANT_URL=host:6334   # Qdrant Cloud free tier or self-hosted
+```
 
-## Phase 5 — Fortress [~8 weeks]
+### Scaling Ceiling
 
-Goal: E2E encryption, SSO, compliance. Deployable in regulated industries.
+| Constraint | Impact | Mitigation |
+|------------|--------|------------|
+| Single machine + volume | Can't horizontally scale | Upgrade machine size; eventually LiteFS or Postgres for global DB |
+| SQLite write serialization | Heavy agent activity queues writes (5s busy timeout) | Per-workspace isolation helps; heavy workspaces get their own lock |
+| 100 WebSocket connection cap | ~100 simultaneous users across all workspaces | Increase in fly.toml; eventually multiple machines with shared state |
+| 512MB RAM | MCP subprocesses (node/python) compete for memory | Upgrade to 1GB+; limit concurrent MCP servers |
+| Local blob storage | No CDN, disk-bound | Move to S3/R2 for blobs |
+| Single region | Latency for non-US users | Add regions (requires shared DB strategy) |
 
-### 5.1 — E2E Encryption
-- [ ] MLS-based encryption (RFC 9420)
-- [ ] Brain gets MLS group membership (users control which channels it reads)
-- [ ] Message classification enforcement (confidential = local LLM only, restricted = ephemeral + local only)
-- [ ] Ephemeral channels (auto-delete with cryptographic proof of deletion)
-- [ ] BYOK (Bring Your Own Key) — workspace manages its own encryption keys
+### Self-Hosted Setup
 
-### 5.2 — Authentication & Compliance
-- [ ] OIDC/SAML SSO (Okta, Google Workspace, Azure AD)
-- [ ] Two-factor authentication
-- [ ] IP allowlisting
-- [ ] Compliance export (designated officer can decrypt for legal holds)
-- [ ] Audit logging (all admin actions, Brain actions, permission changes, data access)
-- [ ] Security audit command: `nexus security audit`
+```bash
+# Install (requires GitHub release to exist)
+curl -fsSL https://raw.githubusercontent.com/vortex-303/nexus/main/install.sh | sh
 
----
+# Run
+nexus serve                          # http://localhost:8080, data in ~/.nexus/
+nexus serve --data-dir /var/nexus    # Custom data directory
+nexus serve --domain nexus.myco.com  # Auto-TLS via Let's Encrypt
 
-## Phase 6 — Everywhere [~12 weeks]
+# Docker
+docker run -p 8080:8080 -v nexus_data:/data ghcr.io/vortex-303/nexus
 
-Goal: Native clients, offline support, ecosystem expansion.
+# Build from source
+git clone https://github.com/vortex-303/nexus.git
+cd nexus && make dev                 # Builds web + Go, runs on :3000 (dev mode)
+```
 
-### 6.1 — Native Clients
-- [ ] iOS app (Swift, WebSocket protocol, push notifications via APNs)
-- [ ] Mac app (optional native wrapper, menu bar presence)
-- [ ] Device calendar integration (EventKit read/write)
+### Build & Release
 
-### 6.2 — Offline & Sync
-- [ ] CRDT sync for docs (Yjs), messages, and tasks
-- [ ] Offline-first — everything syncs when reconnected
-- [ ] Brain catches up and processes what happened while offline
+| Tool | Config | What |
+|------|--------|------|
+| Make | `Makefile` | `build`, `web`, `dev`, `clean` |
+| GoReleaser | `.goreleaser.yaml` | 4 targets (linux/darwin × amd64/arm64), checksums, GitHub release |
+| CI | `.github/workflows/release.yml` | Tag push `v*` → goreleaser → GitHub release |
+| Docker | `Dockerfile` | 3-stage build (node → go → alpine), includes node/python/uv for MCP |
 
-### 6.3 — Local LLM on Device
-- [ ] llama.cpp in native apps (Apple Silicon)
-- [ ] Queries never leave the device
-
-### 6.4 — Ecosystem
-- [ ] OAuth integrations (Google Workspace, Microsoft 365)
-- [ ] Skill marketplace (community-contributed skills, one-click install)
-- [ ] Developer API (external apps interact with Nexus workspaces)
-- [ ] Multi-server federation
-- [ ] White-label / custom branding
+**No GitHub releases exist yet.** The install script will fail until a `v*` tag is pushed and goreleaser runs.
 
 ---
 
-## What's NOT in Phase 1
+## Pricing Strategy
 
-Explicitly deferred to keep scope manageable:
+### Recommended: Open Core + Per-Seat Cloud
 
-- Email integration (Phase 2)
-- Telegram bridge (Phase 2)
-- Webhooks (Phase 2)
-- Sub-agents / advanced skills (Phase 3)
-- MCP integrations (Phase 3)
-- WhatsApp/Slack bridges (Phase 3)
-- Document ingestion / RAG (Phase 3)
-- Professional roles (Phase 4)
-- AI agent roles (Phase 4)
-- llama.cpp / local LLM (Phase 4)
-- E2E encryption (Phase 5)
-- SSO (Phase 5)
-- iOS / Mac apps (Phase 6)
-- Skill marketplace (Phase 6)
+| Tier | Price | Target | Includes |
+|------|-------|--------|----------|
+| **Self-Hosted** | Free forever | Developers, small teams | Full product, unlimited users, AGPL |
+| **Cloud Free** | $0 | Evaluation | 3 users, 1 workspace, 10GB storage |
+| **Cloud Pro** | $8/user/mo | Small teams (3-50) | Unlimited users, agents, 100GB storage, custom domain |
+| **Cloud Business** | $18/user/mo | Growing teams (50-500) | + SSO/SAML, audit logs, RBAC, priority support |
+| **Enterprise** | Custom | Regulated / 500+ | Air-gapped, SLA, compliance exports, custom data residency |
+
+### What Gets Gated (paid only)
+
+- SSO / SAML — IT/security buyer
+- Audit logs & compliance exports — legal buyer
+- Advanced RBAC / org-wide admin — manager buyer
+- AI token quota overages — usage-based add-on
+- Priority support with SLA
+
+### What Stays Free Forever
+
+- All core features (chat, tasks, docs, Brain, agents, MCP)
+- Self-hosted = full product, no feature locks
+- API and webhooks
+- Local LLM support (when implemented)
+
+### Competitive Reference
+
+| Product | Price | Self-Hosted |
+|---------|-------|-------------|
+| Slack | $7.25/user/mo | No |
+| Notion | $10/user/mo | No |
+| Linear | $8/user/mo | No |
+| Mattermost | $10/user/mo | Free (open core) |
+| Plane | $6/user/mo | Free (AGPL) |
+| **Nexus** | **$8/user/mo** | **Free (full product)** |
+
+---
+
+## What's Missing — Next Steps
+
+### P0: Ship-Blockers (before anyone can install)
+
+- [ ] **Cut first GitHub release** — `git tag v0.1.0 && git push --tags` → goreleaser creates binaries → install.sh works
+- [ ] **README.md** — what it is, screenshot, install instructions, link to docs
+- [ ] **LICENSE** — AGPL-3.0 (matches open-core strategy, same as Plane/Cal.com)
+- [ ] **CLAUDE.md** — project conventions for AI-assisted development
+- [ ] **Remove hardcoded superadmin** — `nruggieri@gmail.com` is baked into migrations.go; needs to be configurable or use first-user-is-admin pattern
+- [ ] **Fix install.sh exit message** — should print the URL (`http://localhost:8080`) not just `nexus serve`
+
+### P1: Core UX Gaps (next 2-4 weeks)
+
+- [ ] **Emoji reaction picker** — the backend works, ws.ts has the functions, just need the UI
+- [ ] **Message edit button** — context menu or hover action to edit own messages
+- [ ] **Unread badges** — channel sidebar shows unread count from `channel_reads` table
+- [ ] **Message pagination** — infinite scroll or "Load older messages" button
+- [ ] **Task detail modal** — description editor, assignee picker, due date picker, comments
+- [ ] **Task drag-and-drop** — board view column DnD for status changes
+- [ ] **Streaming Brain responses** — use `CompleteStream` + SSE for real-time typing effect
+
+### P2: Landing Page Claims Gap (what we advertise but don't have)
+
+| Claim | Reality | Fix |
+|-------|---------|-----|
+| "Run models locally with llama.cpp" | Not implemented | Add local LLM integration or remove claim |
+| "8 templates" for agents | 9 templates exist + 2 built-in agents | Accurate, keep |
+| "Back it up with `cp`" | True for SQLite | Accurate, keep |
+| "5MB binary" | Binary is ~15MB | Update landing page |
+| "Deploy in 30 seconds" | True if release exists | Need to cut first release |
+
+### P3: Monetization Infrastructure (before charging)
+
+- [ ] Workspace user limits (enforce 3-user cap on free tier)
+- [ ] Storage quotas (track blob usage per workspace)
+- [ ] Usage metering (token count per Brain/agent call)
+- [ ] Stripe integration for billing
+- [ ] License key system for self-hosted enterprise
+- [ ] SSO/SAML (gated feature for Business tier)
+- [ ] Audit log export (gated feature for Business tier)
+
+### P4: Scale Preparation
+
+- [ ] Upgrade Fly machine (2 CPU, 2GB RAM minimum)
+- [ ] Raise connection limits to 1000+
+- [ ] Add S3/R2 blob storage (keep local as fallback)
+- [ ] Add CDN for static assets
+- [ ] Database connection pooling (`SetMaxOpenConns`)
+- [ ] Rate limiting on public endpoints (create workspace, login)
+
+### P5: Product Maturity
+
+- [ ] Collaborative document editing (Tiptap + Y.js or CRDT)
+- [ ] Thread support in chat (reply-to-message)
+- [ ] Search across all messages/docs/tasks
+- [ ] Notification system (in-app + email digest)
+- [ ] Mobile-responsive workspace UI (currently desktop-optimized)
+- [ ] API documentation (OpenAPI spec)
+- [ ] Local LLM support (llama.cpp or Ollama)
+- [ ] Document versioning / history
+- [ ] Data import from Slack/Discord/Notion
+
+---
+
+## Directory Structure
+
+```
+nexus/
+├── cmd/nexus/main.go          # CLI entry point (serve, version)
+├── internal/
+│   ├── auth/                  # JWT claims, middleware
+│   ├── brain/                 # Brain engine, OpenRouter, Gemini, memory, skills, tools
+│   │   └── skills/            # Built-in skill templates + agent skills
+│   ├── config/                # Config loading (TOML + env + flags)
+│   ├── db/                    # SQLite setup, migrations (global + per-workspace)
+│   ├── hub/                   # WebSocket hub, protocol types
+│   ├── id/                    # ID generation (ULID, slug, short)
+│   ├── mcp/                   # MCP client manager (stdio + SSE)
+│   ├── metrics/               # Prometheus metric definitions (promauto)
+│   ├── roles/                 # RBAC: 9 roles, 31 permissions, checker
+│   ├── vectorstore/           # Qdrant gRPC wrapper (upsert, search, delete)
+│   └── server/                # HTTP handlers, WS handlers, SPA serving
+│       ├── server.go          # Router, SPA handler, cache headers
+│       ├── auth.go            # Login, register, switch-workspace
+│       ├── workspace.go       # Create/join/invite workspace
+│       ├── ws.go              # WebSocket hub, message handling
+│       ├── channels.go        # Channel CRUD
+│       ├── tasks.go           # Task CRUD
+│       ├── documents.go       # Document CRUD
+│       ├── files.go           # File upload/download (content-addressed)
+│       ├── brain.go           # Brain settings, definitions, trigger handler
+│       ├── brain_tools.go     # Built-in tool implementations
+│       ├── brain_memory.go    # Memory CRUD, extraction trigger
+│       ├── brain_knowledge.go # Knowledge base CRUD, URL import, vector embedding
+│       ├── taskqueue.go       # asynq task queue (Redis) with goroutine fallback
+│       ├── brain_skills.go    # Brain skill management
+│       ├── brain_heartbeat.go # Cron-like heartbeat scheduler
+│       ├── agents.go          # Agent CRUD, templates, runtime
+│       ├── agent_runtime.go   # Agent mention/trigger execution
+│       ├── org_chart.go       # Org chart + role management
+│       ├── members.go         # Member management, permissions
+│       ├── permissions.go     # Permission middleware
+│       ├── webhooks.go        # Inbound webhook processing
+│       ├── email.go           # SMTP server + outbound email
+│       ├── telegram.go        # Telegram bot integration
+│       ├── mcp_servers.go     # MCP server CRUD
+│       ├── mcp_templates.go   # MCP template catalog
+│       ├── models.go          # Model browsing, pinned models
+│       └── admin.go           # Superadmin panel handlers
+├── web/
+│   ├── src/
+│   │   ├── routes/
+│   │   │   ├── (app)/+page.svelte          # Login/create workspace
+│   │   │   ├── (app)/w/[slug]/+page.svelte # Main workspace (chat/tasks/notes/brain/team)
+│   │   │   ├── (app)/workspaces/           # Workspace picker
+│   │   │   └── (app)/admin/                # Superadmin panel
+│   │   ├── lib/
+│   │   │   ├── api.ts          # REST API client (70+ functions)
+│   │   │   ├── ws.ts           # WebSocket client, auto-reconnect
+│   │   │   ├── stores/         # Svelte stores (channels, members, messages)
+│   │   │   ├── editor/         # TiptapEditor component
+│   │   │   └── components/     # OrgChart component
+│   │   └── app.css             # Design system (CSS custom properties)
+│   ├── static/
+│   │   └── landing.html        # Standalone marketing page
+│   └── embed.go                # //go:embed all:build
+├── install.sh                  # Curl-pipe installer
+├── Dockerfile                  # 3-stage build
+├── fly.toml                    # Fly.io deployment config
+├── .goreleaser.yaml            # Cross-platform release builds
+├── .github/workflows/release.yml # Tag → goreleaser → GitHub release
+├── Makefile                    # build, web, dev, clean
+├── PLAN.md                     # This file
+├── SPEC.md                     # Product vision & specification
+└── ARCHITECTURE.md             # Technical architecture reference
+```
+
+---
+
+## Database Schema Summary
+
+### Global DB (`nexus.db`) — 8 tables
+`accounts`, `workspaces`, `sessions`, `invite_tokens`, `jwt_secrets`, `admin_audit_log`, `platform_announcements`, `platform_models`
+
+### Per-Workspace DB (`workspaces/{slug}/workspace.db`) — 21 tables
+`members`, `channels`, `messages`, `reactions`, `channel_reads`, `permission_overrides`, `guest_channels`, `tasks`, `files`, `documents`, `brain_settings`, `brain_action_log`, `brain_memories`, `brain_channel_summaries`, `brain_knowledge`, `agents`, `org_roles`, `webhook_hooks`, `webhook_events`, `channel_integrations`, `email_threads`, `mcp_servers`
+
+---
+
+## Verification Checklist
+
+To verify the current product works end-to-end:
+
+1. `make dev` → opens at http://localhost:3000
+2. Create workspace with name "Test Team" and your display name → lands in `/w/<slug>`
+3. Send a message in #general → appears in real-time
+4. Upload a file → appears inline if image, download link otherwise
+5. Create a task from board view → appears on kanban
+6. Create a document → rich editor saves and syncs
+7. Configure Brain (Brain tab → Settings → add OpenRouter API key)
+8. @Brain in chat → responds with tool calls if relevant
+9. Invite someone via invite link → they join as member
+10. Check org chart → hierarchy renders with D3
+11. Add an MCP server (e.g., DuckDuckGo search) → tools appear in Brain's repertoire
+12. Visit /landing.html → marketing page renders all sections
+13. `curl localhost:3000/metrics | grep nexus_` → Prometheus metrics present
+14. @Brain mention → `nexus_llm_calls_total` increments in metrics

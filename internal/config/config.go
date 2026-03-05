@@ -15,6 +15,8 @@ type Config struct {
 	Domain     string `toml:"domain"`
 	Dev        bool   `toml:"dev"`
 	SMTPListen string `toml:"smtp_listen"`
+	RedisURL   string `toml:"redis_url"`
+	QdrantURL  string `toml:"qdrant_url"`
 }
 
 func defaults() Config {
@@ -71,6 +73,12 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("SMTP_LISTEN"); v != "" {
 		cfg.SMTPListen = v
+	}
+	if v := os.Getenv("REDIS_URL"); v != "" {
+		cfg.RedisURL = v
+	}
+	if v := os.Getenv("QDRANT_URL"); v != "" {
+		cfg.QdrantURL = v
 	}
 
 	// Ensure data directory exists

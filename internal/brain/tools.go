@@ -187,4 +187,104 @@ var Tools = []ToolDef{
 			}`),
 		},
 	},
+	{
+		Type: "function",
+		Function: ToolFuncDef{
+			Name:        "create_calendar_event",
+			Description: "Create a calendar event. Use when someone asks to schedule a meeting, appointment, deadline, or any time-based event.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"title": {"type": "string", "description": "Event title"},
+					"start_time": {"type": "string", "description": "Start time in ISO 8601 format (e.g. 2025-03-15T14:00:00Z)"},
+					"end_time": {"type": "string", "description": "End time in ISO 8601 format"},
+					"description": {"type": "string", "description": "Event description (optional)"},
+					"location": {"type": "string", "description": "Event location (optional)"},
+					"all_day": {"type": "boolean", "description": "Whether this is an all-day event (default: false)"},
+					"recurrence_rule": {"type": "string", "description": "RRULE string for recurring events (e.g. FREQ=WEEKLY;BYDAY=MO,WE,FR)"},
+					"attendee_names": {"type": "array", "items": {"type": "string"}, "description": "Display names of attendees (optional)"},
+					"reminders": {"type": "array", "items": {"type": "object", "properties": {"minutes_before": {"type": "integer"}, "type": {"type": "string", "enum": ["notification", "email"]}}}, "description": "Reminders (optional)"}
+				},
+				"required": ["title", "start_time", "end_time"]
+			}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: ToolFuncDef{
+			Name:        "list_calendar_events",
+			Description: "List upcoming calendar events. Use when someone asks about their schedule, what's coming up, or what meetings are planned.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"start": {"type": "string", "description": "Range start in ISO 8601 (default: now)"},
+					"end": {"type": "string", "description": "Range end in ISO 8601 (default: 7 days from now)"},
+					"calendar": {"type": "string", "description": "Filter by calendar name (optional)"}
+				}
+			}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: ToolFuncDef{
+			Name:        "update_calendar_event",
+			Description: "Update an existing calendar event. Use when someone asks to reschedule, rename, or modify an event.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"event_id": {"type": "string", "description": "The event ID to update"},
+					"title": {"type": "string", "description": "New title"},
+					"start_time": {"type": "string", "description": "New start time (ISO 8601)"},
+					"end_time": {"type": "string", "description": "New end time (ISO 8601)"},
+					"description": {"type": "string", "description": "New description"},
+					"location": {"type": "string", "description": "New location"},
+					"status": {"type": "string", "enum": ["confirmed", "tentative", "cancelled"], "description": "Event status"}
+				},
+				"required": ["event_id"]
+			}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: ToolFuncDef{
+			Name:        "delete_calendar_event",
+			Description: "Delete a calendar event. Use when someone asks to cancel or remove an event.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"event_id": {"type": "string", "description": "The event ID to delete"}
+				},
+				"required": ["event_id"]
+			}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: ToolFuncDef{
+			Name:        "web_search",
+			Description: "Search the web using DuckDuckGo. Returns titles, snippets, and URLs for the top results.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"query": {"type": "string", "description": "Search query"},
+					"num_results": {"type": "integer", "description": "Number of results to return (default 5, max 10)"}
+				},
+				"required": ["query"]
+			}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: ToolFuncDef{
+			Name:        "fetch_url",
+			Description: "Fetch a web page and extract its text content. Use this to read articles, documentation, or any public URL.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"url": {"type": "string", "description": "The URL to fetch (must be http or https)"}
+				},
+				"required": ["url"]
+			}`),
+		},
+	},
 }

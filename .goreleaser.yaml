@@ -1,0 +1,70 @@
+version: 2
+
+before:
+  hooks:
+    - npm --prefix web ci
+    - npm --prefix web run build
+
+builds:
+  - id: nexus
+    main: ./cmd/nexus/
+    binary: nexus
+    env:
+      - CGO_ENABLED=1
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    overrides:
+      - goos: linux
+        goarch: amd64
+        env:
+          - CC=x86_64-linux-musl-gcc
+          - CXX=x86_64-linux-musl-g++
+        goamd64: v1
+      - goos: linux
+        goarch: arm64
+        env:
+          - CC=aarch64-linux-musl-gcc
+          - CXX=aarch64-linux-musl-g++
+      - goos: darwin
+        goarch: amd64
+        env:
+          - CC=o64-clang
+          - CXX=o64-clang++
+      - goos: darwin
+        goarch: arm64
+        env:
+          - CC=oa64-clang
+          - CXX=oa64-clang++
+
+archives:
+  - id: nexus
+    format: tar.gz
+    name_template: "nexus_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  github:
+    owner: vortex-303
+    name: nexus
+  draft: false
+  prerelease: auto

@@ -1,2 +1,2 @@
-export const ssr = false;
-export const prerender = false;
+// Root layout: SSR enabled by default
+// Individual route groups override as needed

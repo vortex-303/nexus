@@ -8,6 +8,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/nexus-chat/nexus/internal/metrics"
 )
 
 const openRouterURL = "https://openrouter.ai/api/v1/chat/completions"
@@ -77,6 +80,10 @@ func NewClient(apiKey, model string) *Client {
 
 // Complete sends a non-streaming completion request.
 func (c *Client) Complete(systemPrompt string, messages []Message) (string, error) {
+	start := time.Now()
+	defer func() {
+		metrics.LLMLatency.WithLabelValues(c.Model, "brain").Observe(time.Since(start).Seconds())
+	}()
 	msgs := make([]Message, 0, len(messages)+1)
 	msgs = append(msgs, Message{Role: "system", Content: systemPrompt})
 	msgs = append(msgs, messages...)
@@ -113,11 +120,14 @@ func (c *Client) Complete(systemPrompt string, messages []Message) (string, erro
 		return "", fmt.Errorf("decoding response: %w", err)
 	}
 	if result.Error != nil {
+		metrics.LLMCallsTotal.WithLabelValues(c.Model, "brain", "error").Inc()
 		return "", fmt.Errorf("openrouter: %s", result.Error.Message)
 	}
 	if len(result.Choices) == 0 {
+		metrics.LLMCallsTotal.WithLabelValues(c.Model, "brain", "error").Inc()
 		return "", fmt.Errorf("no choices in response")
 	}
+	metrics.LLMCallsTotal.WithLabelValues(c.Model, "brain", "ok").Inc()
 	return result.Choices[0].Message.Content, nil
 }
 
@@ -176,6 +186,10 @@ func (c *Client) CompleteMultimodal(systemPrompt string, messages []Message) (st
 // Note: modalities cannot be combined with tools on OpenRouter, so image
 // generation for multimodal models uses a separate CompleteMultimodal call.
 func (c *Client) CompleteWithTools(systemPrompt string, messages []Message, tools []ToolDef) (string, []ToolCall, error) {
+	start := time.Now()
+	defer func() {
+		metrics.LLMLatency.WithLabelValues(c.Model, "brain").Observe(time.Since(start).Seconds())
+	}()
 	msgs := make([]Message, 0, len(messages)+1)
 	msgs = append(msgs, Message{Role: "system", Content: systemPrompt})
 	msgs = append(msgs, messages...)
@@ -213,11 +227,14 @@ func (c *Client) CompleteWithTools(systemPrompt string, messages []Message, tool
 		return "", nil, fmt.Errorf("decoding response: %w", err)
 	}
 	if result.Error != nil {
+		metrics.LLMCallsTotal.WithLabelValues(c.Model, "brain", "error").Inc()
 		return "", nil, fmt.Errorf("openrouter: %s", result.Error.Message)
 	}
 	if len(result.Choices) == 0 {
+		metrics.LLMCallsTotal.WithLabelValues(c.Model, "brain", "error").Inc()
 		return "", nil, fmt.Errorf("no choices in response")
 	}
+	metrics.LLMCallsTotal.WithLabelValues(c.Model, "brain", "ok").Inc()
 
 	choice := result.Choices[0]
 	return choice.Message.Content, choice.Message.ToolCalls, nil
@@ -294,4 +311,52 @@ func (c *Client) CompleteStream(systemPrompt string, messages []Message, cb Stre
 	}
 	cb("", true)
 	return scanner.Err()
+}
+
+const embeddingURL = "https://openrouter.ai/api/v1/embeddings"
+const embeddingModel = "openai/text-embedding-3-small"
+
+// Embed returns a 1536-dimensional embedding vector for the given text.
+func (c *Client) Embed(text string) ([]float32, error) {
+	reqBody := map[string]any{
+		"model": embeddingModel,
+		"input": text,
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq, err := http.NewRequest("POST", embeddingURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	httpReq.Header.Set("HTTP-Referer", "https://nexus.chat")
+
+	resp, err := c.HTTPClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("embedding request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Data []struct {
+			Embedding []float32 `json:"embedding"`
+		} `json:"data"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding embedding response: %w", err)
+	}
+	if result.Error != nil {
+		return nil, fmt.Errorf("embedding error: %s", result.Error.Message)
+	}
+	if len(result.Data) == 0 || len(result.Data[0].Embedding) == 0 {
+		return nil, fmt.Errorf("no embedding in response")
+	}
+	return result.Data[0].Embedding, nil
 }

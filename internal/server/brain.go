@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +13,7 @@ import (
 	"github.com/nexus-chat/nexus/internal/db"
 	"github.com/nexus-chat/nexus/internal/hub"
 	"github.com/nexus-chat/nexus/internal/id"
+	"github.com/nexus-chat/nexus/internal/logger"
 )
 
 // ensureBrainMember creates the Brain member in a workspace if it doesn't exist.
@@ -30,9 +30,10 @@ func (s *Server) ensureBrainMember(slug string) error {
 		return err
 	}
 	if exists == 0 {
+		brainColor := assignMemberColor(wdb)
 		_, err = wdb.DB.Exec(
-			"INSERT INTO members (id, display_name, role) VALUES (?, ?, ?)",
-			brain.BrainMemberID, brain.BrainName, brain.BrainRole,
+			"INSERT INTO members (id, display_name, role, color) VALUES (?, ?, ?, ?)",
+			brain.BrainMemberID, brain.BrainName, brain.BrainRole, brainColor,
 		)
 		if err != nil {
 			return err
@@ -58,7 +59,7 @@ func (s *Server) ensureBrainMember(slug string) error {
 			brain.BrainMemberID,
 		)
 		if err != nil {
-			log.Printf("[brain:%s] failed to seed system agent: %v", slug, err)
+			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("failed to seed system agent")
 		}
 	}
 
@@ -81,12 +82,13 @@ func (s *Server) ensureBuiltinAgents(slug string) error {
 			continue
 		}
 		if memberExists == 0 {
+			agentColor := assignMemberColor(wdb)
 			_, err = wdb.DB.Exec(
-				"INSERT INTO members (id, display_name, role) VALUES (?, ?, ?)",
-				ba.MemberID, ba.Name, "agent",
+				"INSERT INTO members (id, display_name, role, color) VALUES (?, ?, ?, ?)",
+				ba.MemberID, ba.Name, "agent", agentColor,
 			)
 			if err != nil {
-				log.Printf("[builtin:%s] failed to create member for %s: %v", slug, ba.ID, err)
+				logger.WithCategory(logger.CatAgent).Warn().Str("workspace", slug).Str("agent", ba.ID).Err(err).Msg("failed to create member")
 			}
 		}
 
@@ -123,18 +125,18 @@ func (s *Server) ensureBuiltinAgents(slug string) error {
 				ba.Model, toolsJSON, ba.KnowledgeAccess, ba.MemoryAccess, ba.Constraints,
 			)
 			if err != nil {
-				log.Printf("[builtin:%s] failed to seed agent %s: %v", slug, ba.ID, err)
+				logger.WithCategory(logger.CatAgent).Warn().Str("workspace", slug).Str("agent", ba.ID).Err(err).Msg("failed to seed agent")
 			}
 		}
 
 		// Seed agent skills from embedded FS
 		if err := brain.SeedAgentSkills(s.cfg.DataDir, slug, ba.ID, ba.SkillsFS, ba.SkillsDir); err != nil {
-			log.Printf("[builtin:%s] failed to seed skills for %s: %v", slug, ba.ID, err)
+			logger.WithCategory(logger.CatAgent).Warn().Str("workspace", slug).Str("agent", ba.ID).Err(err).Msg("failed to seed skills")
 		}
 
 		// Also seed shared skills
 		if err := brain.SeedSharedSkills(s.cfg.DataDir, slug, ba.ID); err != nil {
-			log.Printf("[builtin:%s] failed to seed shared skills for %s: %v", slug, ba.ID, err)
+			logger.WithCategory(logger.CatAgent).Warn().Str("workspace", slug).Str("agent", ba.ID).Err(err).Msg("failed to seed shared skills")
 		}
 	}
 
@@ -147,7 +149,7 @@ func (s *Server) handleBrainMention(slug, channelID, senderName, content string)
 	go func() {
 		apiKey, model := s.getBrainSettings(slug)
 		if apiKey == "" {
-			log.Printf("[brain:%s] no API key configured, ignoring mention", slug)
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Msg("no API key configured, ignoring mention")
 			return
 		}
 
@@ -158,13 +160,13 @@ func (s *Server) handleBrainMention(slug, channelID, senderName, content string)
 		brainDir := brain.BrainDir(s.cfg.DataDir, slug)
 		systemPrompt, err := brain.BuildSystemPrompt(brainDir)
 		if err != nil {
-			log.Printf("[brain:%s] failed to build system prompt: %v", slug, err)
+			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("failed to build system prompt")
 			return
 		}
 
 		wdb, err := s.ws.Open(slug)
 		if err != nil {
-			log.Printf("[brain:%s] workspace error: %v", slug, err)
+			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("workspace error")
 			return
 		}
 
@@ -179,7 +181,7 @@ func (s *Server) handleBrainMention(slug, channelID, senderName, content string)
 		client := brain.NewClient(apiKey, model)
 		response, err := client.Complete(systemPrompt, messages)
 		if err != nil {
-			log.Printf("[brain:%s] LLM error: %v", slug, err)
+			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("LLM error")
 			s.sendBrainMessage(slug, channelID, "Sorry, I encountered an error. Check that the API key is configured correctly.")
 			return
 		}
@@ -194,7 +196,7 @@ func (s *Server) handleBrainMention(slug, channelID, senderName, content string)
 }
 
 // sendBrainMessage saves a message from Brain and broadcasts it.
-func (s *Server) sendBrainMessage(slug, channelID, content string) {
+func (s *Server) sendBrainMessage(slug, channelID, content string, toolsUsed ...string) {
 	wdb, err := s.ws.Open(slug)
 	if err != nil {
 		return
@@ -203,12 +205,18 @@ func (s *Server) sendBrainMessage(slug, channelID, content string) {
 	msgID := id.New()
 	now := time.Now().UTC().Format(time.RFC3339)
 
+	metadata := "{}"
+	if len(toolsUsed) > 0 {
+		metaJSON, _ := json.Marshal(map[string]any{"tools_used": toolsUsed})
+		metadata = string(metaJSON)
+	}
+
 	_, err = wdb.DB.Exec(
-		"INSERT INTO messages (id, channel_id, sender_id, content, created_at) VALUES (?, ?, ?, ?, ?)",
-		msgID, channelID, brain.BrainMemberID, content, now,
+		"INSERT INTO messages (id, channel_id, sender_id, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		msgID, channelID, brain.BrainMemberID, content, metadata, now,
 	)
 	if err != nil {
-		log.Printf("[brain:%s] failed to save message: %v", slug, err)
+		logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("failed to save message")
 		return
 	}
 
@@ -220,6 +228,7 @@ func (s *Server) sendBrainMessage(slug, channelID, content string) {
 		SenderName: brain.BrainName,
 		Content:    content,
 		CreatedAt:  now,
+		ToolsUsed:  toolsUsed,
 	}), "")
 }
 
@@ -244,6 +253,15 @@ func (s *Server) getRecentMessages(wdb *db.WorkspaceDB, channelID string, limit 
 		if err := rows.Scan(&senderID, &senderName, &content); err != nil {
 			continue
 		}
+		// Strip base64 image data and truncate long messages to prevent token overflow
+		origLen := len(content)
+		content = stripBase64Images(content)
+		if len(content) > 4000 {
+			content = content[:4000] + "\n[...truncated]"
+		}
+		if origLen > 10000 {
+			logger.WithCategory(logger.CatBrain).Info().Str("sender", senderName).Int("origLen", origLen).Int("strippedLen", len(content)).Msg("truncated large message")
+		}
 		role := "user"
 		if senderID == brain.BrainMemberID {
 			role = "assistant"
@@ -260,6 +278,29 @@ func (s *Server) getRecentMessages(wdb *db.WorkspaceDB, channelID string, limit 
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
 	return msgs
+}
+
+// stripBase64Images removes base64-encoded image data from message content,
+// replacing it with a short placeholder to prevent token overflow.
+func stripBase64Images(content string) string {
+	// Strip data:image/... base64 inline images
+	for {
+		idx := strings.Index(content, "data:image/")
+		if idx < 0 {
+			break
+		}
+		// Find the end of the base64 data (next whitespace, quote, or paren)
+		end := idx + 11
+		for end < len(content) {
+			c := content[end]
+			if c == ' ' || c == '\n' || c == '"' || c == ')' || c == '\'' || c == '`' || c == ']' {
+				break
+			}
+			end++
+		}
+		content = content[:idx] + "[image]" + content[end:]
+	}
+	return content
 }
 
 // getBrainSettings reads the API key and model from workspace settings.

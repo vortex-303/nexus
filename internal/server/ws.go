@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -14,7 +13,10 @@ import (
 	"github.com/nexus-chat/nexus/internal/brain"
 	"github.com/nexus-chat/nexus/internal/hub"
 	"github.com/nexus-chat/nexus/internal/id"
+	"github.com/nexus-chat/nexus/internal/logger"
+	"github.com/nexus-chat/nexus/internal/metrics"
 	"github.com/nexus-chat/nexus/internal/roles"
+	"github.com/nexus-chat/nexus/internal/search"
 )
 
 const (
@@ -49,7 +51,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		InsecureSkipVerify: true, // Allow any origin in dev
 	})
 	if err != nil {
-		log.Printf("websocket accept: %v", err)
+		logger.WithCategory(logger.CatWebSocket).Error().Err(err).Msg("websocket accept failed")
 		return
 	}
 	wsConn.SetReadLimit(maxMsgSize)
@@ -58,9 +60,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn := hub.NewConn(id.New(), claims.UserID, claims.DisplayName, claims.WorkspaceSlug, claims.Role)
 
 	h.Register(conn)
+	metrics.WSConnectionsActive.WithLabelValues(claims.WorkspaceSlug).Inc()
 
-	// Broadcast presence online
-	h.BroadcastAll(hub.MakeEnvelope(hub.TypePresence, hub.PresencePayload{
+	// Broadcast presence online (low priority — droppable under pressure)
+	h.BroadcastAllLowPriority(hub.MakeEnvelope(hub.TypePresence, hub.PresencePayload{
 		UserID:      conn.UserID,
 		DisplayName: conn.DisplayName,
 		Status:      "online",
@@ -79,8 +82,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	s.wsReader(ctx, wsConn, conn, h)
 
 	// Cleanup
+	metrics.WSConnectionsActive.WithLabelValues(claims.WorkspaceSlug).Dec()
 	h.Unregister(conn)
-	h.BroadcastAll(hub.MakeEnvelope(hub.TypePresence, hub.PresencePayload{
+	h.BroadcastAllLowPriority(hub.MakeEnvelope(hub.TypePresence, hub.PresencePayload{
 		UserID:      conn.UserID,
 		DisplayName: conn.DisplayName,
 		Status:      "offline",
@@ -173,7 +177,7 @@ func (s *Server) handleWSMessage(conn *hub.Conn, h *hub.Hub, env *hub.Envelope) 
 	switch env.Type {
 	case hub.TypeMessageSend:
 		if !s.wsHasPerm(conn, roles.PermChatSend) {
-			s.sendError(conn, "no permission to send messages")
+			s.sendErrorCode(conn, "no permission to send messages", "no_permission")
 			return
 		}
 		s.handleWSSendMessage(conn, h, env.Payload)
@@ -209,6 +213,8 @@ func (s *Server) handleWSMessage(conn *hub.Conn, h *hub.Hub, env *hub.Envelope) 
 		if json.Unmarshal(env.Payload, &p) == nil {
 			conn.Unsubscribe(p.ChannelID)
 		}
+	case hub.TypeChannelRead:
+		s.handleWSChannelRead(conn, h, env.Payload)
 	case hub.TypeChannelClear:
 		if conn.Role != "admin" {
 			s.sendError(conn, "admin only")
@@ -221,13 +227,21 @@ func (s *Server) handleWSMessage(conn *hub.Conn, h *hub.Hub, env *hub.Envelope) 
 }
 
 func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.RawMessage) {
+	// Rate limit: max one message per 200ms
+	sendTime := time.Now()
+	if !conn.LastMessageAt.IsZero() && sendTime.Sub(conn.LastMessageAt) < 200*time.Millisecond {
+		s.sendErrorCode(conn, "sending too fast", "rate_limited")
+		return
+	}
+	conn.LastMessageAt = sendTime
+
 	var p hub.MessageSendPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		s.sendError(conn, "invalid payload")
+		s.sendErrorCode(conn, "invalid payload", "invalid_payload")
 		return
 	}
 	if p.ChannelID == "" || p.Content == "" {
-		s.sendError(conn, "channel_id and content required")
+		s.sendErrorCode(conn, "channel_id and content required", "invalid_payload")
 		return
 	}
 
@@ -248,14 +262,36 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 	msgID := id.New()
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	_, err = wdb.DB.Exec(
-		"INSERT INTO messages (id, channel_id, sender_id, content, created_at) VALUES (?, ?, ?, ?, ?)",
-		msgID, p.ChannelID, conn.UserID, p.Content, now,
-	)
+	// Validate parent_id if provided (must exist in same channel)
+	if p.ParentID != "" {
+		var parentChannel string
+		err := wdb.DB.QueryRow("SELECT channel_id FROM messages WHERE id = ? AND deleted = FALSE", p.ParentID).Scan(&parentChannel)
+		if err != nil || parentChannel != p.ChannelID {
+			s.sendError(conn, "invalid parent_id")
+			return
+		}
+	}
+
+	if p.ParentID != "" {
+		_, err = wdb.DB.Exec(
+			"INSERT INTO messages (id, channel_id, sender_id, content, created_at, parent_id) VALUES (?, ?, ?, ?, ?, ?)",
+			msgID, p.ChannelID, conn.UserID, p.Content, now, p.ParentID,
+		)
+	} else {
+		_, err = wdb.DB.Exec(
+			"INSERT INTO messages (id, channel_id, sender_id, content, created_at) VALUES (?, ?, ?, ?, ?)",
+			msgID, p.ChannelID, conn.UserID, p.Content, now,
+		)
+	}
 	if err != nil {
 		s.sendError(conn, "failed to save message")
 		return
 	}
+
+	s.search.Index(conn.WorkspaceSlug, search.SearchDoc{
+		ID: msgID, Type: "message", Content: p.Content,
+		Sender: conn.DisplayName, ChannelID: p.ChannelID, CreatedAt: now,
+	})
 
 	// Update last-read for sender
 	_, _ = wdb.DB.Exec(
@@ -265,7 +301,7 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 		p.ChannelID, conn.UserID, now, now,
 	)
 
-	// Broadcast to all subscribers (including sender for confirmation)
+	// Send confirmation to sender (with client_id for dedup), broadcast to others
 	out := hub.MakeEnvelope(hub.TypeMessageNew, hub.MessageNewPayload{
 		ID:         msgID,
 		ChannelID:  p.ChannelID,
@@ -273,8 +309,13 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 		SenderName: conn.DisplayName,
 		Content:    p.Content,
 		CreatedAt:  now,
+		ClientID:   p.ClientID,
+		ParentID:   p.ParentID,
 	})
-	h.Broadcast(p.ChannelID, out, "") // Send to everyone including sender
+	h.SendTo(conn.ID, out)
+	h.Broadcast(p.ChannelID, out, conn.ID)
+
+	metrics.MessagesTotal.WithLabelValues(conn.WorkspaceSlug).Inc()
 
 	// Track for memory extraction
 	s.trackMessageAndMaybeExtract(conn.WorkspaceSlug, p.ChannelID)
@@ -302,8 +343,11 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 		triggered[a.ID] = true
 	}
 
-	// Check DM with built-in agents (same pattern as Brain DMs)
+	// Check DM with agents FIRST — DMs always use handleAgentMention (with tools).
+	// This must come before conversation-following to prevent the toolless follow-up
+	// handler from stealing the trigger in DM channels.
 	if chName != "" {
+		// Built-in agents
 		for _, ba := range brain.BuiltinAgents {
 			if strings.Contains(chName, ba.MemberID) && !triggered[ba.ID] {
 				if agent := s.loadAgentByID(conn.WorkspaceSlug, ba.ID); agent != nil && agent.IsActive {
@@ -312,25 +356,37 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 				}
 			}
 		}
-	}
-
-	// @all — trigger agents with trigger_type='all'
-	if strings.Contains(strings.ToLower(p.Content), "@all") {
-		allAgents := s.checkAllAgents(conn.WorkspaceSlug, p.ChannelID)
-		for _, agent := range allAgents {
-			if !triggered[agent.ID] {
-				triggered[agent.ID] = true
-				s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, conn.DisplayName, p.Content, agent)
+		// Custom agents — check if channel name contains any agent's ID
+		if customAgents := s.checkDMAgents(conn.WorkspaceSlug, chName); len(customAgents) > 0 {
+			for _, agent := range customAgents {
+				if !triggered[agent.ID] {
+					triggered[agent.ID] = true
+					s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, conn.DisplayName, p.Content, agent)
+				}
 			}
 		}
 	}
 
-	// always — trigger agents with trigger_type='always'
-	alwaysAgents := s.checkAlwaysAgents(conn.WorkspaceSlug, p.ChannelID)
-	for _, agent := range alwaysAgents {
+	// Conversation-following agents (agents that were @mentioned earlier and are still tracking)
+	followAgents := s.checkFollowingAgents(conn.WorkspaceSlug, p.ChannelID, conn.UserID)
+	for _, agent := range followAgents {
 		if !triggered[agent.ID] {
 			triggered[agent.ID] = true
-			s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, conn.DisplayName, p.Content, agent)
+			s.handleAgentFollowUp(conn.WorkspaceSlug, p.ChannelID, conn.DisplayName, p.Content, agent)
+		}
+	}
+
+	// Channel agents — agents assigned to this channel auto-respond
+	channelAgents := s.checkChannelAgents(conn.WorkspaceSlug, p.ChannelID, conn.UserID)
+	for _, agent := range channelAgents {
+		if !triggered[agent.ID] {
+			triggered[agent.ID] = true
+			// Record response for cooldown tracking
+			if s.convTracker != nil {
+				key := ConversationKey{Slug: conn.WorkspaceSlug, ChannelID: p.ChannelID, AgentID: agent.ID}
+				s.convTracker.RecordResponse(key)
+			}
+			s.handleAgentFollowUp(conn.WorkspaceSlug, p.ChannelID, conn.DisplayName, p.Content, agent)
 		}
 	}
 }
@@ -362,6 +418,10 @@ func (s *Server) handleWSEditMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 		s.sendError(conn, "message not found or not yours")
 		return
 	}
+
+	s.search.Index(conn.WorkspaceSlug, search.SearchDoc{
+		ID: p.MessageID, Type: "message", Content: p.Content, ChannelID: p.ChannelID,
+	})
 
 	h.Broadcast(p.ChannelID, hub.MakeEnvelope(hub.TypeMessageEdited, hub.MessageEditedPayload{
 		MessageID: p.MessageID,
@@ -400,6 +460,8 @@ func (s *Server) handleWSDeleteMessage(conn *hub.Conn, h *hub.Hub, payload json.
 		s.sendError(conn, "message not found or not yours")
 		return
 	}
+
+	s.search.Delete(conn.WorkspaceSlug, p.MessageID)
 
 	h.Broadcast(p.ChannelID, hub.MakeEnvelope(hub.TypeMessageDeleted, hub.MessageDeletedPayload{
 		MessageID: p.MessageID,
@@ -448,11 +510,15 @@ func (s *Server) handleWSTyping(conn *hub.Conn, h *hub.Hub, payload json.RawMess
 	}
 	p.UserID = conn.UserID
 	p.DisplayName = conn.DisplayName
-	h.Broadcast(p.ChannelID, hub.MakeEnvelope(hub.TypeTyping, p), conn.ID)
+	h.BroadcastLowPriority(p.ChannelID, hub.MakeEnvelope(hub.TypeTyping, p), conn.ID)
 }
 
 func (s *Server) sendError(conn *hub.Conn, msg string) {
-	data := hub.MakeEnvelope(hub.TypeError, hub.ErrorPayload{Message: msg})
+	s.sendErrorCode(conn, msg, "")
+}
+
+func (s *Server) sendErrorCode(conn *hub.Conn, msg, code string) {
+	data := hub.MakeEnvelope(hub.TypeError, hub.ErrorPayload{Message: msg, Code: code})
 	select {
 	case conn.Send <- data:
 	default:
@@ -492,8 +558,52 @@ func (s *Server) handleWSClearChannel(conn *hub.Conn, h *hub.Hub, payload json.R
 	}), "")
 }
 
-// autoSubscribeChannel ensures all workspace connections are subscribed to a channel.
-// This fixes the bug where channels created after WebSocket connect (like DMs) don't receive messages.
+func (s *Server) handleWSChannelRead(conn *hub.Conn, h *hub.Hub, payload json.RawMessage) {
+	var p hub.ChannelReadPayload
+	if err := json.Unmarshal(payload, &p); err != nil || p.ChannelID == "" {
+		return
+	}
+
+	wdb, err := s.ws.Open(conn.WorkspaceSlug)
+	if err != nil {
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, _ = wdb.DB.Exec(
+		`INSERT INTO channel_reads (channel_id, user_id, last_read_at)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(channel_id, user_id) DO UPDATE SET last_read_at = ?`,
+		p.ChannelID, conn.UserID, now, now,
+	)
+}
+
+// autoSubscribeChannel ensures relevant connections are subscribed to a channel.
+// For DM channels, only the two participants are subscribed (privacy fix).
+// For public channels, all connections are subscribed.
 func (s *Server) autoSubscribeChannel(conn *hub.Conn, h *hub.Hub, channelID string) {
+	wdb, err := s.ws.Open(conn.WorkspaceSlug)
+	if err != nil {
+		h.SubscribeAll(channelID)
+		return
+	}
+
+	var chType, chName string
+	err = wdb.DB.QueryRow("SELECT type, name FROM channels WHERE id = ?", channelID).Scan(&chType, &chName)
+	if err != nil {
+		h.SubscribeAll(channelID)
+		return
+	}
+
+	if chType == "dm" {
+		// Parse DM name: "dm-{id1}-{id2}" — only subscribe participants
+		trimmed := strings.TrimPrefix(chName, "dm-")
+		parts := strings.SplitN(trimmed, "-", 2)
+		if len(parts) == 2 {
+			h.SubscribeUsersByID(channelID, parts)
+			return
+		}
+	}
+
 	h.SubscribeAll(channelID)
 }

@@ -2,26 +2,47 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { getWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, createWebhook, listWebhooks, deleteWebhook, listWebhookEvents, listEmailThreads, deleteEmailThread, listTelegramChats, deleteTelegramChat } from '$lib/api';
-	import { connect, disconnect, onMessage, sendMessage, sendTyping, clearChannel } from '$lib/ws';
+	import { getWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, createWebhook, listWebhooks, deleteWebhook, listWebhookEvents, listEmailThreads, deleteEmailThread, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, inviteByEmail, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI } from '$lib/api';
+	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
+	import { connect, disconnect, onMessage, sendMessage, sendTyping, sendReaction, removeReaction, clearChannel, markChannelRead, connectionStatus, generateClientId } from '$lib/ws';
 	import { channels, members, messages, activeChannel, typingUsers, onlineUsers } from '$lib/stores/workspace';
 	import type { Channel } from '$lib/stores/workspace';
 	import TiptapEditor from '$lib/editor/TiptapEditor.svelte';
+	import MarkdownEditor from '$lib/editor/MarkdownEditor.svelte';
+	import { htmlToMarkdown, markdownToHtml } from '$lib/editor/markdown-utils';
 	import OrgChart from '$lib/components/OrgChart.svelte';
+	import SearchModal from '$lib/components/SearchModal.svelte';
 
-	const ROLES = ['admin', 'member', 'designer', 'marketing_coordinator', 'marketing_strategist', 'researcher', 'sales', 'guest'];
+	const ROLES = ['admin', 'member', 'designer', 'marketing_coordinator', 'marketing_strategist', 'researcher', 'sales', 'guest', 'custom'];
 
 	let slug = $derived(page.params.slug);
 	let input = $state('');
 	let messagesEl: HTMLElement;
 	let showNewChannel = $state(false);
+	let showNewDM = $state(false);
+	let dmSearchQuery = $state('');
+	let agentIds = $derived(new Set(agentsList.map(a => a.id)));
+	let dmFilteredMembers = $derived.by(() => {
+		const q = dmSearchQuery.toLowerCase();
+		return $members.filter(m => m.id !== currentUser?.uid && m.role !== 'brain' && !agentIds.has(m.id) && (!q || m.display_name.toLowerCase().includes(q)));
+	});
+	let dmFilteredAgents = $derived.by(() => {
+		const q = dmSearchQuery.toLowerCase();
+		return agentsList.filter(a => a.is_active && a.id !== 'brain' && (!q || a.name.toLowerCase().includes(q)));
+	});
 	let newChannelName = $state('');
 	let inviteUrl = $state('');
+	let inviteCode = $state('');
+	let showInviteModal = $state(false);
+	let inviteCopied = $state('');
 	let lastTypingSent = 0;
 	let currentUser = $state(getCurrentUser());
 	let isAdmin = $derived(currentUser?.role === 'admin');
 	let selectedMember = $state<any>(null);
 	let memberDetail = $state<any>(null);
+	let showImageViewer = $state(false);
+	let showSearch = $state(false);
+	let viewerImage = $state<{url: string; alt: string; sender?: string; timestamp?: string; prompt?: string; fileName?: string; fileSize?: number; mime?: string} | null>(null);
 
 	// DM helpers
 	let publicChannels = $derived($channels.filter(ch => ch.type !== 'dm'));
@@ -48,7 +69,7 @@
 	}
 
 	// View state
-	type View = 'chat' | 'board' | 'list' | 'notes' | 'brain' | 'team';
+	type View = 'chat' | 'board' | 'list' | 'brain' | 'team';
 	let activeView = $state<View>('chat');
 
 	// Tasks state
@@ -76,6 +97,9 @@
 	let showNewDoc = $state(false);
 	let creatingDoc = $state(false);
 	let editorRef = $state<TiptapEditor>();
+	let mdEditorRef = $state<MarkdownEditor>();
+	let markdownMode = $state(false);
+	let markdownContent = $state('');
 
 	// User menu state
 	let showUserMenu = $state(false);
@@ -193,6 +217,27 @@
 	// Built-in agents in sidebar
 	let builtinAgents = $derived(agentsList.filter((a: any) => a.is_system && a.id !== 'brain' && a.is_active));
 
+	// Thread panel state
+	let threadId = $state<string | null>(null);
+	let threadMessages = $state<any[]>([]);
+	let threadRoot = $state<any>(null);
+	let threadInput = $state('');
+	let threadMessagesEl: HTMLElement;
+
+	// Emoji picker state
+	let emojiPickerMsgId = $state<string | null>(null);
+	let emojiPickerPos = $state<{x: number; y: number}>({x: 0, y: 0});
+
+	// Drag & drop state
+	let dragOver = $state(false);
+
+	// Unread count for title badge
+	let totalUnread = $derived($channels.reduce((sum, c) => sum + (c.unread || 0), 0));
+
+	// Favorites
+	let favoriteChannels = $derived($channels.filter(ch => ch.is_favorite && ch.type !== 'dm'));
+	let regularChannels = $derived(publicChannels.filter(ch => !ch.is_favorite));
+
 	// @-mention autocomplete
 	let mentionActive = $state(false);
 	let mentionQuery = $state('');
@@ -200,6 +245,12 @@
 	let mentionIndex = $state(0);
 	let mentionStartPos = $state(0);
 	let inputEl: HTMLInputElement | undefined = $state();
+
+	// / slash-command menu
+	let slashActive = $state(false);
+	let slashQuery = $state('');
+	let slashResults: any[] = $state([]);
+	let slashIndex = $state(0);
 
 	// Online members for channel header
 	let onlineMembersList = $state<any[]>([]);
@@ -224,7 +275,10 @@
 	let brainActiveFile = $state('');
 	let brainFileContent = $state('');
 	let brainSaving = $state(false);
-	let brainTab = $state<'settings' | 'definitions' | 'memory' | 'activity' | 'skills' | 'knowledge' | 'integrations'>('settings');
+	let brainTab = $state<'settings' | 'definitions' | 'memory' | 'activity' | 'skills' | 'knowledge' | 'integrations' | 'roles' | 'tools'>('settings');
+	let rolesData = $state<any[]>([]);
+	let rolesLoading = $state(false);
+	let expandedRoles = $state<Set<string>>(new Set());
 	let memories = $state<any[]>([]);
 	let memoryCounts = $state<Record<string, number>>({});
 	let brainActions = $state<any[]>([]);
@@ -232,6 +286,15 @@
 	let brainSkills = $state<any[]>([]);
 	let activeSkill = $state<any>(null);
 	let skillContent = $state('');
+	let skillTemplates = $state<any[]>([]);
+	let showTemplates = $state(false);
+	let showNewSkillForm = $state(false);
+	let newSkillName = $state('');
+	let newSkillTrigger = $state('mention');
+	let newSkillAutonomy = $state('reactive');
+	let newSkillPrompt = $state('');
+	let newSkillDescription = $state('');
+	let generatingSkill = $state(false);
 
 	// Knowledge state
 	let knowledgeItems = $state<any[]>([]);
@@ -256,9 +319,28 @@
 	let emailThreads = $state<any[]>([]);
 	let telegramChats = $state<any[]>([]);
 
+	// MCP Servers state
+	let mcpServers = $state<any[]>([]);
+	let mcpForm = $state({ name: '', transport: 'stdio', command: '', url: '', prefix: '' });
+	let mcpEnvEntries = $state<{key: string, value: string}[]>([]);
+	let mcpSaving = $state(false);
+	let mcpConnectError = $state('');
+	let mcpTemplates = $state<any[]>([]);
+	let mcpTemplateSetup = $state<any>(null);
+	let mcpTemplateEnv = $state<Record<string, string>>({});
+	let mcpTemplateSaving = $state(false);
+	let mcpTemplateError = $state('');
+
 	// Announcement state
 	let announcement = $state<any>(null);
 	let announcementDismissed = $state(false);
+
+	// Account nudge for anonymous users
+	let showAccountNudge = $state(false);
+	let nudgeEmail = $state('');
+	let nudgePassword = $state('');
+	let nudgeSaving = $state(false);
+	let nudgeError = $state('');
 
 	// Dynamic models state
 	let pinnedModels = $state<any[]>([]);
@@ -268,6 +350,8 @@
 	let modelFilter = $state('');
 	let modelBrowserLoading = $state(false);
 	let addedModels = $state<any[]>([]);
+	let workspaceModels = $state<any[]>([]);
+	let modelAvailability = $state<{ model: string; model_available: boolean; fallback_model: string } | null>(null);
 
 	// Team / Agents state
 	let teamTab = $state<'members' | 'agents' | 'orgchart'>('orgchart');
@@ -277,9 +361,14 @@
 	let showTemplateGallery = $state(false);
 	let editingAgent = $state<any>(null);
 	let agentGenerating = $state(false);
+	let agentEditingWithAI = $state(false);
+	let showAIEditInput = $state(false);
+	let aiEditInstruction = $state('');
 	let agentSaving = $state(false);
 	let orgChartNodes = $state<any[]>([]);
 	let orgChartLayout = $state<'vertical' | 'horizontal'>('vertical');
+	let orgRoles = $state<any[]>([]);
+	let allRoles = $derived([...ROLES, ...orgRoles.map((r: any) => r.title.toLowerCase().replace(/\s+/g, '_')).filter((r: string) => !ROLES.includes(r))]);
 
 	// Agent state indicators
 	let agentStates = $state<Map<string, {state: string, toolName: string, channelID: string, agentName: string}>>(new Map());
@@ -294,7 +383,7 @@
 	// Role dialog state
 	let showRoleDialog = $state(false);
 	let roleSaving = $state(false);
-	let roleForm = $state({ title: '', description: '', department: '', reports_to: '' });
+	let roleForm = $state({ title: '', description: '', department: '', reports_to: '', preset: '' });
 	let pendingRoleFill = $state<string | null>(null);
 
 	// OrgChart control callbacks
@@ -308,9 +397,43 @@
 		name: '', description: '', avatar: '', role: '', goal: '', backstory: '', instructions: '',
 		constraints: '', escalation_prompt: '', model: '', temperature: 0.7, max_tokens: 2048,
 		tools: [] as string[], channels: [] as string[], knowledge_access: false, memory_access: false,
-		can_delegate: false, max_iterations: 5, trigger_type: 'mention'
+		can_delegate: false, max_iterations: 5, trigger_type: 'mention',
+		cooldown_seconds: 30, follow_ttl_minutes: 10, follow_max_messages: 20,
+		channel_modes: {} as Record<string, string>
 	});
-	const AGENT_TOOLS = ['create_task', 'list_tasks', 'search_messages', 'create_document', 'search_knowledge'];
+	const BUILTIN_AGENT_TOOLS = ['create_task', 'list_tasks', 'search_messages', 'create_document', 'search_knowledge'];
+	let allAgentTools = $derived([...BUILTIN_AGENT_TOOLS, ...mcpServers.flatMap((s: any) => (s.tools || []).map((t: any) => t.qual_name))]);
+
+	// Slash commands — built from available tools + common actions
+	let slashCommands = $derived(() => {
+		const cmds: {name: string, description: string, action: string}[] = [
+			{ name: 'search', description: 'Search the web', action: '@Brain search the web for ' },
+			{ name: 'fetch', description: 'Fetch a URL', action: '@Brain fetch ' },
+			{ name: 'time', description: 'Get current time', action: '@Brain what time is it' },
+			{ name: 'task', description: 'Create a new task', action: '@Brain create a task: ' },
+			{ name: 'tasks', description: 'List all tasks', action: '@Brain list all tasks' },
+			{ name: 'doc', description: 'Create a document', action: '@Brain create a document about ' },
+			{ name: 'summarize', description: 'Summarize the conversation', action: '@Brain summarize this conversation' },
+			{ name: 'image', description: 'Generate an image', action: '@Brain generate an image of ' },
+			{ name: 'knowledge', description: 'Search the knowledge base', action: '@Brain search knowledge for ' },
+			{ name: 'memory', description: 'What do you remember?', action: '@Brain what do you remember about me?' },
+		];
+		// Add MCP tool commands
+		for (const server of mcpServers) {
+			if (!server.tools) continue;
+			for (const tool of server.tools) {
+				const shortName = tool.qual_name.includes('__') ? tool.qual_name.split('__')[1] : tool.qual_name;
+				// Skip if we already have a similar built-in command
+				if (cmds.some(c => c.name === shortName)) continue;
+				cmds.push({
+					name: shortName,
+					description: tool.description?.substring(0, 60) || tool.qual_name,
+					action: `@Brain use ${tool.qual_name} to `,
+				});
+			}
+		}
+		return cmds;
+	});
 
 	onMount(async () => {
 		if (!getWorkspaceSlug()) { goto('/'); return; }
@@ -326,6 +449,11 @@
 			}
 		} catch {}
 
+		// Show account nudge for anonymous users
+		if (!currentUser?.aid && !localStorage.getItem('nexus_nudge_dismissed')) {
+			showAccountNudge = true;
+		}
+
 		try {
 			const ws = await getWorkspace(slug);
 			members.set(ws.members);
@@ -339,6 +467,12 @@
 			loadAgents().catch(() => {});
 
 			connect();
+
+			// Request desktop notification permission
+			if ('Notification' in window && Notification.permission === 'default') {
+				Notification.requestPermission();
+			}
+
 			const unsub = onMessage(handleWS);
 
 			// Fetch online members periodically
@@ -363,15 +497,152 @@
 		const data = await getMessages(slug, ch.id);
 		messages.set(data.messages);
 		scrollToBottom();
+		// Mark channel as read
+		markChannelRead(ch.id);
+		channels.update(chs => chs.map(c => c.id === ch.id ? { ...c, unread: 0 } : c));
 	}
 
 	function handleWS(type: string, payload: any) {
+		if (type === '_reconnected') {
+			// Gap-fill: re-fetch messages and channels on reconnect
+			let current: Channel | null = null;
+			activeChannel.subscribe(v => current = v)();
+			if (current) {
+				getMessages(slug, current.id).then(data => {
+					messages.set(data.messages);
+					scrollToBottom();
+				}).catch(() => {});
+			}
+			listChannels(slug).then(chs => channels.set(chs)).catch(() => {});
+			return;
+		}
 		if (type === 'message.new') {
 			let current: Channel | null = null;
 			activeChannel.subscribe(v => current = v)();
+			// If this is a reply (has parent_id), update thread panel and root message reply count
+			if (payload.parent_id) {
+				// Update reply count on root message in main list
+				messages.update(msgs => msgs.map(m =>
+					m.id === payload.parent_id ? { ...m, reply_count: (m.reply_count || 0) + 1, latest_reply_at: payload.created_at } : m
+				));
+				// If thread panel is open for this parent, add the reply
+				if (threadId === payload.parent_id) {
+					if (payload.client_id && payload.sender_id === currentUser?.uid) {
+						let found = false;
+						threadMessages = threadMessages.map(m => {
+							if (m.clientId === payload.client_id && m.status === 'pending') {
+								found = true;
+								return { ...m, id: payload.id, status: 'sent' as const, created_at: payload.created_at };
+							}
+							return m;
+						});
+						if (found) return;
+					}
+					threadMessages = [...threadMessages, payload];
+					requestAnimationFrame(() => { if (threadMessagesEl) threadMessagesEl.scrollTop = threadMessagesEl.scrollHeight; });
+				}
+				// Desktop notification for replies
+				if (document.hidden && payload.sender_id !== currentUser?.uid && 'Notification' in window && Notification.permission === 'granted') {
+					const n = new Notification(payload.sender_name, { body: payload.content.substring(0, 100), tag: payload.id });
+					n.onclick = () => { window.focus(); openThread(payload.parent_id); };
+				}
+				// Don't add replies to main message list
+				return;
+			}
+
 			if (payload.channel_id === current?.id) {
+				// Check if this is confirmation of our optimistic message
+				if (payload.client_id && payload.sender_id === currentUser?.uid) {
+					let found = false;
+					messages.update(msgs => msgs.map(m => {
+						if (m.clientId === payload.client_id && m.status === 'pending') {
+							found = true;
+							return { ...m, id: payload.id, status: 'sent' as const, created_at: payload.created_at };
+						}
+						return m;
+					}));
+					if (found) {
+						markChannelRead(current!.id);
+						return;
+					}
+				}
+				// New message from someone else (or no client_id match)
 				messages.update(msgs => [...msgs, payload]);
 				scrollToBottom();
+				markChannelRead(current.id);
+				// Desktop notification
+				if (document.hidden && payload.sender_id !== currentUser?.uid && 'Notification' in window && Notification.permission === 'granted') {
+					const n = new Notification(payload.sender_name, { body: payload.content.substring(0, 100), tag: payload.id });
+					n.onclick = () => { window.focus(); selectChannel($channels.find(c => c.id === payload.channel_id) || current!); };
+				}
+			} else if (payload.sender_id !== currentUser?.uid) {
+				// Increment unread for non-active channel
+				channels.update(chs => chs.map(c =>
+					c.id === payload.channel_id ? { ...c, unread: (c.unread || 0) + 1 } : c
+				));
+				// Desktop notification
+				if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+					const n = new Notification(payload.sender_name, { body: payload.content.substring(0, 100), tag: payload.id });
+					n.onclick = () => { window.focus(); const ch = $channels.find(c => c.id === payload.channel_id); if (ch) selectChannel(ch); };
+				}
+			}
+			// Update title badge
+			updateTitleBadge();
+		} else if (type === 'unread.update') {
+			let current: Channel | null = null;
+			activeChannel.subscribe(v => current = v)();
+			if (payload.channel_id !== current?.id) {
+				channels.update(chs => chs.map(c =>
+					c.id === payload.channel_id ? { ...c, unread: payload.unread } : c
+				));
+			}
+		} else if (type === 'reaction.added') {
+			messages.update(msgs => msgs.map(m => {
+				if (m.id !== payload.message_id) return m;
+				const reactions = [...(m.reactions || [])];
+				const existing = reactions.find(r => r.emoji === payload.emoji);
+				if (existing) {
+					if (!existing.users.includes(payload.user_id)) {
+						existing.count++;
+						existing.users = [...existing.users, payload.user_id];
+					}
+				} else {
+					reactions.push({ emoji: payload.emoji, count: 1, users: [payload.user_id] });
+				}
+				return { ...m, reactions };
+			}));
+			// Update thread messages too
+			if (threadId) {
+				threadMessages = threadMessages.map(m => {
+					if (m.id !== payload.message_id) return m;
+					const reactions = [...(m.reactions || [])];
+					const existing = reactions.find((r: any) => r.emoji === payload.emoji);
+					if (existing) {
+						if (!existing.users.includes(payload.user_id)) { existing.count++; existing.users = [...existing.users, payload.user_id]; }
+					} else {
+						reactions.push({ emoji: payload.emoji, count: 1, users: [payload.user_id] });
+					}
+					return { ...m, reactions };
+				});
+			}
+		} else if (type === 'reaction.removed') {
+			messages.update(msgs => msgs.map(m => {
+				if (m.id !== payload.message_id) return m;
+				let reactions = [...(m.reactions || [])].map(r => {
+					if (r.emoji !== payload.emoji) return r;
+					return { ...r, count: r.count - 1, users: r.users.filter((u: string) => u !== payload.user_id) };
+				}).filter(r => r.count > 0);
+				return { ...m, reactions };
+			}));
+			if (threadId) {
+				threadMessages = threadMessages.map(m => {
+					if (m.id !== payload.message_id) return m;
+					let reactions = [...(m.reactions || [])].map((r: any) => {
+						if (r.emoji !== payload.emoji) return r;
+						return { ...r, count: r.count - 1, users: r.users.filter((u: string) => u !== payload.user_id) };
+					}).filter((r: any) => r.count > 0);
+					return { ...m, reactions };
+				});
 			}
 		} else if (type === 'message.edited') {
 			messages.update(msgs => msgs.map(m =>
@@ -473,11 +744,84 @@
 		let current: Channel | null = null;
 		activeChannel.subscribe(v => current = v)();
 		if (!input.trim() || !current) return;
-		sendMessage(current.id, input.trim());
+
+		const content = input.trim();
+		const clientId = generateClientId();
+
+		// Optimistic: insert pending message immediately
+		const optimistic = {
+			id: clientId,
+			channel_id: current.id,
+			sender_id: currentUser?.uid || '',
+			sender_name: currentUser?.name || '',
+			content,
+			created_at: new Date().toISOString(),
+			status: 'pending' as const,
+			clientId,
+		};
+		messages.update(msgs => [...msgs, optimistic]);
 		input = '';
+		scrollToBottom();
+
+		// Send via WebSocket
+		const sent = sendMessage(current.id, content, clientId);
+		if (!sent) {
+			// Socket not open — message queued, mark as failed for now
+			messages.update(msgs => msgs.map(m =>
+				m.clientId === clientId ? { ...m, status: 'failed' as const } : m
+			));
+		}
+	}
+
+	function retryMessage(clientId: string) {
+		let current: Channel | null = null;
+		activeChannel.subscribe(v => current = v)();
+		if (!current) return;
+
+		let content = '';
+		messages.update(msgs => msgs.map(m => {
+			if (m.clientId === clientId && m.status === 'failed') {
+				content = m.content;
+				return { ...m, status: 'pending' as const };
+			}
+			return m;
+		}));
+		if (content) {
+			const sent = sendMessage(current.id, content, clientId);
+			if (!sent) {
+				messages.update(msgs => msgs.map(m =>
+					m.clientId === clientId ? { ...m, status: 'failed' as const } : m
+				));
+			}
+		}
+	}
+
+	function dismissFailedMessage(clientId: string) {
+		messages.update(msgs => msgs.filter(m => m.clientId !== clientId));
 	}
 
 	function handleInputKeydown(e: KeyboardEvent) {
+		if (slashActive) {
+			if (e.key === 'ArrowDown') {
+				e.preventDefault();
+				slashIndex = (slashIndex + 1) % slashResults.length;
+				return;
+			} else if (e.key === 'ArrowUp') {
+				e.preventDefault();
+				slashIndex = (slashIndex - 1 + slashResults.length) % slashResults.length;
+				return;
+			} else if (e.key === 'Enter' || e.key === 'Tab') {
+				if (slashResults.length > 0) {
+					e.preventDefault();
+					selectSlashCommand(slashResults[slashIndex]);
+					return;
+				}
+			} else if (e.key === 'Escape') {
+				e.preventDefault();
+				slashActive = false;
+				return;
+			}
+		}
 		if (mentionActive) {
 			if (e.key === 'ArrowDown') {
 				e.preventDefault();
@@ -518,23 +862,50 @@
 		if (!el) return;
 		const pos = el.selectionStart ?? 0;
 		const text = el.value.substring(0, pos);
+
+		// Slash command detection — only at start of input
+		if (text.match(/^\/(\w*)$/)) {
+			slashQuery = text.substring(1).toLowerCase();
+			const cmds = slashCommands();
+			slashResults = cmds
+				.filter(c => c.name.startsWith(slashQuery) || slashQuery === '')
+				.slice(0, 10);
+			slashIndex = 0;
+			slashActive = slashResults.length > 0;
+			mentionActive = false;
+			return;
+		} else {
+			slashActive = false;
+		}
+
+		// @-mention detection
 		const atMatch = text.match(/@(\w*)$/);
 		if (atMatch) {
 			mentionStartPos = pos - atMatch[0].length;
 			mentionQuery = atMatch[1].toLowerCase();
-			// Combine members + agents as mention candidates
+			const mentionAgentIds = new Set(agentsList.map((a: any) => a.id));
 			const allCandidates = [
-				...$members.map((m: any) => ({ id: m.id, display_name: m.display_name, role: m.role || 'member' })),
-				...builtinAgents.map((a: any) => ({ id: a.id, display_name: a.name, role: 'agent' }))
+				...$members.filter((m: any) => !mentionAgentIds.has(m.id)).map((m: any) => ({ id: m.id, display_name: m.display_name, role: m.role || 'member' })),
+				...agentsList.filter((a: any) => a.is_active).map((a: any) => ({ id: a.id, display_name: a.name, role: a.is_system ? 'system agent' : 'agent' }))
 			];
 			mentionResults = allCandidates
-				.filter((c: any) => c.display_name.toLowerCase().startsWith(mentionQuery) || (mentionQuery === '' && true))
+				.filter((c: any) => c.display_name.toLowerCase().includes(mentionQuery) || mentionQuery === '')
 				.slice(0, 8);
 			mentionIndex = 0;
 			mentionActive = mentionResults.length > 0;
 		} else {
 			mentionActive = false;
 		}
+	}
+
+	function selectSlashCommand(cmd: any) {
+		input = cmd.action;
+		slashActive = false;
+		// Focus and move cursor to end
+		setTimeout(() => {
+			inputEl?.focus();
+			inputEl?.setSelectionRange(input.length, input.length);
+		}, 0);
 	}
 
 	function insertMention(item: any) {
@@ -561,13 +932,23 @@
 	}
 
 	async function handleInvite() {
-		const data = await createInvite(slug);
-		inviteUrl = location.origin + data.invite_url;
+		showInviteModal = true;
+		inviteUrl = '';
+		inviteCode = '';
+		inviteCopied = '';
+		try {
+			const data = await createInvite(slug);
+			inviteUrl = location.origin + data.invite_url;
+			inviteCode = data.invite_code;
+		} catch (e: any) {
+			alert(e.message);
+		}
 	}
 
-	function handleCopyInvite() {
-		navigator.clipboard.writeText(inviteUrl);
-		inviteUrl = '';
+	function handleCopyInvite(text: string, label: string) {
+		navigator.clipboard.writeText(text);
+		inviteCopied = label;
+		setTimeout(() => { inviteCopied = ''; }, 2000);
 	}
 
 	async function handleMemberClick(member: any) {
@@ -597,7 +978,9 @@
 		selectedMember = member;
 		try {
 			memberDetail = await getMember(slug, member.id);
-		} catch {
+			if (orgRoles.length === 0) loadOrgRoles();
+		} catch (err: any) {
+			console.error('[manage-member] failed to load member:', member.id, err);
 			memberDetail = null;
 		}
 	}
@@ -608,6 +991,16 @@
 			await updateMemberRole(slug, selectedMember.id, role);
 			selectedMember = { ...selectedMember, role };
 			members.update(mems => mems.map(m => m.id === selectedMember.id ? { ...m, role } : m));
+			memberDetail = await getMember(slug, selectedMember.id);
+		} catch (e: any) {
+			alert(e.message);
+		}
+	}
+
+	async function handleTogglePermission(perm: string, currentlyGranted: boolean) {
+		if (!selectedMember) return;
+		try {
+			await updateMemberPermission(slug, selectedMember.id, perm, !currentlyGranted);
 			memberDetail = await getMember(slug, selectedMember.id);
 		} catch (e: any) {
 			alert(e.message);
@@ -631,9 +1024,6 @@
 		memberDetail = null;
 		if ((activeView === 'board' || activeView === 'list') && tasks.length === 0) {
 			await loadTasks();
-		}
-		if (activeView === 'notes' && docs.length === 0) {
-			await loadDocs();
 		}
 		if (activeView === 'brain') {
 			await loadBrainSettings();
@@ -713,6 +1103,47 @@
 
 	function isImageMime(mime: string): boolean {
 		return mime?.startsWith('image/');
+	}
+
+	function openImageViewer(info: {url: string; alt: string; sender?: string; timestamp?: string; prompt?: string; fileName?: string; fileSize?: number; mime?: string}) {
+		viewerImage = info;
+		showImageViewer = true;
+	}
+
+	function downloadImage(url: string, fileName: string) {
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = fileName;
+		a.click();
+	}
+
+	function handleGlobalKeydown(e: KeyboardEvent) {
+		if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+			e.preventDefault();
+			showSearch = !showSearch;
+			return;
+		}
+		if (e.key === 'Escape' && showSearch) {
+			showSearch = false;
+			e.stopPropagation();
+			return;
+		}
+		if (e.key === 'Escape' && showImageViewer) {
+			showImageViewer = false;
+			e.stopPropagation();
+		}
+	}
+
+	function handleSearchNavigate(type: string, resultId: string) {
+		if (type === 'document') {
+			goto(`/w/${slug}/files`);
+			return;
+		} else if (type === 'task') {
+			activeView = 'board';
+		} else if (type === 'knowledge') {
+			activeView = 'brain';
+		}
+		// For messages, stay in chat view (default)
 	}
 
 	function getMemberName(memberId: string): string {
@@ -811,6 +1242,23 @@
 			brainExtractFreq = parseInt(brainSettings.extraction_frequency) || 15;
 			brainApiKey = '';
 			await loadPinnedModels();
+			await loadWorkspaceModels();
+			await loadModelAvailability();
+		} catch {}
+	}
+
+	async function loadWorkspaceModels() {
+		try {
+			const res = await getWorkspaceModels(slug);
+			workspaceModels = res.models || [];
+			// Sync addedModels from persisted workspace models
+			addedModels = workspaceModels.map((m: any) => ({ id: m.id, display_name: m.display_name }));
+		} catch {}
+	}
+
+	async function loadModelAvailability() {
+		try {
+			modelAvailability = await checkModelAvailability(slug);
 		} catch {}
 	}
 
@@ -852,6 +1300,40 @@
 		} catch {
 			brainFileContent = '';
 		}
+	}
+
+	const PERM_GROUPS = [
+		{ label: 'Chat', perms: ['chat.send', 'chat.edit_own', 'chat.delete_own', 'chat.delete_any', 'chat.react'] },
+		{ label: 'Channels', perms: ['channel.create', 'channel.archive'] },
+		{ label: 'Tasks', perms: ['task.create', 'task.assign', 'task.edit', 'task.delete'] },
+		{ label: 'Contacts', perms: ['contact.view', 'contact.create', 'contact.edit', 'contact.delete'] },
+		{ label: 'Brain', perms: ['brain.mention', 'brain.dm', 'brain.config'] },
+		{ label: 'Agents', perms: ['agent.create', 'agent.manage'] },
+		{ label: 'Documents', perms: ['doc.create', 'doc.edit', 'doc.delete'] },
+		{ label: 'Files', perms: ['file.upload'] },
+		{ label: 'Knowledge', perms: ['knowledge.manage'] },
+		{ label: 'Workspace', perms: ['workspace.settings', 'workspace.invite', 'workspace.roles', 'workspace.kick'] },
+	];
+
+	async function loadRoles() {
+		rolesLoading = true;
+		try { rolesData = await listRoles(); } catch { rolesData = []; }
+		rolesLoading = false;
+	}
+
+	function toggleRoleExpand(name: string) {
+		const next = new Set(expandedRoles);
+		if (next.has(name)) next.delete(name); else next.add(name);
+		expandedRoles = next;
+	}
+
+	function formatRoleName(name: string) {
+		return name.replace(/_/g, ' ');
+	}
+
+	function shortPermLabel(perm: string) {
+		const parts = perm.split('.');
+		return parts[parts.length - 1].replace(/_/g, ' ');
 	}
 
 	async function loadMemories() {
@@ -935,6 +1417,67 @@
 		}
 	}
 
+	async function handleToggleSkill(skill: any) {
+		try {
+			await toggleSkill(slug, skill.file_name, !skill.enabled);
+			await loadSkills();
+		} catch (e: any) {
+			alert(e.message);
+		}
+	}
+
+	async function loadSkillTemplates() {
+		try {
+			const data = await listSkillTemplates(slug);
+			skillTemplates = data.templates || [];
+		} catch {}
+	}
+
+	async function installTemplate(tmpl: any) {
+		try {
+			const content = tmpl.content || `---\nname: ${tmpl.name}\ndescription: ${tmpl.description}\ntrigger: ${tmpl.trigger}\nautonomy: ${tmpl.autonomy}\n---\n\n${tmpl.prompt}`;
+			await createSkill(slug, tmpl.file_name, content);
+			await loadSkills();
+			await loadSkillTemplates();
+		} catch (e: any) {
+			alert(e.message);
+		}
+	}
+
+	async function handleGenerateSkill() {
+		if (!newSkillDescription.trim()) return;
+		generatingSkill = true;
+		try {
+			const config: any = await generateSkill(slug, newSkillDescription);
+			newSkillName = config.name || '';
+			newSkillTrigger = config.trigger || 'mention';
+			newSkillAutonomy = config.autonomy || 'reactive';
+			newSkillPrompt = config.prompt || '';
+		} catch (e: any) {
+			alert(e.message || 'Failed to generate skill');
+		} finally {
+			generatingSkill = false;
+		}
+	}
+
+	async function handleCreateSkill() {
+		if (!newSkillName.trim()) return;
+		const fileName = newSkillName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '.md';
+		const content = `---\nname: ${newSkillName}\ndescription: \ntrigger: ${newSkillTrigger}\nautonomy: ${newSkillAutonomy}\n---\n\n${newSkillPrompt}`;
+		try {
+			await createSkill(slug, fileName, content);
+			await loadSkills();
+			showNewSkillForm = false;
+			newSkillName = '';
+			newSkillTrigger = 'mention';
+			newSkillAutonomy = 'reactive';
+			newSkillPrompt = '';
+			newSkillDescription = '';
+		} catch (e: any) {
+			alert(e.message);
+		}
+	}
+
 	// Knowledge functions
 	async function loadKnowledge() {
 		try {
@@ -942,6 +1485,111 @@
 			knowledgeItems = data.articles || [];
 		} catch (e: any) {
 			console.error('Failed to load knowledge:', e);
+		}
+	}
+
+	async function loadMCPServersData() {
+		try {
+			mcpServers = await listMCPServers(slug);
+		} catch (e: any) {
+			console.error('Failed to load MCP servers:', e);
+		}
+	}
+
+	async function loadMCPTemplates() {
+		try {
+			mcpTemplates = await listMCPTemplates();
+		} catch (e: any) {
+			console.error('Failed to load MCP templates:', e);
+		}
+	}
+
+	function openTemplateSetup(template: any) {
+		mcpTemplateSetup = template;
+		mcpTemplateEnv = {};
+		mcpTemplateError = '';
+		// Pre-fill env var keys
+		for (const v of (template.env_vars || [])) {
+			mcpTemplateEnv[v.key] = '';
+		}
+	}
+
+	async function handleAddFromTemplate() {
+		if (!mcpTemplateSetup) return;
+		mcpTemplateSaving = true;
+		mcpTemplateError = '';
+		try {
+			const t = mcpTemplateSetup;
+			const env: Record<string, string> = {};
+			for (const [k, v] of Object.entries(mcpTemplateEnv)) {
+				if (v) env[k] = v;
+			}
+			const result = await createMCPServer(slug, {
+				name: t.name,
+				transport: t.transport,
+				command: t.command,
+				tool_prefix: t.prefix || undefined,
+				env: Object.keys(env).length > 0 ? env : undefined,
+			});
+			if (result.connect_error) {
+				mcpTemplateError = result.connect_error;
+			} else {
+				mcpTemplateSetup = null;
+			}
+			await loadMCPServersData();
+		} catch (e: any) {
+			mcpTemplateError = e.message;
+		} finally {
+			mcpTemplateSaving = false;
+		}
+	}
+
+	async function handleCreateMCPServer() {
+		if (!mcpForm.name) return;
+		mcpSaving = true;
+		mcpConnectError = '';
+		try {
+			const env: Record<string, string> = {};
+			for (const e of mcpEnvEntries) {
+				if (e.key) env[e.key] = e.value;
+			}
+			const result = await createMCPServer(slug, {
+				name: mcpForm.name,
+				transport: mcpForm.transport,
+				command: mcpForm.transport === 'stdio' ? mcpForm.command : undefined,
+				url: mcpForm.transport === 'sse' ? mcpForm.url : undefined,
+				tool_prefix: mcpForm.prefix || undefined,
+				env: Object.keys(env).length > 0 ? env : undefined,
+			});
+			if (result.connect_error) {
+				mcpConnectError = result.connect_error;
+			}
+			mcpForm = { name: '', transport: 'stdio', command: '', url: '', prefix: '' };
+			mcpEnvEntries = [];
+			await loadMCPServersData();
+		} catch (e: any) {
+			mcpConnectError = e.message;
+		} finally {
+			mcpSaving = false;
+		}
+	}
+
+	async function handleRefreshMCP(id: string) {
+		try {
+			await refreshMCPServer(slug, id);
+			await loadMCPServersData();
+		} catch (e: any) {
+			alert('Refresh failed: ' + e.message);
+		}
+	}
+
+	async function handleDeleteMCP(id: string) {
+		if (!confirm('Delete this MCP server?')) return;
+		try {
+			await deleteMCPServer(slug, id);
+			mcpServers = mcpServers.filter(s => s.id !== id);
+		} catch (e: any) {
+			alert(e.message);
 		}
 	}
 
@@ -1195,6 +1843,10 @@
 		} catch {}
 	}
 
+	async function loadOrgRoles() {
+		try { orgRoles = await listOrgRoles(slug); } catch { orgRoles = []; }
+	}
+
 	async function handleOrgReparent(nodeId: string, newParentId: string) {
 		try {
 			await updateOrgPosition(slug, nodeId, newParentId);
@@ -1208,9 +1860,24 @@
 		selectedNodeForPanel = selectedNodeForPanel?.id === node.id ? null : node;
 	}
 
+	const ROLE_LABELS: Record<string, string> = {
+		admin: 'Admin', member: 'Member', designer: 'Designer',
+		marketing_coordinator: 'Marketing Coordinator', marketing_strategist: 'Marketing Strategist',
+		researcher: 'Researcher', sales: 'Sales', guest: 'Guest', custom: 'Custom'
+	};
+
 	function handleAddOrgRole() {
-		roleForm = { title: '', description: '', department: '', reports_to: '' };
+		roleForm = { title: '', description: '', department: '', reports_to: '', preset: '' };
 		showRoleDialog = true;
+	}
+
+	function handleRolePresetChange(value: string) {
+		roleForm.preset = value;
+		if (value && value !== '_custom') {
+			roleForm.title = ROLE_LABELS[value] || value;
+		} else {
+			roleForm.title = '';
+		}
 	}
 
 	async function handleCreateRole() {
@@ -1341,7 +2008,9 @@ autonomy: reactive
 			name: '', description: '', avatar: '', role: '', goal: '', backstory: '', instructions: '',
 			constraints: '', escalation_prompt: '', model: '', temperature: 0.7, max_tokens: 2048,
 			tools: [], channels: [], knowledge_access: false, memory_access: false,
-			can_delegate: false, max_iterations: 5, trigger_type: 'mention'
+			can_delegate: false, max_iterations: 5, trigger_type: 'mention',
+			cooldown_seconds: 30, follow_ttl_minutes: 10, follow_max_messages: 20,
+			channel_modes: {}
 		};
 	}
 
@@ -1354,6 +2023,7 @@ autonomy: reactive
 
 	function openEditAgent(agent: any) {
 		editingAgent = agent;
+		const bc = agent.behavior_config || {};
 		agentForm = {
 			name: agent.name, description: agent.description, avatar: agent.avatar,
 			role: agent.role, goal: agent.goal, backstory: agent.backstory,
@@ -1364,7 +2034,11 @@ autonomy: reactive
 			channels: JSON.parse(JSON.stringify(agent.channels || '[]')),
 			knowledge_access: agent.knowledge_access, memory_access: agent.memory_access,
 			can_delegate: agent.can_delegate, max_iterations: agent.max_iterations,
-			trigger_type: agent.trigger_type || 'mention'
+			trigger_type: agent.trigger_type || 'mention',
+			cooldown_seconds: bc.cooldown_seconds || 30,
+			follow_ttl_minutes: bc.follow_ttl_minutes || 10,
+			follow_max_messages: bc.follow_max_messages || 20,
+			channel_modes: bc.channel_modes || {}
 		};
 		// Parse tools/channels if they're strings
 		if (typeof agentForm.tools === 'string') agentForm.tools = JSON.parse(agentForm.tools);
@@ -1376,15 +2050,38 @@ autonomy: reactive
 		if (!agent.is_system) loadAgentSkills(agent.id);
 	}
 
+	function coerceToString(val: any): string {
+		if (Array.isArray(val)) return val.join('\n');
+		if (typeof val === 'object' && val !== null) return JSON.stringify(val);
+		return String(val || '');
+	}
+
 	async function handleSaveAgent() {
 		if (!agentForm.name.trim()) { alert('Name is required'); return; }
 		agentSaving = true;
+		// Build behavior_config from flat form fields
+		const behaviorConfig: Record<string, any> = {
+			cooldown_seconds: agentForm.cooldown_seconds || 30,
+			follow_ttl_minutes: agentForm.follow_ttl_minutes || 0,
+			follow_max_messages: agentForm.follow_max_messages || 20,
+			channel_modes: agentForm.channel_modes || {}
+		};
+		// Coerce fields that LLM may return as arrays instead of strings
+		const { follow_ttl_minutes, follow_max_messages, cooldown_seconds, channel_modes, ...rest } = agentForm;
+		const payload = {
+			...rest,
+			instructions: coerceToString(agentForm.instructions),
+			constraints: coerceToString(agentForm.constraints),
+			backstory: coerceToString(agentForm.backstory),
+			escalation_prompt: coerceToString(agentForm.escalation_prompt),
+			behavior_config: behaviorConfig,
+		};
 		try {
 			let newAgent;
 			if (editingAgent) {
-				await updateAgent(slug, editingAgent.id, agentForm);
+				await updateAgent(slug, editingAgent.id, payload);
 			} else {
-				newAgent = await createAgent(slug, agentForm);
+				newAgent = await createAgent(slug, payload);
 			}
 			showAgentForm = false;
 			await loadAgents();
@@ -1444,13 +2141,15 @@ autonomy: reactive
 			const config = await generateAgentConfig(slug, desc);
 			agentForm = {
 				name: config.name || '', description: config.description || '', avatar: config.avatar || '',
-				role: config.role || '', goal: config.goal || '', backstory: config.backstory || '',
-				instructions: config.instructions || '', constraints: config.constraints || '',
-				escalation_prompt: config.escalation_prompt || '', model: '', temperature: 0.7, max_tokens: 2048,
-				tools: config.tools || [], channels: [],
-				knowledge_access: config.knowledge_access || false,
-				memory_access: config.memory_access || false,
-				can_delegate: false, max_iterations: 5, trigger_type: 'mention'
+				role: config.role || '', goal: config.goal || '', backstory: coerceToString(config.backstory),
+				instructions: coerceToString(config.instructions), constraints: coerceToString(config.constraints),
+				escalation_prompt: coerceToString(config.escalation_prompt), model: '', temperature: 0.7, max_tokens: 2048,
+				tools: Array.isArray(config.tools) ? config.tools : [], channels: [],
+				knowledge_access: !!config.knowledge_access,
+				memory_access: !!config.memory_access,
+				can_delegate: false, max_iterations: 5, trigger_type: 'mention',
+				cooldown_seconds: 30, follow_ttl_minutes: 10, follow_max_messages: 20,
+				channel_modes: {}
 			};
 			editingAgent = null;
 			showAgentForm = true;
@@ -1458,6 +2157,48 @@ autonomy: reactive
 			alert(e.message);
 		} finally {
 			agentGenerating = false;
+		}
+	}
+
+	async function handleEditWithAI() {
+		if (!aiEditInstruction.trim()) return;
+		agentEditingWithAI = true;
+		try {
+			const current = {
+				name: agentForm.name, description: agentForm.description, avatar: agentForm.avatar,
+				role: agentForm.role, goal: agentForm.goal, backstory: agentForm.backstory,
+				instructions: agentForm.instructions, constraints: agentForm.constraints,
+				escalation_prompt: agentForm.escalation_prompt, tools: agentForm.tools,
+				knowledge_access: agentForm.knowledge_access, memory_access: agentForm.memory_access,
+				can_delegate: agentForm.can_delegate, temperature: agentForm.temperature,
+				max_iterations: agentForm.max_iterations, trigger_type: agentForm.trigger_type,
+			};
+			const config = await editAgentWithAI(slug, aiEditInstruction, current);
+			agentForm = {
+				...agentForm,
+				name: config.name ?? agentForm.name,
+				description: config.description ?? agentForm.description,
+				avatar: config.avatar ?? agentForm.avatar,
+				role: config.role ?? agentForm.role,
+				goal: config.goal ?? agentForm.goal,
+				backstory: coerceToString(config.backstory ?? agentForm.backstory),
+				instructions: coerceToString(config.instructions ?? agentForm.instructions),
+				constraints: coerceToString(config.constraints ?? agentForm.constraints),
+				escalation_prompt: coerceToString(config.escalation_prompt ?? agentForm.escalation_prompt),
+				tools: Array.isArray(config.tools) ? config.tools : agentForm.tools,
+				knowledge_access: config.knowledge_access ?? agentForm.knowledge_access,
+				memory_access: config.memory_access ?? agentForm.memory_access,
+				can_delegate: config.can_delegate ?? agentForm.can_delegate,
+				temperature: config.temperature ?? agentForm.temperature,
+				max_iterations: config.max_iterations ?? agentForm.max_iterations,
+				trigger_type: config.trigger_type ?? agentForm.trigger_type,
+			};
+			aiEditInstruction = '';
+			showAIEditInput = false;
+		} catch (e: any) {
+			alert(e.message);
+		} finally {
+			agentEditingWithAI = false;
 		}
 	}
 
@@ -1472,7 +2213,7 @@ autonomy: reactive
 	async function handleTeamTabChange(tab: 'members' | 'agents' | 'orgchart') {
 		teamTab = tab;
 		if (tab === 'agents' && agentsList.length === 0) await loadAgents();
-		if (tab === 'orgchart') await loadOrgChart();
+		if (tab === 'orgchart') { await loadOrgChart(); if (orgRoles.length === 0) loadOrgRoles(); }
 	}
 
 	async function handleUpdateProfile(memberId: string, field: string, value: string) {
@@ -1579,6 +2320,152 @@ autonomy: reactive
 		return { text, images, imagePrompt };
 	}
 
+	// Thread functions
+	async function openThread(msgId: string) {
+		let current: Channel | null = null;
+		activeChannel.subscribe(v => current = v)();
+		if (!current) return;
+		threadId = msgId;
+		try {
+			const data = await getThread(slug, current.id, msgId);
+			threadMessages = data.messages || [];
+			threadRoot = threadMessages.find((m: any) => m.id === msgId) || null;
+			requestAnimationFrame(() => { if (threadMessagesEl) threadMessagesEl.scrollTop = threadMessagesEl.scrollHeight; });
+		} catch { threadMessages = []; threadRoot = null; }
+	}
+
+	function closeThread() {
+		threadId = null;
+		threadMessages = [];
+		threadRoot = null;
+		threadInput = '';
+	}
+
+	function handleThreadSend() {
+		let current: Channel | null = null;
+		activeChannel.subscribe(v => current = v)();
+		if (!threadInput.trim() || !current || !threadId) return;
+		const content = threadInput.trim();
+		const clientId = generateClientId();
+		const optimistic = {
+			id: clientId, channel_id: current.id, sender_id: currentUser?.uid || '',
+			sender_name: currentUser?.name || '', content, created_at: new Date().toISOString(),
+			status: 'pending' as const, clientId, parent_id: threadId,
+		};
+		threadMessages = [...threadMessages, optimistic];
+		threadInput = '';
+		requestAnimationFrame(() => { if (threadMessagesEl) threadMessagesEl.scrollTop = threadMessagesEl.scrollHeight; });
+		sendMessage(current.id, content, clientId, threadId);
+	}
+
+	function handleThreadKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleThreadSend(); }
+	}
+
+	// Emoji picker
+	function openEmojiPicker(msgId: string, event: MouseEvent) {
+		const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+		emojiPickerPos = { x: rect.left, y: rect.top - 10 };
+		emojiPickerMsgId = msgId;
+	}
+
+	function handleEmojiSelect(emoji: string) {
+		if (!emojiPickerMsgId) return;
+		let current: Channel | null = null;
+		activeChannel.subscribe(v => current = v)();
+		if (!current) return;
+		// Check if already reacted
+		let msg: any = null;
+		messages.subscribe(msgs => { msg = msgs.find(m => m.id === emojiPickerMsgId); })();
+		if (!msg) { threadMessages.forEach(m => { if (m.id === emojiPickerMsgId) msg = m; }); }
+		const existing = msg?.reactions?.find((r: any) => r.emoji === emoji);
+		if (existing?.users?.includes(currentUser?.uid)) {
+			removeReaction(emojiPickerMsgId!, current.id, emoji);
+		} else {
+			sendReaction(emojiPickerMsgId!, current.id, emoji);
+		}
+		emojiPickerMsgId = null;
+	}
+
+	function toggleReaction(msg: any, emoji: string) {
+		let current: Channel | null = null;
+		activeChannel.subscribe(v => current = v)();
+		if (!current) return;
+		const existing = msg.reactions?.find((r: any) => r.emoji === emoji);
+		if (existing?.users?.includes(currentUser?.uid)) {
+			removeReaction(msg.id, current.id, emoji);
+		} else {
+			sendReaction(msg.id, current.id, emoji);
+		}
+	}
+
+	// Desktop notification title badge
+	function updateTitleBadge() {
+		const count = $channels.reduce((sum, c) => sum + (c.unread || 0), 0);
+		document.title = count > 0 ? `(${count}) nexus` : 'nexus';
+	}
+
+	// Favorites
+	async function handleToggleFavorite(channelId: string) {
+		try {
+			const result = await toggleFavorite(slug, channelId);
+			channels.update(chs => chs.map(c =>
+				c.id === channelId ? { ...c, is_favorite: result.is_favorite } : c
+			));
+		} catch {}
+	}
+
+	// Drag & drop file upload
+	function handleDrop(e: DragEvent) {
+		e.preventDefault();
+		dragOver = false;
+		const file = e.dataTransfer?.files?.[0];
+		if (file) uploadFileToChannel(file);
+	}
+
+	function handleDragOver(e: DragEvent) {
+		e.preventDefault();
+		dragOver = true;
+	}
+
+	// Clipboard paste for images
+	function handlePaste(e: ClipboardEvent) {
+		const items = e.clipboardData?.items;
+		if (!items) return;
+		for (const item of items) {
+			if (item.type.startsWith('image/')) {
+				e.preventDefault();
+				const file = item.getAsFile();
+				if (file) uploadFileToChannel(file);
+				return;
+			}
+		}
+	}
+
+	async function uploadFileToChannel(file: File) {
+		let current: Channel | null = null;
+		activeChannel.subscribe(v => current = v)();
+		if (!current) return;
+		uploading = true;
+		try {
+			await uploadFile(slug, current.id, file);
+		} catch (err: any) {
+			alert(err.message);
+		} finally {
+			uploading = false;
+		}
+	}
+
+	function formatReplyTime(iso: string) {
+		const d = new Date(iso);
+		const now = new Date();
+		const diff = now.getTime() - d.getTime();
+		if (diff < 60000) return 'just now';
+		if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+		if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+		return d.toLocaleDateString();
+	}
+
 	function scrollToBottom() {
 		requestAnimationFrame(() => {
 			if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -1590,6 +2477,12 @@ autonomy: reactive
 	}
 </script>
 
+<svelte:window onkeydown={handleGlobalKeydown} />
+
+{#if showSearch}
+<SearchModal {slug} onclose={() => showSearch = false} onnavigate={handleSearchNavigate} />
+{/if}
+
 {#if announcement && !announcementDismissed}
 <div class="announcement-banner" data-type={announcement.type}>
 	<span class="announcement-text">{announcement.message}</span>
@@ -1597,9 +2490,16 @@ autonomy: reactive
 </div>
 {/if}
 
+{#if showAccountNudge}
+<div class="announcement-banner" data-type="warning">
+	<span class="announcement-text">No account linked — this workspace only exists in this browser. Create a new workspace with email to keep access across devices.</span>
+	<button class="announcement-dismiss" onclick={() => { showAccountNudge = false; localStorage.setItem('nexus_nudge_dismissed', '1'); }}>&times;</button>
+</div>
+{/if}
+
 <div class="workspace">
 	<!-- Sidebar -->
-	<aside class="sidebar">
+	<aside class="sidebar" class:hidden={activeView === 'brain'}>
 		<div class="sidebar-header">
 			<div class="logo-row">
 				<svg width="20" height="20" viewBox="0 0 40 40" fill="none">
@@ -1612,18 +2512,70 @@ autonomy: reactive
 		</div>
 
 		<nav class="sidebar-nav">
-			<!-- View Dropdown -->
-			<div class="view-dropdown-wrap">
-				<select class="view-dropdown" bind:value={activeView} onchange={() => onViewChange()}>
-					<option value="chat">Chat</option>
-					<option value="board">Tasks — Board</option>
-					<option value="list">Tasks — List</option>
-					<option value="notes">Notes</option>
-					<option value="team">Team</option>
-				</select>
+			<!-- Feature pages -->
+			<div class="nav-section">
+				<div class="nav-section-header"><span>Pages</span></div>
+				<button class="nav-item" onclick={() => goto(`/w/${slug}/tasks`)}>
+					<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;opacity:0.5">
+						<rect x="2" y="2" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+						<path d="M5 7L6.5 8.5L9 5.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+					</svg>
+					<span class="channel-name">Tasks</span>
+				</button>
+				<button class="nav-item" onclick={() => goto(`/w/${slug}/brain`)}>
+					<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;opacity:0.5">
+						<circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.2"/>
+						<circle cx="7" cy="7" r="2" fill="currentColor" opacity="0.5"/>
+					</svg>
+					<span class="channel-name">Brain Chat</span>
+				</button>
+				<button class="nav-item" onclick={() => goto(`/w/${slug}/files`)}>
+					<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;opacity:0.5">
+						<path d="M2 5a1 1 0 011-1h3l2 2h4a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1V5z" stroke="currentColor" stroke-width="1.2"/>
+					</svg>
+					<span class="channel-name">Files</span>
+				</button>
+				<button class="nav-item" onclick={() => goto(`/w/${slug}/calendar`)}>
+					<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;opacity:0.5">
+						<rect x="2" y="3" width="10" height="9" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+						<path d="M2 6h10" stroke="currentColor" stroke-width="1.2"/>
+						<path d="M5 1.5v3M9 1.5v3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+					</svg>
+					<span class="channel-name">Calendar</span>
+				</button>
+					<button class="nav-item" class:active={activeView === 'team'} onclick={() => { activeView = 'team'; onViewChange(); }}>
+					<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;opacity:0.5">
+						<circle cx="5" cy="4" r="2" stroke="currentColor" stroke-width="1.2"/>
+						<circle cx="10" cy="4" r="1.5" stroke="currentColor" stroke-width="1.2"/>
+						<path d="M1 12c0-2 1.5-3.5 4-3.5s4 1.5 4 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+						<path d="M10 8c1.5 0 3 1 3 2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+					</svg>
+					<span class="channel-name">Team</span>
+				</button>
 			</div>
 
 			{#if activeView === 'chat'}
+				<!-- Favorites -->
+				{#if favoriteChannels.length > 0}
+				<div class="nav-section">
+					<div class="nav-section-header"><span>Favorites</span></div>
+					{#each favoriteChannels as ch}
+						<button
+							class="nav-item"
+							class:active={$activeChannel?.id === ch.id}
+							class:unread={ch.unread && ch.unread > 0}
+							onclick={() => selectChannel(ch)}
+						>
+							<span class="channel-hash star-icon">★</span>
+							<span class="channel-name">{ch.name}</span>
+							{#if ch.unread && ch.unread > 0}
+								<span class="unread-badge">{ch.unread > 99 ? '99+' : ch.unread}</span>
+							{/if}
+						</button>
+					{/each}
+				</div>
+				{/if}
+
 				<!-- Channels -->
 				<div class="nav-section">
 					<div class="nav-section-header">
@@ -1646,99 +2598,54 @@ autonomy: reactive
 						</div>
 					{/if}
 
-					{#each publicChannels as ch}
+					{#each regularChannels as ch}
 						<button
 							class="nav-item"
 							class:active={$activeChannel?.id === ch.id}
+							class:unread={ch.unread && ch.unread > 0}
 							onclick={() => selectChannel(ch)}
 						>
 							<span class="channel-hash">#</span>
 							<span class="channel-name">{ch.name}</span>
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<span class="star-btn" class:starred={ch.is_favorite} onclick={(e) => { e.stopPropagation(); handleToggleFavorite(ch.id); }} title={ch.is_favorite ? 'Remove from favorites' : 'Add to favorites'}>
+								{ch.is_favorite ? '★' : '☆'}
+							</span>
+							{#if ch.unread && ch.unread > 0}
+								<span class="unread-badge">{ch.unread > 99 ? '99+' : ch.unread}</span>
+							{/if}
 						</button>
 					{/each}
 				</div>
 
 				<!-- Direct Messages -->
-				{#if dmChannels.length > 0}
-					<div class="nav-section">
-						<div class="nav-section-header">
-							<span>Direct Messages</span>
-						</div>
-
-						{#each dmChannels as ch}
-							<button
-								class="nav-item"
-								class:active={$activeChannel?.id === ch.id}
-								onclick={() => selectChannel(ch)}
-							>
-								<span class="channel-hash">@</span>
-								<span class="channel-name">{getDMPartnerName(ch)}</span>
-							</button>
-						{/each}
-					</div>
-				{/if}
-
-				<!-- Members -->
 				<div class="nav-section">
 					<div class="nav-section-header">
-						<span>Members</span>
-						<span class="member-count">{$members.length}</span>
-					</div>
-
-					{#each $members as member}
-						<div class="member-row-wrap">
-							<button
-								class="member-row"
-								class:clickable={member.id !== currentUser?.uid}
-								class:selected={selectedMember?.id === member.id}
-								onclick={() => handleMemberClick(member)}
-							>
-								<span class="presence" class:online={member.online}></span>
-								<span class="member-name">{member.display_name}</span>
-								{#if member.role && member.role !== 'member'}
-									<span class="role-tag" class:admin-tag={member.role === 'admin'}>{member.role}</span>
-								{/if}
-							</button>
-							{#if isAdmin && member.id !== currentUser?.uid && member.role !== 'brain'}
-								<button class="member-gear" onclick={() => handleManageMember(member)} title="Manage member">
-									<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-										<circle cx="6" cy="6" r="2" stroke="currentColor" stroke-width="1.2"/>
-										<path d="M6 1v1M6 10v1M1 6h1M10 6h1M2.5 2.5l.7.7M8.8 8.8l.7.7M9.5 2.5l-.7.7M3.2 8.8l-.7.7" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
-									</svg>
-								</button>
-							{/if}
-						</div>
-					{/each}
-				</div>
-
-			{:else if activeView === 'notes'}
-				<!-- Notes List -->
-				<div class="nav-section">
-					<div class="nav-section-header">
-						<span>Documents</span>
-						<button class="nav-action" onclick={handleCreateDoc} title="New document">
+						<span>Direct Messages</span>
+						<button class="nav-action" onclick={() => { showNewDM = true; dmSearchQuery = ''; }} title="New message">
 							<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
 								<path d="M7 2V12M2 7H12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
 							</svg>
 						</button>
 					</div>
 
-					{#each docs as doc}
+					{#each dmChannels as ch}
 						<button
 							class="nav-item"
-							class:active={activeDoc?.id === doc.id}
-							onclick={() => selectDoc(doc)}
+							class:active={$activeChannel?.id === ch.id}
+							class:unread={ch.unread && ch.unread > 0}
+							onclick={() => selectChannel(ch)}
 						>
-							<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;opacity:0.5">
-								<path d="M4 1h4l4 4v7a1 1 0 01-1 1H4a1 1 0 01-1-1V2a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2"/>
-								<path d="M8 1v4h4" stroke="currentColor" stroke-width="1.2"/>
-							</svg>
-							<span class="channel-name">{doc.title || 'Untitled'}</span>
+							<span class="channel-hash">@</span>
+							<span class="channel-name">{getDMPartnerName(ch)}</span>
+							{#if ch.unread && ch.unread > 0}
+								<span class="unread-badge">{ch.unread > 99 ? '99+' : ch.unread}</span>
+							{/if}
 						</button>
 					{/each}
 
-					{#if docs.length === 0}
-						<p class="sidebar-empty">No documents yet</p>
+					{#if dmChannels.length === 0}
+						<div class="nav-empty">No messages yet</div>
 					{/if}
 				</div>
 
@@ -1777,13 +2684,6 @@ autonomy: reactive
 		</nav>
 
 		<div class="user-menu-wrap">
-			{#if inviteUrl}
-				<div class="invite-bar">
-					<input type="text" value={inviteUrl} readonly onclick={(e) => (e.target as HTMLInputElement).select()} />
-					<button class="btn btn-primary btn-sm" onclick={handleCopyInvite}>Copy</button>
-				</div>
-			{/if}
-
 			<button class="user-menu-trigger" onclick={() => showUserMenu = !showUserMenu}>
 				<span class="user-avatar">{userInitial}</span>
 				<span class="user-name">{currentUser?.name || 'Anonymous'}</span>
@@ -1828,6 +2728,13 @@ autonomy: reactive
 							</svg>
 							Brain Settings
 						</button>
+						<button class="user-menu-item" onclick={() => { goto(`/w/${slug}/logs`); showUserMenu = false; }}>
+							<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+								<rect x="2" y="2" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+								<path d="M4.5 5h5M4.5 7h3.5M4.5 9h4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+							</svg>
+							System Logs
+						</button>
 					{/if}
 					<div class="user-menu-divider"></div>
 					<button class="user-menu-item user-menu-danger" onclick={() => { handleLeave(); showUserMenu = false; }}>
@@ -1841,8 +2748,8 @@ autonomy: reactive
 		</div>
 	</aside>
 
-	<!-- Member Panel (admin, chat only) -->
-	{#if activeView === 'chat' && selectedMember && memberDetail}
+	<!-- Member Panel (admin) -->
+	{#if (activeView === 'chat' || activeView === 'team') && selectedMember && memberDetail}
 		<aside class="member-panel">
 			<div class="panel-header">
 				<h3>Manage Member</h3>
@@ -1861,7 +2768,7 @@ autonomy: reactive
 				<div class="panel-field">
 					<label>Role</label>
 					<select value={memberDetail.role} onchange={(e) => handleRoleChange((e.target as HTMLSelectElement).value)}>
-						{#each ROLES as role}
+						{#each allRoles as role}
 							<option value={role}>{role.replace(/_/g, ' ')}</option>
 						{/each}
 					</select>
@@ -1871,10 +2778,10 @@ autonomy: reactive
 					<label>Permissions</label>
 					<div class="perm-list">
 						{#each Object.entries(memberDetail.permissions) as [perm, granted]}
-							<div class="perm-row">
+							<button class="perm-row perm-toggle" onclick={() => handleTogglePermission(perm, !!granted)}>
 								<span class="perm-name">{perm}</span>
 								<span class="perm-val" class:granted={granted}>{granted ? 'yes' : 'no'}</span>
-							</div>
+							</button>
 						{/each}
 					</div>
 				</div>
@@ -1933,8 +2840,19 @@ autonomy: reactive
 				</div>
 			</header>
 
+			<!-- Connection status banner -->
+			{#if $connectionStatus !== 'connected'}
+				<div class="connection-banner" class:connecting={$connectionStatus === 'connecting'}>
+					{#if $connectionStatus === 'connecting'}
+						Reconnecting...
+					{:else}
+						Disconnected. Attempting to reconnect...
+					{/if}
+				</div>
+			{/if}
+
 			<!-- Messages -->
-			<div class="messages-area" bind:this={messagesEl}>
+			<div class="messages-area" class:drag-over={dragOver} bind:this={messagesEl} ondragover={handleDragOver} ondragleave={() => dragOver = false} ondrop={handleDrop}>
 				{#if $messages.length === 0}
 					<div class="empty-state">
 						<div class="empty-icon">
@@ -1955,8 +2873,8 @@ autonomy: reactive
 					</div>
 				{/if}
 
-				{#each $messages as msg (msg.id)}
-					<div class="message-row">
+				{#each $messages as msg (msg.clientId || msg.id)}
+					<div class="message-row" class:pending={msg.status === 'pending'} class:failed={msg.status === 'failed'}>
 						<div class="avatar">
 							{msg.sender_name.charAt(0).toUpperCase()}
 						</div>
@@ -1971,9 +2889,7 @@ autonomy: reactive
 							{#if msg.file}
 								<div class="message-file">
 									{#if isImageMime(msg.file.mime)}
-										<a href={msg.file.url} target="_blank" rel="noopener">
-											<img src={msg.file.url} alt={msg.file.name} class="file-preview-img" />
-										</a>
+										<img src={msg.file.url} alt={msg.file.name} class="file-preview-img" onclick={() => openImageViewer({url: msg.file.url, alt: msg.file.name, sender: msg.sender_name, timestamp: msg.created_at, fileName: msg.file.name, fileSize: msg.file.size, mime: msg.file.mime})} onerror={(e) => { const el = e.currentTarget as HTMLImageElement; el.style.display = 'none'; el.parentElement?.classList.add('image-load-failed'); }} />
 									{:else}
 										<a href={msg.file.url} class="file-link" download={msg.file.name}>
 											<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 14h8a1 1 0 001-1V6l-4-4H4a1 1 0 00-1 1v10a1 1 0 001 1z" stroke="currentColor" stroke-width="1.2"/><path d="M9 2v4h4" stroke="currentColor" stroke-width="1.2"/></svg>
@@ -1991,9 +2907,7 @@ autonomy: reactive
 								<div class="message-text">{rendered.text}</div>
 								{#each rendered.images as img}
 									<div class="message-file">
-										<a href={img.url} target="_blank" rel="noopener">
-											<img src={img.url} alt={img.alt} class="file-preview-img" />
-										</a>
+										<img src={img.url} alt={img.alt} class="file-preview-img" onclick={() => openImageViewer({url: img.url, alt: img.alt, sender: msg.sender_name, timestamp: msg.created_at, prompt: rendered.imagePrompt || undefined})} onerror={(e) => { const el = e.currentTarget as HTMLImageElement; el.style.display = 'none'; el.parentElement?.classList.add('image-load-failed'); }} />
 									</div>
 								{/each}
 								{#if rendered.imagePrompt}
@@ -2007,7 +2921,49 @@ autonomy: reactive
 										<pre class="image-prompt-content">{rendered.imagePrompt}</pre>
 									</details>
 								{/if}
+								{#if msg.tools_used && msg.tools_used.length > 0}
+									<div class="tools-used">
+										<svg width="12" height="12" viewBox="0 0 12 12" fill="none" style="flex-shrink:0; margin-top: 1px;">
+											<path d="M7.5 1.5l1 1-4 4-2 .5.5-2 4-4 1-1z" stroke="currentColor" stroke-width="1"/>
+											<path d="M1.5 10.5h9" stroke="currentColor" stroke-width="1"/>
+										</svg>
+										<span>Used {msg.tools_used.join(', ')}</span>
+									</div>
+								{/if}
 							{/if}
+							<!-- Reactions display -->
+							{#if msg.reactions?.length}
+								<div class="reactions-row">
+									{#each msg.reactions as r}
+										<button class="reaction-chip" class:own={r.users.includes(currentUser?.uid || '')} onclick={() => toggleReaction(msg, r.emoji)}>
+											{r.emoji} {r.count}
+										</button>
+									{/each}
+									<button class="reaction-add" onclick={(e) => openEmojiPicker(msg.id, e)}>+</button>
+								</div>
+							{/if}
+							<!-- Thread indicator -->
+							{#if msg.reply_count && msg.reply_count > 0}
+								<button class="thread-indicator" onclick={() => openThread(msg.id)}>
+									<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 3h8M2 6h5M2 9h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+									{msg.reply_count} {msg.reply_count === 1 ? 'reply' : 'replies'}
+									{#if msg.latest_reply_at}
+										<span class="thread-time">Last reply {formatReplyTime(msg.latest_reply_at)}</span>
+									{/if}
+								</button>
+							{/if}
+							{#if msg.status === 'failed'}
+								<div class="message-retry">
+									Failed to send &mdash;
+									<button onclick={() => retryMessage(msg.clientId!)}>Retry</button>
+									<button onclick={() => dismissFailedMessage(msg.clientId!)}>Dismiss</button>
+								</div>
+							{/if}
+						</div>
+						<!-- Message hover actions -->
+						<div class="msg-hover-actions">
+							<button class="msg-action-btn" title="React" onclick={(e) => openEmojiPicker(msg.id, e)}>😀</button>
+							<button class="msg-action-btn" title="Reply in thread" onclick={() => openThread(msg.id)}>💬</button>
 						</div>
 					</div>
 				{/each}
@@ -2037,6 +2993,22 @@ autonomy: reactive
 				{/if}
 			{/each}
 
+			<!-- / slash-command popup -->
+			{#if slashActive && slashResults.length > 0}
+				<div class="mention-popup slash-popup">
+					{#each slashResults as cmd, i}
+						<button
+							class="mention-item"
+							class:active={i === slashIndex}
+							onmousedown={(e) => { e.preventDefault(); selectSlashCommand(cmd); }}
+						>
+							<span class="slash-cmd">/{cmd.name}</span>
+							<span class="mention-role">{cmd.description}</span>
+						</button>
+					{/each}
+				</div>
+			{/if}
+
 			<!-- @-mention autocomplete popup -->
 			{#if mentionActive && mentionResults.length > 0}
 				<div class="mention-popup">
@@ -2046,6 +3018,7 @@ autonomy: reactive
 							class:active={i === mentionIndex}
 							onmousedown={(e) => { e.preventDefault(); insertMention(m); }}
 						>
+							<span class="mention-avatar">{m.display_name.charAt(0).toUpperCase()}</span>
 							<span class="mention-name">{m.display_name}</span>
 							<span class="mention-role">{m.role}</span>
 						</button>
@@ -2076,6 +3049,7 @@ autonomy: reactive
 						bind:this={inputEl}
 						onkeydown={handleInputKeydown}
 						oninput={handleMentionInput}
+						onpaste={handlePaste}
 					/>
 					<button
 						class="send-button"
@@ -2139,6 +3113,72 @@ autonomy: reactive
 				</div>
 			{/if}
 		</aside>
+	{/if}
+
+	<!-- Thread Panel -->
+	{#if threadId}
+		<aside class="thread-panel">
+			<div class="thread-header">
+				<h3>Thread</h3>
+				<button class="drawer-close" onclick={closeThread}>
+					<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+						<path d="M2 2L12 12M12 2L2 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+					</svg>
+				</button>
+			</div>
+			<div class="thread-messages" bind:this={threadMessagesEl}>
+				{#each threadMessages as msg (msg.clientId || msg.id)}
+					<div class="message-row" class:pending={msg.status === 'pending'} class:thread-root={msg.id === threadId}>
+						<div class="avatar">
+							{msg.sender_name.charAt(0).toUpperCase()}
+						</div>
+						<div class="message-body">
+							<div class="message-meta">
+								<span class="sender">{msg.sender_name}</span>
+								<span class="timestamp">{formatTime(msg.created_at)}</span>
+							</div>
+							<div class="message-text">{renderMessageContent(msg.content).text}</div>
+							{#if msg.reactions?.length}
+								<div class="reactions-row">
+									{#each msg.reactions as r}
+										<button class="reaction-chip" class:own={r.users.includes(currentUser?.uid || '')} onclick={() => toggleReaction(msg, r.emoji)}>
+											{r.emoji} {r.count}
+										</button>
+									{/each}
+								</div>
+							{/if}
+						</div>
+					</div>
+					{#if msg.id === threadId && threadMessages.length > 1}
+						<div class="thread-divider">
+							<span>{threadMessages.length - 1} {threadMessages.length === 2 ? 'reply' : 'replies'}</span>
+						</div>
+					{/if}
+				{/each}
+			</div>
+			<div class="thread-input">
+				<input
+					type="text"
+					placeholder="Reply..."
+					bind:value={threadInput}
+					onkeydown={handleThreadKeydown}
+				/>
+				<button class="send-button" onclick={handleThreadSend} disabled={!threadInput.trim()}>
+					<svg width="16" height="16" viewBox="0 0 18 18" fill="none">
+						<path d="M2 9L16 2L9 16L7.5 10.5L2 9Z" fill="currentColor"/>
+					</svg>
+				</button>
+			</div>
+		</aside>
+	{/if}
+
+	<!-- Emoji Picker Popover -->
+	{#if emojiPickerMsgId}
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div class="emoji-picker-backdrop" onclick={() => emojiPickerMsgId = null}></div>
+		<div class="emoji-picker-popover" style="left:{emojiPickerPos.x}px;top:{emojiPickerPos.y}px;">
+			<EmojiPicker onselect={handleEmojiSelect} />
+		</div>
 	{/if}
 	</div>
 
@@ -2268,58 +3308,18 @@ autonomy: reactive
 		</div>
 	</main>
 
-	{:else if activeView === 'notes'}
-	<!-- Notes View -->
-	<main class="notes-main">
-		{#if activeDoc}
-			<div class="notes-editor">
-				<div class="notes-toolbar">
-					<input
-						type="text"
-						class="notes-title-input"
-						placeholder="Document title..."
-						bind:value={docTitle}
-						onblur={handleSaveDoc}
-					/>
-					<div class="notes-toolbar-actions">
-						<span class="notes-saved" class:visible={docSaving}>Saving...</span>
-						<button class="btn btn-ghost btn-sm" onclick={handleSaveDoc} disabled={docSaving}>Save</button>
-						<button class="btn btn-ghost btn-sm notes-del-btn" onclick={() => handleDeleteDoc(activeDoc.id)}>Delete</button>
-					</div>
-				</div>
-				<TiptapEditor
-					bind:this={editorRef}
-					onsave={handleAutoSave}
-					placeholder="Start writing..."
-				/>
-				<div class="notes-meta">
-					<span>Created {formatTime(activeDoc.created_at)}</span>
-					{#if activeDoc.updated_at !== activeDoc.created_at}
-						<span>· Updated {formatTime(activeDoc.updated_at)}</span>
-					{/if}
-				</div>
-			</div>
-		{:else}
-			<div class="empty-state">
-				<div class="empty-icon">
-					<svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-						<path d="M12 4h16l12 12v24a4 4 0 01-4 4H12a4 4 0 01-4-4V8a4 4 0 014-4z" stroke="var(--accent)" stroke-width="1.5" fill="none" opacity="0.3"/>
-						<path d="M28 4v12h12" stroke="var(--accent)" stroke-width="1.5" opacity="0.3"/>
-						<path d="M16 24h16M16 30h12M16 36h8" stroke="var(--accent)" stroke-width="1.5" opacity="0.2" stroke-linecap="round"/>
-					</svg>
-				</div>
-				<p class="empty-title">Notes</p>
-				<p class="empty-sub">Select a document or create a new one</p>
-				<button class="btn btn-primary btn-sm" style="margin-top: 1rem" onclick={handleCreateDoc}>+ New Document</button>
-			</div>
-		{/if}
-	</main>
-
 	{:else if activeView === 'brain'}
 	<!-- Brain Settings View -->
 	<main class="brain-main">
 		<div class="brain-settings">
-			<h2 class="brain-heading">Brain Configuration</h2>
+			<div class="brain-header-row">
+				<button class="brain-back" onclick={() => { activeView = 'chat'; onViewChange(); }} title="Back to chat">
+					<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+						<path d="M12 4L6 10L12 16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+					</svg>
+				</button>
+				<h2 class="brain-heading">Brain Configuration</h2>
+			</div>
 
 			<div class="brain-tabs">
 				<button class="brain-tab" class:active={brainTab === 'settings'} onclick={() => brainTab = 'settings'}>Settings</button>
@@ -2329,6 +3329,8 @@ autonomy: reactive
 				<button class="brain-tab" class:active={brainTab === 'skills'} onclick={() => { brainTab = 'skills'; loadSkills(); }}>Skills</button>
 				<button class="brain-tab" class:active={brainTab === 'knowledge'} onclick={() => { brainTab = 'knowledge'; loadKnowledge(); }}>Knowledge</button>
 				<button class="brain-tab" class:active={brainTab === 'integrations'} onclick={() => { brainTab = 'integrations'; loadIntegrations(); }}>Integrations</button>
+				<button class="brain-tab" class:active={brainTab === 'tools'} onclick={() => { brainTab = 'tools'; loadMCPServersData(); loadMCPTemplates(); }}>Tools</button>
+				<button class="brain-tab" class:active={brainTab === 'roles'} onclick={() => { brainTab = 'roles'; loadRoles(); }}>Roles</button>
 			</div>
 
 			{#if brainTab === 'settings'}
@@ -2372,6 +3374,11 @@ autonomy: reactive
 							<button class="btn btn-ghost btn-sm" onclick={openModelBrowser}>Browse</button>
 						{/if}
 					</div>
+					{#if modelAvailability && !modelAvailability.model_available}
+						<div class="model-fallback-warning">
+							Model <strong>{modelAvailability.model}</strong> unavailable — falling back to <strong>{modelAvailability.fallback_model}</strong>
+						</div>
+					{/if}
 				</div>
 
 				<div class="brain-field">
@@ -2565,17 +3572,58 @@ autonomy: reactive
 
 			{:else if brainTab === 'skills'}
 			<div class="brain-section">
-				<p class="brain-hint" style="margin-bottom: 0.75rem">Skills define specialized behaviors Brain can perform. Edit or add new skill files.</p>
+				<p class="brain-hint" style="margin-bottom: 0.75rem">Skills define specialized behaviors Brain can perform.</p>
+
+				{#if isAdmin}
+					<div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+						<button class="btn btn-primary btn-sm" onclick={() => { showNewSkillForm = !showNewSkillForm; showTemplates = false; }}>New Skill</button>
+						<button class="btn btn-ghost btn-sm" onclick={() => { showTemplates = !showTemplates; showNewSkillForm = false; if (showTemplates && skillTemplates.length === 0) loadSkillTemplates(); }}>Browse Built-in</button>
+					</div>
+				{/if}
+
+				{#if showNewSkillForm}
+					<div class="skill-form" style="border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; background: var(--bg-surface);">
+						<div style="display: flex; flex-direction: column; gap: 0.5rem;">
+							<div style="display: flex; gap: 0.5rem; align-items: flex-end;">
+								<textarea class="brain-input" bind:value={newSkillDescription} placeholder="Describe what this skill should do..." style="flex: 1; min-height: 40px; resize: vertical;"></textarea>
+								<button class="btn btn-ghost btn-sm" onclick={handleGenerateSkill} disabled={generatingSkill || !newSkillDescription.trim()} title={!brainSettings?.api_key ? 'Configure API key first' : 'Generate skill config with AI'}>
+									{generatingSkill ? 'Generating...' : 'Generate with AI'}
+								</button>
+							</div>
+							<input class="brain-input" type="text" placeholder="Skill name" bind:value={newSkillName} />
+							<div style="display: flex; gap: 0.5rem;">
+								<select class="brain-input" bind:value={newSkillTrigger} style="flex: 1">
+									<option value="mention">Trigger: Mention</option>
+									<option value="schedule">Trigger: Schedule</option>
+									<option value="keyword">Trigger: Keyword</option>
+								</select>
+								<select class="brain-input" bind:value={newSkillAutonomy} style="flex: 1">
+									<option value="reactive">Reactive</option>
+									<option value="proactive">Proactive</option>
+								</select>
+							</div>
+							<textarea class="brain-file-content" bind:value={newSkillPrompt} placeholder="Skill instructions..." style="min-height: 100px;"></textarea>
+							<div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+								<button class="btn btn-ghost btn-sm" onclick={() => showNewSkillForm = false}>Cancel</button>
+								<button class="btn btn-primary btn-sm" onclick={handleCreateSkill} disabled={!newSkillName.trim()}>Create</button>
+							</div>
+						</div>
+					</div>
+				{/if}
 
 				<div class="skill-list">
+					<div class="new-dm-section-label" style="margin-bottom: 0.5rem;">Active Skills ({brainSkills.length})</div>
 					{#each brainSkills as skill}
-						<div class="skill-item" class:active={activeSkill?.file_name === skill.file_name}>
+						<div class="skill-item" class:active={activeSkill?.file_name === skill.file_name} style={skill.enabled ? '' : 'opacity: 0.5'}>
 							<button class="skill-select" onclick={() => selectSkill(skill)}>
 								<span class="skill-name">{skill.name}</span>
 								<span class="skill-desc">{skill.description}</span>
-								<span class="skill-meta">{skill.trigger} &middot; {skill.autonomy}</span>
+								<span class="skill-meta">{skill.trigger} &middot; {skill.autonomy}{#if !skill.enabled} &middot; disabled{/if}</span>
 							</button>
 							{#if isAdmin}
+								<button class="skill-toggle" onclick={() => handleToggleSkill(skill)} title={skill.enabled ? 'Disable' : 'Enable'} style="background: none; border: none; cursor: pointer; padding: 4px; font-size: 1rem;">
+									{skill.enabled ? '●' : '○'}
+								</button>
 								<button class="skill-delete" onclick={() => handleDeleteSkill(skill.file_name)} title="Delete">
 									<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
 										<path d="M2 2L10 10M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -2585,9 +3633,30 @@ autonomy: reactive
 						</div>
 					{/each}
 					{#if brainSkills.length === 0}
-						<p class="brain-hint">No skills configured. Skills will be created automatically for new workspaces.</p>
+						<p class="brain-hint">No skills active yet. Create one or install from built-in templates.</p>
 					{/if}
 				</div>
+
+				{#if showTemplates}
+					<div style="margin-top: 1rem;">
+						<div class="new-dm-section-label" style="margin-bottom: 0.5rem;">Built-in Templates</div>
+						<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.75rem;">
+							{#each skillTemplates.filter(t => !t.installed) as tmpl}
+								<div style="border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; background: var(--bg-surface);">
+									<div style="font-weight: 600; font-size: var(--text-sm); margin-bottom: 0.25rem;">{tmpl.name}</div>
+									<div style="font-size: var(--text-xs); color: var(--text-muted); margin-bottom: 0.5rem; line-height: 1.3;">{tmpl.description}</div>
+									<div style="display: flex; justify-content: space-between; align-items: center;">
+										<span style="font-size: 0.65rem; background: var(--bg-hover); padding: 0.15rem 0.4rem; border-radius: 4px;">{tmpl.trigger}</span>
+										<button class="btn btn-primary btn-sm" style="font-size: 0.7rem; padding: 0.2rem 0.5rem;" onclick={() => installTemplate(tmpl)}>Install</button>
+									</div>
+								</div>
+							{/each}
+							{#if skillTemplates.filter(t => !t.installed).length === 0}
+								<p class="brain-hint">All built-in skills are already installed.</p>
+							{/if}
+						</div>
+					</div>
+				{/if}
 
 				{#if activeSkill}
 					<div class="brain-editor" style="margin-top: 0.75rem">
@@ -2716,12 +3785,50 @@ autonomy: reactive
 				</div>
 			</div>
 
+			{:else if brainTab === 'roles'}
+			<div class="brain-section">
+				<h3>Workspace Roles</h3>
+				<p class="brain-hint">Roles control what members can do. Assign via Team &rarr; Members &rarr; Manage.</p>
+
+				{#if rolesLoading}
+				<p class="brain-hint">Loading roles...</p>
+				{:else if rolesData.length === 0}
+				<p class="brain-hint">No roles found.</p>
+				{:else}
+				{#each [...rolesData].sort((a, b) => a.name === 'admin' ? -1 : b.name === 'admin' ? 1 : a.name.localeCompare(b.name)) as role}
+				<div class="role-card">
+					<div class="role-card-header" onclick={() => toggleRoleExpand(role.name)}>
+						<span class="role-card-name">{formatRoleName(role.name)}</span>
+						<span class="role-card-count">{role.permissions?.length || 0} permissions</span>
+					</div>
+					{#if expandedRoles.has(role.name)}
+					<div class="role-card-body">
+						{#each PERM_GROUPS as group}
+						<div class="perm-group-row">
+							<span class="perm-group-label">{group.label}</span>
+							<div class="perm-chips">
+								{#each group.perms as perm}
+								<span class="perm-chip" class:granted={role.permissions?.includes(perm)}>
+									{shortPermLabel(perm)}
+								</span>
+								{/each}
+							</div>
+						</div>
+						{/each}
+					</div>
+					{/if}
+				</div>
+				{/each}
+				{/if}
+			</div>
+
 			{:else if brainTab === 'integrations'}
 			<div class="brain-section">
 				<p class="brain-hint" style="margin-bottom: 1rem">Connect external systems to Brain via webhooks, email, or Telegram.</p>
 
 				<!-- Webhooks Section -->
 				<h3 class="brain-section-title">Webhooks</h3>
+				<p class="brain-hint" style="margin-bottom: 0.5rem;">Create a webhook, copy its URL, then POST JSON to it from any external service.</p>
 				<div class="brain-field">
 					<label>Autonomy</label>
 					<select class="brain-input" value={brainSettings.webhook_autonomy || 'autonomous'} onchange={(e) => handleBrainSettingChange('webhook_autonomy', e.currentTarget.value)}>
@@ -2791,6 +3898,7 @@ autonomy: reactive
 
 				<!-- Email Section -->
 				<h3 class="brain-section-title" style="margin-top: 1.5rem;">Email</h3>
+				<p class="brain-hint" style="margin-bottom: 0.5rem;">Configure SMTP relay for outbound email. MX record needed for inbound.</p>
 				<div class="brain-field">
 					<label>
 						<input type="checkbox" checked={brainSettings.email_enabled === 'true'} onchange={(e) => handleBrainSettingChange('email_enabled', e.currentTarget.checked ? 'true' : 'false')} />
@@ -2863,6 +3971,7 @@ autonomy: reactive
 
 				<!-- Telegram Section -->
 				<h3 class="brain-section-title" style="margin-top: 1.5rem;">Telegram</h3>
+				<p class="brain-hint" style="margin-bottom: 0.5rem;">Get a bot token from <strong>@BotFather</strong> on Telegram, paste it here, then save.</p>
 				<div class="brain-field">
 					<label>Bot Token</label>
 					<input type="password" class="brain-input" value={brainSettings.telegram_bot_token || ''} onchange={(e) => handleBrainSettingChange('telegram_bot_token', e.currentTarget.value)} placeholder="123456:ABC-DEF..." />
@@ -2899,6 +4008,166 @@ autonomy: reactive
 				{/if}
 			</div>
 
+			{:else if brainTab === 'tools'}
+			<div class="brain-section">
+				<p class="brain-hint" style="margin-bottom: 1rem">Add MCP tool servers to extend Brain and Agent capabilities.</p>
+
+				{#if isAdmin && mcpTemplates.length > 0}
+				<h3 class="brain-section-title">Add Tools</h3>
+				{@const connectedIds = mcpServers.map((s: any) => s.name.toLowerCase())}
+				{#each ['free', 'api_key', 'custom'] as tier}
+				{@const tierTemplates = mcpTemplates.filter((t: any) => t.tier === tier && !connectedIds.includes(t.name.toLowerCase()))}
+				{#if tierTemplates.length > 0}
+				<div style="margin-bottom: 1rem;">
+					<div style="font-size: 0.7rem; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">
+						{tier === 'free' ? 'Free — works instantly' : tier === 'api_key' ? 'API Key required' : 'Custom configuration'}
+					</div>
+					<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.5rem;">
+						{#each tierTemplates as template}
+						<button class="mcp-template-card" onclick={() => openTemplateSetup(template)}>
+							<div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.25rem;">
+								<strong style="font-size: 0.85rem;">{template.name}</strong>
+								{#if tier === 'free'}
+								<span class="tier-badge tier-free">Free</span>
+								{:else if tier === 'api_key'}
+								<span class="tier-badge tier-api-key">API Key</span>
+								{:else}
+								<span class="tier-badge tier-custom">Custom</span>
+								{/if}
+							</div>
+							<div style="font-size: 0.72rem; color: var(--text-dim); line-height: 1.3;">{template.description}</div>
+						</button>
+						{/each}
+					</div>
+				</div>
+				{/if}
+				{/each}
+
+				<!-- Template setup modal -->
+				{#if mcpTemplateSetup}
+				<div class="knowledge-form" style="margin-bottom: 1rem; border: 1px solid var(--accent); padding: 1rem; border-radius: 8px;">
+					<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem;">
+						<h3 class="brain-section-title" style="margin: 0;">Setup {mcpTemplateSetup.name}</h3>
+						<button class="btn btn-sm" onclick={() => { mcpTemplateSetup = null; }}>Cancel</button>
+					</div>
+					<p style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 0.75rem;">{mcpTemplateSetup.description}</p>
+
+					{#if mcpTemplateSetup.env_vars && mcpTemplateSetup.env_vars.length > 0}
+					{#each mcpTemplateSetup.env_vars as envVar}
+					<div class="brain-field">
+						<label>
+							{envVar.description}
+							{#if envVar.help_url}
+							<a href={envVar.help_url} target="_blank" rel="noopener" style="font-size: 0.7rem; margin-left: 0.25rem;">Get key</a>
+							{/if}
+						</label>
+						<input type="text" class="brain-input" bind:value={mcpTemplateEnv[envVar.key]} placeholder={envVar.key} />
+					</div>
+					{/each}
+					{:else}
+					<p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem;">No configuration needed — just click Add.</p>
+					{/if}
+
+					<button class="btn btn-primary" disabled={mcpTemplateSaving || (mcpTemplateSetup.env_vars?.length > 0 && mcpTemplateSetup.env_vars.some((v: any) => v.required && !mcpTemplateEnv[v.key]))} onclick={handleAddFromTemplate}>
+						{mcpTemplateSaving ? 'Connecting...' : 'Add'}
+					</button>
+					{#if mcpTemplateError}
+					<div style="color: var(--red); font-size: 0.8rem; margin-top: 0.5rem;">{mcpTemplateError}</div>
+					{/if}
+				</div>
+				{/if}
+				{/if}
+
+				{#if isAdmin}
+				<details style="margin-bottom: 1.5rem;">
+					<summary style="cursor: pointer; font-size: 0.8rem; color: var(--text-dim);">Advanced: Add custom MCP server</summary>
+					<div class="knowledge-form" style="margin-top: 0.75rem;">
+					<div class="brain-field">
+						<label>Name</label>
+						<input type="text" class="brain-input" bind:value={mcpForm.name} placeholder="e.g. GitHub Tools" />
+					</div>
+					<div class="brain-field">
+						<label>Transport</label>
+						<select class="brain-input" bind:value={mcpForm.transport}>
+							<option value="stdio">stdio (command)</option>
+							<option value="sse">SSE (URL)</option>
+						</select>
+					</div>
+					{#if mcpForm.transport === 'stdio'}
+					<div class="brain-field">
+						<label>Command</label>
+						<input type="text" class="brain-input" bind:value={mcpForm.command} placeholder="npx -y @modelcontextprotocol/server-github" />
+					</div>
+					{:else}
+					<div class="brain-field">
+						<label>URL</label>
+						<input type="text" class="brain-input" bind:value={mcpForm.url} placeholder="https://example.com/mcp/sse" />
+					</div>
+					{/if}
+					<div class="brain-field">
+						<label>Tool Prefix (optional)</label>
+						<input type="text" class="brain-input" bind:value={mcpForm.prefix} placeholder="github" />
+					</div>
+					<div class="brain-field">
+						<label>Environment Variables</label>
+						{#each mcpEnvEntries as entry, i}
+						<div style="display: flex; gap: 0.25rem; margin-bottom: 0.25rem;">
+							<input type="text" class="brain-input" style="flex:1" bind:value={entry.key} placeholder="KEY" />
+							<input type="text" class="brain-input" style="flex:1" bind:value={entry.value} placeholder="value" />
+							<button class="btn btn-sm" style="padding: 0 0.5rem" onclick={() => { mcpEnvEntries = mcpEnvEntries.filter((_, j) => j !== i); }}>x</button>
+						</div>
+						{/each}
+						<button class="btn btn-sm" onclick={() => { mcpEnvEntries = [...mcpEnvEntries, {key:'',value:''}]; }}>+ Add Variable</button>
+					</div>
+					<button class="btn btn-primary" disabled={!mcpForm.name || mcpSaving} onclick={handleCreateMCPServer}>
+						{mcpSaving ? 'Connecting...' : 'Add Server'}
+					</button>
+					{#if mcpConnectError}
+					<div style="color: var(--red); font-size: 0.8rem; margin-top: 0.5rem;">{mcpConnectError}</div>
+					{/if}
+					</div>
+				</details>
+				{/if}
+
+				<h3 class="brain-section-title">Connected Servers</h3>
+				{#if mcpServers.length === 0}
+				<p class="brain-hint">No MCP servers configured yet. Add one from the catalog above.</p>
+				{:else}
+				{#each mcpServers as server}
+				<div class="knowledge-item" style="margin-bottom: 0.75rem; flex-direction: column; align-items: stretch;">
+					<div style="display: flex; align-items: center; gap: 0.5rem;">
+						<span style="font-size: 0.6rem; width: 8px; height: 8px; border-radius: 50%; background: {server.connected ? 'var(--green)' : 'var(--red)'}; display: inline-block;"></span>
+						<strong>{server.name}</strong>
+						<span class="agent-badge" style="font-size: 0.65rem;">{server.transport}</span>
+						<span style="color: var(--text-dim); font-size: 0.75rem;">{server.tool_count} tools</span>
+						<div style="margin-left: auto; display: flex; gap: 0.25rem;">
+							<button class="btn btn-sm" onclick={() => handleRefreshMCP(server.id)}>Refresh</button>
+							<button class="btn btn-sm btn-danger" onclick={() => handleDeleteMCP(server.id)}>Delete</button>
+						</div>
+					</div>
+					{#if server.tool_prefix}
+					<div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.25rem;">Prefix: <code>{server.tool_prefix}__</code></div>
+					{/if}
+					{#if server.command}
+					<div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.25rem; font-family: monospace;">{server.command}</div>
+					{/if}
+					{#if server.tools && server.tools.length > 0}
+					<div style="margin-top: 0.5rem;">
+						{#each server.tools as tool}
+						<div style="font-size: 0.75rem; padding: 0.2rem 0; color: var(--text-secondary);">
+							<code style="color: var(--accent);">{tool.qual_name}</code>
+							{#if tool.description}
+							<span style="color: var(--text-dim);"> — {tool.description}</span>
+							{/if}
+						</div>
+						{/each}
+					</div>
+					{/if}
+				</div>
+				{/each}
+				{/if}
+			</div>
+
 			{/if}
 		</div>
 	</main>
@@ -2909,7 +4178,7 @@ autonomy: reactive
 			{#if teamTab === 'members'}
 			<div class="agents-toolbar">
 				{#if isAdmin}
-					<button class="btn btn-primary" onclick={handleAddOrgRole}>Create Role</button>
+					<button class="btn btn-primary" onclick={handleAddOrgRole}>Add Role</button>
 				{/if}
 			</div>
 			<div class="agents-grid">
@@ -2927,7 +4196,7 @@ autonomy: reactive
 						{#if member.goals}<div class="agent-card-goal">{member.goals}</div>{/if}
 						{#if isAdmin}
 							<div class="agent-card-actions">
-								<button class="btn btn-ghost btn-xs" onclick={() => { selectedMember = member; }}>Manage</button>
+								<button class="btn btn-ghost btn-xs" onclick={() => handleManageMember(member)}>Manage</button>
 							</div>
 						{/if}
 					</div>
@@ -2959,8 +4228,9 @@ autonomy: reactive
 										<span class="agent-name">{agent.name}</span>
 										{#if agent.is_system}<span class="agent-badge system">System</span>{/if}
 										{#if !agent.is_active}<span class="agent-badge paused">Paused</span>{/if}
-										{#if agent.trigger_type === 'all'}<span class="agent-badge trigger-all">@all</span>{/if}
-										{#if agent.trigger_type === 'always'}<span class="agent-badge trigger-always">Always</span>{/if}
+									{#if (JSON.parse(typeof agent.channels === 'string' ? agent.channels : '[]') || []).length > 0}
+										<span class="agent-badge channel-count">{(JSON.parse(typeof agent.channels === 'string' ? agent.channels : '[]') || []).length} ch</span>
+									{/if}
 									</div>
 								</div>
 								<div class="agent-card-role">{agent.role}</div>
@@ -2970,13 +4240,15 @@ autonomy: reactive
 										<span class="tool-chip">{tool}</span>
 									{/each}
 								</div>
-								{#if isAdmin && !agent.is_system}
+								{#if isAdmin}
 									<div class="agent-card-actions">
 										<button class="btn btn-ghost btn-xs" onclick={() => openEditAgent(agent)}>Edit</button>
+										{#if !agent.is_system}
 										<button class="btn btn-ghost btn-xs" onclick={() => handleToggleAgent(agent)}>
 											{agent.is_active ? 'Pause' : 'Activate'}
 										</button>
 										<button class="btn btn-ghost btn-xs btn-danger" onclick={() => handleDeleteAgent(agent.id)}>Delete</button>
+										{/if}
 									</div>
 								{/if}
 							</div>
@@ -3016,9 +4288,31 @@ autonomy: reactive
 					<div class="agent-form">
 						<div class="agent-form-header">
 							<h3>{editingAgent ? `Edit ${editingAgent.name}` : 'Create Agent'}</h3>
-							<button class="btn btn-ghost" onclick={() => { showAgentForm = false; editingAgent = null; }}>Cancel</button>
+							<div style="display:flex;gap:8px;align-items:center">
+								{#if editingAgent && !editingAgent.is_system}
+									<button class="btn btn-ghost" onclick={() => { showAIEditInput = !showAIEditInput; aiEditInstruction = ''; }}>
+										{showAIEditInput ? 'Cancel AI' : 'Edit with AI'}
+									</button>
+								{/if}
+								<button class="btn btn-ghost" onclick={() => { showAgentForm = false; editingAgent = null; showAIEditInput = false; }}>Cancel</button>
+							</div>
 						</div>
+						{#if showAIEditInput}
+						<div class="ai-edit-bar">
+							<input
+								type="text"
+								class="ai-edit-input"
+								placeholder="Describe what to change... e.g. 'make it more formal' or 'add web search tool'"
+								bind:value={aiEditInstruction}
+								onkeydown={(e) => { if (e.key === 'Enter' && !agentEditingWithAI) handleEditWithAI(); }}
+							/>
+							<button class="btn btn-primary btn-sm" onclick={handleEditWithAI} disabled={agentEditingWithAI || !aiEditInstruction.trim()}>
+								{agentEditingWithAI ? 'Applying...' : 'Apply'}
+							</button>
+						</div>
+						{/if}
 
+						{#if !editingAgent?.is_system}
 						<div class="form-section">
 							<h4>Identity</h4>
 							<label class="form-field">
@@ -3072,7 +4366,7 @@ autonomy: reactive
 							<div class="form-field">
 								<span>Tools</span>
 								<div class="tools-checkboxes">
-									{#each AGENT_TOOLS as tool}
+									{#each allAgentTools as tool}
 										<label class="checkbox-label">
 											<input type="checkbox" checked={agentForm.tools.includes(tool)} onchange={() => toggleTool(tool)} />
 											{tool}
@@ -3091,14 +4385,50 @@ autonomy: reactive
 									<input type="checkbox" bind:checked={agentForm.can_delegate} /> Can Delegate
 								</label>
 							</div>
-							<div class="form-group" style="margin-top:8px">
-								<label>Response Mode</label>
-								<select bind:value={agentForm.trigger_type}>
-									<option value="mention">@name only (default)</option>
-									<option value="all">@name + @all</option>
-									<option value="always">Always respond</option>
-								</select>
+						</div>
+						{/if}
+
+						<div class="form-section">
+							<h4>Response & Behavior</h4>
+							<span class="form-hint">Agent always responds to @mentions and DMs. Assign channels above to auto-respond there.</span>
+							<div class="form-row" style="display:flex;gap:12px;margin-top:8px">
+								<label class="form-field" style="flex:1">
+									<span>Cooldown (seconds)</span>
+									<input type="number" bind:value={agentForm.cooldown_seconds} min="0" max="600" style="width:80px" />
+									<span class="form-hint">Min seconds between auto-responses in a channel. 0 = no cooldown.</span>
+								</label>
+								<label class="form-field" style="flex:1">
+									<span>Max follow-up messages</span>
+									<input type="number" bind:value={agentForm.follow_max_messages} min="1" max="100" style="width:80px" />
+								</label>
 							</div>
+							{#if (agentForm.channels || []).length > 0}
+							<div class="form-field">
+								<span>Per-Channel Overrides</span>
+								<div class="channel-overrides">
+									{#each agentForm.channels || [] as chId}
+										{#if publicChannels.find((c: any) => c.id === chId)}
+										{@const ch = publicChannels.find((c: any) => c.id === chId)}
+										<div class="channel-override-row">
+											<span class="channel-override-name">#{ch.name}</span>
+											<select value={agentForm.channel_modes[ch.id] || 'active'} onchange={(e) => {
+												const val = (e.target as HTMLSelectElement).value;
+												if (val === 'active') {
+													const { [ch.id]: _, ...rest } = agentForm.channel_modes;
+													agentForm.channel_modes = rest;
+												} else {
+													agentForm.channel_modes = { ...agentForm.channel_modes, [ch.id]: val };
+												}
+											}}>
+												<option value="active">Active</option>
+												<option value="silent">Silent</option>
+											</select>
+										</div>
+										{/if}
+									{/each}
+								</div>
+							</div>
+							{/if}
 						</div>
 
 						{#if editingAgent && !editingAgent.is_system}
@@ -3172,7 +4502,7 @@ autonomy: reactive
 			<div class="org-chart">
 				<div class="agents-toolbar">
 					{#if isAdmin}
-						<button class="btn btn-primary" onclick={handleAddOrgRole}>Create Role</button>
+						<button class="btn btn-primary" onclick={handleAddOrgRole}>Add Role</button>
 					{/if}
 					<button class="btn btn-ghost" onclick={() => chartFit?.()}>Zoom to Fit</button>
 					<button class="btn btn-ghost" onclick={() => { if (chartExpanded) { chartCollapseAll?.(); } else { chartExpandAll?.(); } chartExpanded = !chartExpanded; }}>
@@ -3260,8 +4590,8 @@ autonomy: reactive
 									updateMemberRole(slug, selectedNodeForPanel.id, e.target.value);
 									selectedNodeForPanel = { ...selectedNodeForPanel, role: e.target.value };
 								}}>
-									{#each ROLES as r}
-										<option value={r}>{r}</option>
+									{#each allRoles as r}
+										<option value={r}>{r.replace(/_/g, ' ')}</option>
 									{/each}
 								</select>
 								<button class="btn btn-danger btn-sm" style="margin-top:8px" onclick={() => { if (confirm('Remove this member?')) { kickMember(slug, selectedNodeForPanel.id); selectedNodeForPanel = null; loadOrgChart(); } }}>Remove from Workspace</button>
@@ -3337,43 +4667,59 @@ autonomy: reactive
 </div>
 
 {#if showRoleDialog}
-<div class="role-dialog-overlay" onclick={() => showRoleDialog = false}>
-	<div class="role-dialog" onclick={(e) => e.stopPropagation()}>
-		<div class="role-dialog-header">
-			<h3>Create Role</h3>
-			<button class="role-dialog-close" onclick={() => showRoleDialog = false}>&times;</button>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="modal-overlay" onclick={() => showRoleDialog = false}>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="modal-dialog" onclick={(e) => e.stopPropagation()} style="max-width: 440px">
+		<div class="modal-header">
+			<h3>Add Role</h3>
+			<button class="modal-close" onclick={() => showRoleDialog = false}>&times;</button>
 		</div>
-		<div class="role-dialog-form">
-			<div class="form-group">
-				<label>Title <span class="required">*</span></label>
-				<input type="text" bind:value={roleForm.title} placeholder="Marketing Manager" />
+		<div class="modal-body">
+			<div class="role-dialog-fields">
+				<div class="form-group">
+					<label>Role</label>
+					<select value={roleForm.preset} onchange={(e) => handleRolePresetChange((e.target as HTMLSelectElement).value)}>
+						<option value="">-- Select a role --</option>
+						{#each ROLES.filter(r => r !== 'custom') as role}
+							<option value={role}>{ROLE_LABELS[role] || role}</option>
+						{/each}
+						<option value="_custom">Custom...</option>
+					</select>
+				</div>
+				{#if roleForm.preset === '_custom'}
+				<div class="form-group">
+					<label>Title <span class="required">*</span></label>
+					<input type="text" bind:value={roleForm.title} placeholder="Marketing Manager" />
+				</div>
+				{/if}
+				<div class="form-group">
+					<label>Department</label>
+					<input type="text" bind:value={roleForm.department} placeholder="Marketing" />
+				</div>
+				<div class="form-group">
+					<label>Description</label>
+					<textarea bind:value={roleForm.description} rows="3" placeholder="Responsibilities, authority, scope..."></textarea>
+				</div>
+				<div class="form-group">
+					<label>Reports To</label>
+					<select bind:value={roleForm.reports_to}>
+						<option value="">Brain (default)</option>
+						{#each $members.filter(m => m.role !== 'agent' && m.role !== 'brain') as member}
+							<option value={member.id}>{member.display_name}</option>
+						{/each}
+						{#each agentsList.filter(a => !a.is_system) as agent}
+							<option value={agent.id}>{agent.name} (Agent)</option>
+						{/each}
+					</select>
+				</div>
 			</div>
-			<div class="form-group">
-				<label>Department</label>
-				<input type="text" bind:value={roleForm.department} placeholder="Marketing" />
+			<div class="role-dialog-actions">
+				<button class="btn btn-ghost" onclick={() => showRoleDialog = false}>Cancel</button>
+				<button class="btn btn-primary" onclick={handleCreateRole} disabled={roleSaving}>
+					{roleSaving ? 'Creating...' : 'Create'}
+				</button>
 			</div>
-			<div class="form-group">
-				<label>Description</label>
-				<textarea bind:value={roleForm.description} rows="3" placeholder="Responsibilities, authority, scope..."></textarea>
-			</div>
-			<div class="form-group">
-				<label>Reports To</label>
-				<select bind:value={roleForm.reports_to}>
-					<option value="">Brain (default)</option>
-					{#each $members.filter(m => m.role !== 'agent' && m.role !== 'brain') as member}
-						<option value={member.id}>{member.display_name}</option>
-					{/each}
-					{#each agentsList.filter(a => !a.is_system) as agent}
-						<option value={agent.id}>{agent.name} (Agent)</option>
-					{/each}
-				</select>
-			</div>
-		</div>
-		<div class="role-dialog-actions">
-			<button class="btn btn-ghost" onclick={() => showRoleDialog = false}>Cancel</button>
-			<button class="btn btn-primary" onclick={handleCreateRole} disabled={roleSaving}>
-				{roleSaving ? 'Creating...' : 'Create'}
-			</button>
 		</div>
 	</div>
 </div>
@@ -3410,6 +4756,8 @@ autonomy: reactive
 								{/if}
 								{#if model.is_free}
 									<span class="model-badge free">Free</span>
+								{:else if model.pricing?.prompt}
+									<span class="model-pricing">${(parseFloat(model.pricing.prompt) * 1_000_000).toFixed(2)}/M</span>
 								{/if}
 								{#if model.supports_vision}
 									<span class="model-badge vision">Vision</span>
@@ -3422,7 +4770,20 @@ autonomy: reactive
 						{#if addedModels.some(m => m.id === model.id) || pinnedModels.some(m => m.id === model.id)}
 							<span style="font-size: 0.75rem; color: var(--text-dim);">Added</span>
 						{:else}
-							<button class="btn btn-ghost btn-xs" onclick={() => { addedModels = [...addedModels, { id: model.id, display_name: model.name || model.id }]; }}>
+							<button class="btn btn-ghost btn-xs" onclick={async () => {
+								addedModels = [...addedModels, { id: model.id, display_name: model.name || model.id }];
+								try {
+									await addWorkspaceModel(slug, {
+										id: model.id,
+										display_name: model.name || model.id,
+										provider: model.provider || '',
+										context_length: model.context_length || 0,
+										supports_tools: model.supports_tools || false,
+										pricing_prompt: model.pricing?.prompt || '0',
+										pricing_completion: model.pricing?.completion || '0',
+									});
+								} catch {}
+							}}>
 								Add
 							</button>
 						{/if}
@@ -3448,7 +4809,7 @@ autonomy: reactive
 				{#if isAdmin}
 					<button class="btn btn-primary btn-sm" onclick={() => { showAgentLibrary = false; activeView = 'team'; onViewChange(); teamTab = 'agents'; openNewAgent(); }}>+ Create Agent</button>
 				{/if}
-				<button class="panel-close" onclick={() => showAgentLibrary = false}>&times;</button>
+				<button class="modal-close" onclick={() => showAgentLibrary = false}>&times;</button>
 			</div>
 		</div>
 
@@ -3592,8 +4953,9 @@ autonomy: reactive
 	<div class="modal-dialog" onclick={(e) => e.stopPropagation()} style="max-width: 480px">
 		<div class="modal-header">
 			<h3>Preferences</h3>
-			<button class="panel-close" onclick={() => showPreferences = false}>&times;</button>
+			<button class="modal-close" onclick={() => showPreferences = false}>&times;</button>
 		</div>
+		<div class="modal-body">
 		<div class="brain-tabs" style="margin-bottom: 1rem">
 			<button class="brain-tab" class:active={prefsTab === 'profile'} onclick={() => prefsTab = 'profile'}>Profile</button>
 			<button class="brain-tab" class:active={prefsTab === 'security'} onclick={() => prefsTab = 'security'}>Security</button>
@@ -3636,6 +4998,157 @@ autonomy: reactive
 			<div class="brain-section">
 				<p class="brain-hint">Theme settings coming soon.</p>
 			</div>
+		{/if}
+		</div>
+	</div>
+</div>
+{/if}
+
+{#if showInviteModal}
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="modal-overlay" onclick={() => showInviteModal = false}>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="modal-dialog" onclick={(e) => e.stopPropagation()} style="max-width: 400px">
+		<div class="modal-header">
+			<h3>Invite People</h3>
+			<button class="modal-close" onclick={() => showInviteModal = false}>&times;</button>
+		</div>
+		<div class="modal-body">
+			{#if inviteCode}
+			<div class="invite-code-section">
+				<div class="invite-code-label">Share this invite code</div>
+				<div class="invite-code-display">{inviteCode}</div>
+				<div class="invite-code-hint">Expires in 24 hours</div>
+				<div style="display:flex;gap:8px;margin-top:12px">
+					<button class="btn btn-primary btn-sm" style="flex:1" onclick={() => handleCopyInvite(inviteCode, 'code')}>
+						{inviteCopied === 'code' ? 'Copied!' : 'Copy Code'}
+					</button>
+					<button class="btn btn-ghost btn-sm" style="flex:1" onclick={() => handleCopyInvite(inviteUrl, 'link')}>
+						{inviteCopied === 'link' ? 'Copied!' : 'Copy Link'}
+					</button>
+				</div>
+			</div>
+			<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border-subtle)">
+				<div class="invite-code-hint" style="margin-bottom:6px">Or share the full link</div>
+				<input class="brain-input" type="text" value={inviteUrl} readonly onclick={(e) => (e.target as HTMLInputElement).select()} style="width:100%;font-size:0.7rem;color:var(--text-tertiary)" />
+			</div>
+			{:else}
+			<div style="text-align:center;padding:2rem 0;color:var(--text-tertiary)">Generating invite...</div>
+			{/if}
+		</div>
+	</div>
+</div>
+{/if}
+
+{#if showNewDM}
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="modal-overlay" onclick={() => showNewDM = false}>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="modal-dialog" onclick={(e) => e.stopPropagation()} style="max-width: 400px">
+		<div class="modal-header">
+			<h3>New Message</h3>
+			<button class="modal-close" onclick={() => showNewDM = false}>&times;</button>
+		</div>
+		<div class="modal-body">
+			<input
+				class="brain-input"
+				type="text"
+				placeholder="Search members and agents..."
+				bind:value={dmSearchQuery}
+				style="margin-bottom: 0.75rem"
+			/>
+			<div class="new-dm-list">
+				{#if !dmSearchQuery || 'brain'.includes(dmSearchQuery.toLowerCase()) || 'ai assistant'.includes(dmSearchQuery.toLowerCase())}
+					{@const brainAgent = agentsList.find(a => a.id === 'brain')}
+					{#if brainAgent}
+						<button class="new-dm-item" onclick={() => { startDMWithAgent(brainAgent); showNewDM = false; }} style="border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; margin-bottom: 0.5rem;">
+							<span class="agent-dot" style="background: var(--accent)"></span>
+							<span>Brain</span>
+							<span style="font-size: 0.7rem; background: var(--accent); color: white; padding: 0.1rem 0.4rem; border-radius: 0.75rem; margin-left: auto;">AI Assistant</span>
+						</button>
+					{/if}
+				{/if}
+				{#if dmFilteredMembers.length > 0}
+					<div class="new-dm-section-label">Members</div>
+					{#each dmFilteredMembers as member}
+						<button class="new-dm-item" onclick={() => { handleMemberClick(member); showNewDM = false; }}>
+							<span class="presence" class:online={member.online}></span>
+							<span>{member.display_name}</span>
+						</button>
+					{/each}
+				{/if}
+
+				{#if dmFilteredAgents.length > 0}
+					<div class="new-dm-section-label">Agents</div>
+					{#each dmFilteredAgents as agent}
+						<button class="new-dm-item" onclick={() => { startDMWithAgent(agent); showNewDM = false; }}>
+							<span class="agent-dot" style="background: {agent.color || 'var(--accent)'}"></span>
+							<span>{agent.name}</span>
+						</button>
+					{/each}
+				{/if}
+
+				{#if dmFilteredMembers.length === 0 && dmFilteredAgents.length === 0}
+					<div class="new-dm-empty">No matches found</div>
+				{/if}
+			</div>
+		</div>
+	</div>
+</div>
+{/if}
+
+{#if showImageViewer && viewerImage}
+<div class="image-viewer-overlay" onclick={() => showImageViewer = false}>
+	<div class="image-viewer-container" onclick={(e) => e.stopPropagation()}>
+		<div class="image-viewer-header">
+			<div class="image-viewer-info">
+				{#if viewerImage.sender}
+					<span class="image-viewer-sender">{viewerImage.sender}</span>
+				{/if}
+				{#if viewerImage.timestamp}
+					<span class="image-viewer-time">{new Date(viewerImage.timestamp).toLocaleString()}</span>
+				{/if}
+			</div>
+			<div class="image-viewer-actions">
+				<button class="image-viewer-btn" title="Open in new tab" onclick={() => window.open(viewerImage?.url, '_blank')}>
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 2h4v4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 2L8 8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M12 9v4a1 1 0 01-1 1H3a1 1 0 01-1-1V5a1 1 0 011-1h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+				</button>
+				<button class="image-viewer-btn" title="Download" onclick={() => viewerImage && downloadImage(viewerImage.url, viewerImage.fileName || viewerImage.alt || 'image.png')}>
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2v9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M4.5 8L8 11.5 11.5 8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 13h12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+				</button>
+				<button class="image-viewer-btn image-viewer-close" title="Close" onclick={() => showImageViewer = false}>&times;</button>
+			</div>
+		</div>
+		<div class="image-viewer-body">
+			<img src={viewerImage.url} alt={viewerImage.alt} class="image-viewer-img" />
+		</div>
+		{#if viewerImage.prompt || viewerImage.fileName}
+		<div class="image-viewer-details">
+			{#if viewerImage.fileName}
+				<div class="image-viewer-detail-row">
+					<span class="image-viewer-label">File</span>
+					<span>{viewerImage.fileName}</span>
+				</div>
+			{/if}
+			{#if viewerImage.fileSize}
+				<div class="image-viewer-detail-row">
+					<span class="image-viewer-label">Size</span>
+					<span>{viewerImage.fileSize >= 1048576 ? (viewerImage.fileSize / 1048576).toFixed(1) + ' MB' : (viewerImage.fileSize / 1024).toFixed(1) + ' KB'}</span>
+				</div>
+			{/if}
+			{#if viewerImage.mime}
+				<div class="image-viewer-detail-row">
+					<span class="image-viewer-label">Type</span>
+					<span>{viewerImage.mime}</span>
+				</div>
+			{/if}
+			{#if viewerImage.prompt}
+				<div class="image-viewer-detail-row image-viewer-prompt-row">
+					<span class="image-viewer-label">Prompt</span>
+					<pre class="image-viewer-prompt">{viewerImage.prompt}</pre>
+				</div>
+			{/if}
+		</div>
 		{/if}
 	</div>
 </div>
@@ -3758,6 +5271,24 @@ autonomy: reactive
 	}
 	.nav-item.active .channel-hash {
 		color: var(--accent);
+	}
+	.nav-item.unread {
+		color: var(--text-primary);
+		font-weight: 600;
+	}
+	.unread-badge {
+		margin-left: auto;
+		background: var(--accent);
+		color: var(--bg-base);
+		font-size: 11px;
+		font-weight: 700;
+		min-width: 18px;
+		height: 18px;
+		line-height: 18px;
+		text-align: center;
+		border-radius: 9px;
+		padding: 0 5px;
+		flex-shrink: 0;
 	}
 
 	.new-channel-form {
@@ -4043,6 +5574,41 @@ autonomy: reactive
 	.message-row:hover {
 		background: var(--bg-surface);
 	}
+	.message-row.pending {
+		opacity: 0.6;
+	}
+	.message-row.failed {
+		border-left: 3px solid var(--red);
+		opacity: 0.8;
+	}
+	.message-retry {
+		font-size: var(--text-xs);
+		color: var(--red);
+		margin-top: 4px;
+	}
+	.message-retry button {
+		background: none;
+		border: none;
+		color: var(--accent);
+		cursor: pointer;
+		font-size: var(--text-xs);
+		text-decoration: underline;
+		padding: 0 4px;
+	}
+	.message-retry button:hover {
+		color: var(--text-primary);
+	}
+	.connection-banner {
+		padding: 8px 16px;
+		background: var(--red);
+		color: var(--bg-primary);
+		text-align: center;
+		font-size: var(--text-sm);
+		font-weight: 600;
+	}
+	.connection-banner.connecting {
+		background: var(--yellow);
+	}
 
 	.avatar {
 		width: 34px;
@@ -4156,6 +5722,154 @@ autonomy: reactive
 		max-height: 200px;
 		overflow-y: auto;
 	}
+	/* Failed image fallback */
+	.image-load-failed {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 8px 12px;
+		background: var(--bg-raised);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		color: var(--text-tertiary);
+		font-size: var(--text-xs);
+	}
+	.image-load-failed::before {
+		content: '⚠ Image failed to load';
+	}
+
+	/* Image Viewer Modal */
+	.image-viewer-overlay {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.85);
+		z-index: 300;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 24px;
+	}
+	.image-viewer-container {
+		display: flex;
+		flex-direction: column;
+		max-width: 95vw;
+		max-height: 95vh;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-lg, 12px);
+		overflow: hidden;
+	}
+	.image-viewer-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 10px 16px;
+		border-bottom: 1px solid var(--border-subtle);
+		gap: 12px;
+		flex-shrink: 0;
+	}
+	.image-viewer-info {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+	}
+	.image-viewer-sender {
+		font-weight: 600;
+		font-size: 0.85rem;
+		color: var(--text-primary);
+	}
+	.image-viewer-time {
+		font-size: 0.75rem;
+		color: var(--text-tertiary);
+	}
+	.image-viewer-actions {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		flex-shrink: 0;
+	}
+	.image-viewer-btn {
+		background: none;
+		border: none;
+		color: var(--text-secondary);
+		cursor: pointer;
+		padding: 6px;
+		border-radius: 6px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		transition: background 0.15s, color 0.15s;
+	}
+	.image-viewer-btn:hover {
+		background: var(--bg-raised, rgba(255,255,255,0.1));
+		color: var(--text-primary);
+	}
+	.image-viewer-close {
+		font-size: 1.4rem;
+		line-height: 1;
+		padding: 4px 8px;
+	}
+	.image-viewer-body {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		overflow: auto;
+		flex: 1;
+		min-height: 0;
+		padding: 16px;
+		background: rgba(0, 0, 0, 0.3);
+	}
+	.image-viewer-img {
+		max-width: 100%;
+		max-height: calc(85vh - 120px);
+		object-fit: contain;
+		border-radius: 4px;
+	}
+	.image-viewer-details {
+		padding: 12px 16px;
+		border-top: 1px solid var(--border-subtle);
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		flex-shrink: 0;
+		max-height: 200px;
+		overflow-y: auto;
+	}
+	.image-viewer-detail-row {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		font-size: 0.8rem;
+	}
+	.image-viewer-label {
+		color: var(--text-tertiary);
+		font-weight: 600;
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+		flex-shrink: 0;
+		min-width: 48px;
+	}
+	.image-viewer-prompt-row {
+		flex-direction: column;
+		gap: 4px;
+	}
+	.image-viewer-prompt {
+		margin: 0;
+		padding: 8px 10px;
+		background: var(--bg-raised);
+		border: 1px solid var(--border-subtle);
+		border-radius: 6px;
+		font-size: 0.75rem;
+		color: var(--text-secondary);
+		white-space: pre-wrap;
+		word-break: break-word;
+		line-height: 1.5;
+		max-height: 120px;
+		overflow-y: auto;
+	}
+
 	.file-link {
 		display: inline-flex;
 		align-items: center;
@@ -4302,32 +6016,6 @@ autonomy: reactive
 	/* ================================
 	   VIEW DROPDOWN
 	   ================================ */
-	.view-dropdown-wrap {
-		padding: var(--space-sm) var(--space-md);
-		margin-bottom: var(--space-xs);
-	}
-	.view-dropdown {
-		width: 100%;
-		padding: 7px 10px;
-		background: var(--bg-raised);
-		color: var(--text-primary);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-md);
-		font-size: var(--text-sm);
-		font-weight: 600;
-		font-family: inherit;
-		cursor: pointer;
-		appearance: none;
-		background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23666' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
-		background-repeat: no-repeat;
-		background-position: right 10px center;
-		padding-right: 28px;
-	}
-	.view-dropdown:focus {
-		border-color: var(--accent);
-		outline: none;
-		box-shadow: 0 0 0 2px var(--accent-glow);
-	}
 	.sidebar-empty {
 		padding: var(--space-md) var(--space-lg);
 		font-size: var(--text-xs);
@@ -4618,6 +6306,11 @@ autonomy: reactive
 	.notes-del-btn:hover {
 		color: var(--red) !important;
 	}
+	.md-active {
+		background: var(--accent-glow) !important;
+		color: var(--accent) !important;
+		border: 1px solid var(--accent-border) !important;
+	}
 	.notes-meta {
 		margin-top: var(--space-lg);
 		padding-top: var(--space-md);
@@ -4722,6 +6415,19 @@ autonomy: reactive
 		padding: 3px 0;
 		font-size: var(--text-xs);
 	}
+	.perm-toggle {
+		background: none;
+		border: none;
+		width: 100%;
+		cursor: pointer;
+		border-radius: 4px;
+		padding: 3px 4px;
+		text-align: left;
+		color: inherit;
+	}
+	.perm-toggle:hover {
+		background: var(--bg-hover);
+	}
 	.perm-name {
 		color: var(--text-secondary);
 		font-family: var(--font-mono);
@@ -4756,11 +6462,37 @@ autonomy: reactive
 	.brain-settings {
 		max-width: 640px;
 	}
+	.brain-header-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-sm);
+		margin-bottom: var(--space-md);
+	}
+	.brain-back {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 32px;
+		height: 32px;
+		border-radius: 8px;
+		border: none;
+		background: none;
+		color: var(--text-secondary);
+		cursor: pointer;
+		flex-shrink: 0;
+	}
+	.brain-back:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
 	.brain-heading {
 		font-size: 1.25rem;
 		font-weight: 600;
 		color: var(--text-primary);
-		margin-bottom: var(--space-md);
+		margin-bottom: 0;
+	}
+	.sidebar.hidden {
+		display: none;
 	}
 	.brain-tabs {
 		display: flex;
@@ -5269,6 +7001,26 @@ autonomy: reactive
 		font-size: 1.5rem;
 		cursor: pointer;
 		line-height: 1;
+		padding: 0 4px;
+		border-radius: 4px;
+	}
+	.invite-code-section { text-align: center; }
+	.invite-code-label { font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 12px; }
+	.invite-code-display {
+		font-family: var(--font-mono, monospace);
+		font-size: 2rem; font-weight: 800; letter-spacing: 0.15em;
+		color: var(--accent); padding: 16px 0;
+		user-select: all;
+	}
+	.invite-code-hint { font-size: 0.7rem; color: var(--text-tertiary); }
+	.modal-close:hover {
+		color: var(--text-primary);
+		background: var(--bg-raised, rgba(255,255,255,0.1));
+	}
+	.modal-body {
+		padding: 0 20px 20px;
+		overflow-y: auto;
+		flex: 1;
 	}
 	.model-browser-controls {
 		padding: 12px 20px;
@@ -5344,6 +7096,19 @@ autonomy: reactive
 		background: rgba(245,158,11,0.15);
 		color: #fbbf24;
 	}
+	.model-pricing {
+		color: var(--text-dim);
+		font-size: 0.65rem;
+	}
+	.model-fallback-warning {
+		margin-top: 0.5rem;
+		padding: 0.5rem 0.75rem;
+		background: rgba(245, 158, 11, 0.1);
+		border: 1px solid rgba(245, 158, 11, 0.3);
+		border-radius: 6px;
+		color: #fbbf24;
+		font-size: 0.8rem;
+	}
 
 	/* ================================
 	   TEAM VIEW
@@ -5387,8 +7152,30 @@ autonomy: reactive
 	}
 	.agent-badge.system { background: var(--accent); color: white; }
 	.agent-badge.paused { background: var(--text-tertiary); color: white; }
-	.agent-badge.trigger-all { background: var(--blue, #3b82f6); color: white; }
-	.agent-badge.trigger-always { background: var(--green, #22c55e); color: white; }
+	.agent-badge.channel-count { background: var(--blue, #3b82f6); color: white; }
+	.slash-cmd {
+		font-weight: 600; color: var(--accent); font-family: monospace; font-size: 0.85rem;
+		min-width: 100px;
+	}
+	.slash-popup .mention-role { font-size: 0.75rem; }
+	.tools-used {
+		display: flex; align-items: flex-start; gap: 0.35rem;
+		font-size: 0.7rem; color: var(--text-tertiary); margin-top: 0.35rem;
+		font-style: italic;
+	}
+	.mcp-template-card {
+		background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px;
+		padding: 0.6rem 0.75rem; cursor: pointer; text-align: left; transition: border-color 0.15s;
+		width: 100%; color: inherit; font-family: inherit;
+	}
+	.mcp-template-card:hover { border-color: var(--accent); }
+	.tier-badge {
+		font-size: 0.6rem; padding: 0.1rem 0.35rem; border-radius: 4px; font-weight: 600;
+		white-space: nowrap;
+	}
+	.tier-free { background: rgba(34, 197, 94, 0.15); color: var(--green, #22c55e); }
+	.tier-api-key { background: rgba(234, 179, 8, 0.15); color: #eab308; }
+	.tier-custom { background: rgba(148, 163, 184, 0.15); color: var(--text-dim); }
 	.agent-card-role { color: var(--text-secondary); font-size: 0.8rem; }
 	.agent-card-goal { color: var(--text-tertiary); font-size: 0.75rem; }
 	.agent-card-tools { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -5409,6 +7196,20 @@ autonomy: reactive
 	.agent-form { max-width: 640px; }
 	.agent-form-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 	.agent-form-header h3 { font-size: 1rem; font-weight: 600; color: var(--text-primary); }
+	.ai-edit-bar {
+		display: flex; gap: 8px; align-items: center;
+		padding: 10px 12px; margin-bottom: 16px;
+		background: rgba(249, 115, 22, 0.06);
+		border: 1px solid rgba(249, 115, 22, 0.2);
+		border-radius: var(--radius-md);
+	}
+	.ai-edit-input {
+		flex: 1; padding: 6px 10px;
+		background: var(--bg-surface); border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-sm); color: var(--text-primary);
+		font-size: 13px; outline: none;
+	}
+	.ai-edit-input:focus { border-color: var(--accent); }
 	.form-section { margin-bottom: 20px; }
 	.form-section h4 {
 		font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
@@ -5428,6 +7229,11 @@ autonomy: reactive
 		font-size: 0.8rem; color: var(--text-secondary); cursor: pointer;
 	}
 	.form-toggles { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
+	.form-hint { font-size: 0.7rem; color: var(--text-tertiary); margin-top: 2px; }
+	.channel-overrides { display: flex; flex-direction: column; gap: 6px; }
+	.channel-override-row { display: flex; align-items: center; gap: 8px; }
+	.channel-override-name { font-size: 0.8rem; color: var(--text-secondary); min-width: 120px; }
+	.channel-override-row select { font-size: 0.8rem; padding: 2px 6px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border); border-radius: 4px; }
 	.form-actions { display: flex; gap: 8px; margin-top: 16px; }
 	.btn-sm { font-size: 0.8rem; padding: 6px 12px; }
 
@@ -5580,45 +7386,26 @@ autonomy: reactive
 	}
 	.panel-select:focus { border-color: var(--accent, #e8622b); }
 
-	/* Role dialog */
-	.role-dialog-overlay {
-		position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 1000;
-		display: flex; align-items: center; justify-content: center;
-		backdrop-filter: blur(4px);
-	}
-	.role-dialog {
-		background: #1a1a2e; border: 1px solid #333; border-radius: 12px;
-		padding: 24px; width: 440px; max-width: 90vw; display: flex; flex-direction: column; gap: 16px;
-		box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-	}
-	.role-dialog-header {
-		display: flex; justify-content: space-between; align-items: center;
-	}
-	.role-dialog-header h3 { margin: 0; color: #e1e1e6; font-size: 1.1rem; }
-	.role-dialog-close {
-		background: none; border: none; color: #9898a6; font-size: 1.5rem; cursor: pointer;
-		padding: 0 4px; line-height: 1; border-radius: 4px;
-	}
-	.role-dialog-close:hover { color: #e1e1e6; background: rgba(255,255,255,0.1); }
-	.role-dialog-form { display: flex; flex-direction: column; gap: 14px; }
-	.role-dialog .form-group { display: flex; flex-direction: column; gap: 4px; }
-	.role-dialog .form-group label { font-size: 0.8rem; color: #9898a6; font-weight: 500; }
-	.role-dialog .form-group input,
-	.role-dialog .form-group textarea,
-	.role-dialog .form-group select {
-		background: #12121e; border: 1px solid #333; border-radius: 6px;
-		padding: 8px 10px; color: #e1e1e6; font-size: 0.85rem;
+	/* Role dialog (uses standard modal-overlay / modal-dialog / modal-header / modal-body) */
+	.role-dialog-fields { display: flex; flex-direction: column; gap: 14px; }
+	.role-dialog-fields .form-group { display: flex; flex-direction: column; gap: 4px; }
+	.role-dialog-fields .form-group label { font-size: 0.8rem; color: var(--text-tertiary); font-weight: 500; }
+	.role-dialog-fields .form-group input,
+	.role-dialog-fields .form-group textarea,
+	.role-dialog-fields .form-group select {
+		background: var(--bg-primary, #12121e); border: 1px solid var(--border-subtle, #333); border-radius: 6px;
+		padding: 8px 10px; color: var(--text-primary); font-size: 0.85rem;
 		outline: none; font-family: inherit;
 	}
-	.role-dialog .form-group input:focus,
-	.role-dialog .form-group textarea:focus,
-	.role-dialog .form-group select:focus {
+	.role-dialog-fields .form-group input:focus,
+	.role-dialog-fields .form-group textarea:focus,
+	.role-dialog-fields .form-group select:focus {
 		border-color: var(--accent, #e8622b);
 	}
-	.role-dialog .form-group input::placeholder,
-	.role-dialog .form-group textarea::placeholder { color: #555; }
-	.role-dialog .required { color: #ef4444; }
-	.role-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
+	.role-dialog-fields .form-group input::placeholder,
+	.role-dialog-fields .form-group textarea::placeholder { color: var(--text-muted, #555); }
+	.required { color: #ef4444; }
+	.role-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 12px; }
 
 	/* Agent skills */
 	.skill-list {
@@ -5878,6 +7665,63 @@ autonomy: reactive
 		overflow: hidden;
 	}
 
+	/* New DM modal */
+	.new-dm-list {
+		max-height: 320px;
+		overflow-y: auto;
+	}
+	.new-dm-section-label {
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-tertiary);
+		padding: 8px 0 4px;
+	}
+	.new-dm-item {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		width: 100%;
+		padding: 8px 8px;
+		border: none;
+		background: none;
+		color: var(--text-primary);
+		font-size: 0.85rem;
+		border-radius: 6px;
+		cursor: pointer;
+		text-align: left;
+	}
+	.new-dm-item:hover {
+		background: var(--bg-raised, rgba(255,255,255,0.06));
+	}
+	.new-dm-item .presence {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--text-muted);
+		flex-shrink: 0;
+	}
+	.new-dm-item .presence.online {
+		background: var(--green, #22c55e);
+	}
+	.agent-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+	.new-dm-empty {
+		padding: 20px;
+		text-align: center;
+		color: var(--text-tertiary);
+		font-size: 0.85rem;
+	}
+	.nav-empty {
+		padding: 4px 16px 8px 36px;
+		font-size: 0.75rem;
+		color: var(--text-muted);
+	}
+
 	/* Agent Library Modal */
 	.agent-library-modal {
 		max-width: 800px;
@@ -6038,8 +7882,248 @@ autonomy: reactive
 	.agent-lib-badge.custom { background: var(--blue, #3b82f6); color: white; }
 	.agent-lib-badge.template { background: var(--purple, #a855f7); color: white; }
 
+	/* Roles */
+	.role-card { border: 1px solid var(--border-subtle); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
+	.role-card-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; cursor: pointer; }
+	.role-card-header:hover { background: var(--bg-raised); }
+	.role-card-name { font-weight: 600; text-transform: capitalize; }
+	.role-card-count { font-size: 0.75rem; color: var(--text-tertiary); }
+	.role-card-body { padding: 0 16px 12px; }
+	.perm-group-row { margin-bottom: 8px; }
+	.perm-group-label { font-size: 0.7rem; text-transform: uppercase; color: var(--text-tertiary); letter-spacing: 0.05em; display: block; margin-bottom: 4px; }
+	.perm-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+	.perm-chip { font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; background: var(--bg-raised); color: var(--text-muted); }
+	.perm-chip.granted { background: rgba(34,197,94,0.15); color: var(--green, #22c55e); }
+
+	/* Star/Favorite button */
+	.star-btn {
+		background: none;
+		border: none;
+		color: var(--text-tertiary);
+		cursor: pointer;
+		font-size: 12px;
+		padding: 0 2px;
+		opacity: 0;
+		transition: opacity 0.15s, color 0.15s;
+		margin-left: auto;
+	}
+	.nav-item:hover .star-btn { opacity: 0.7; }
+	.star-btn.starred { opacity: 1; color: var(--accent); }
+	.star-btn:hover { opacity: 1 !important; color: var(--accent); }
+	.star-icon { color: var(--accent); }
+
+	/* Message hover actions */
+	.message-row { position: relative; }
+	.msg-hover-actions {
+		position: absolute;
+		top: -8px;
+		right: 12px;
+		display: none;
+		gap: 2px;
+		background: var(--bg-raised);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		padding: 2px;
+		box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+	}
+	.message-row:hover .msg-hover-actions { display: flex; }
+	.msg-action-btn {
+		background: none;
+		border: none;
+		cursor: pointer;
+		font-size: 14px;
+		padding: 4px 6px;
+		border-radius: var(--radius-sm);
+		transition: background 0.1s;
+		line-height: 1;
+	}
+	.msg-action-btn:hover { background: var(--bg-surface); }
+
+	/* Reactions */
+	.reactions-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+		margin-top: 4px;
+	}
+	.reaction-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 2px 8px;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-subtle);
+		border-radius: 12px;
+		font-size: 13px;
+		cursor: pointer;
+		transition: border-color 0.15s, background 0.15s;
+	}
+	.reaction-chip:hover { border-color: var(--accent); }
+	.reaction-chip.own {
+		background: color-mix(in srgb, var(--accent) 15%, transparent);
+		border-color: var(--accent);
+	}
+	.reaction-add {
+		background: none;
+		border: 1px dashed var(--border-subtle);
+		border-radius: 12px;
+		padding: 2px 8px;
+		font-size: 13px;
+		color: var(--text-tertiary);
+		cursor: pointer;
+		transition: border-color 0.15s, color 0.15s;
+	}
+	.reaction-add:hover { border-color: var(--accent); color: var(--accent); }
+
+	/* Thread indicator */
+	.thread-indicator {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		margin-top: 4px;
+		padding: 4px 8px;
+		background: none;
+		border: none;
+		font-size: var(--text-xs);
+		color: var(--accent);
+		cursor: pointer;
+		border-radius: var(--radius-sm);
+		transition: background 0.15s;
+	}
+	.thread-indicator:hover { background: var(--bg-surface); }
+	.thread-time {
+		color: var(--text-tertiary);
+		margin-left: 4px;
+	}
+
+	/* Thread panel */
+	.thread-panel {
+		width: 380px;
+		min-width: 380px;
+		border-left: 1px solid var(--border-subtle);
+		background: var(--bg-primary);
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+	}
+	.thread-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: var(--space-md) var(--space-lg);
+		border-bottom: 1px solid var(--border-subtle);
+	}
+	.thread-header h3 {
+		font-size: var(--text-base);
+		font-weight: 600;
+		margin: 0;
+	}
+	.thread-messages {
+		flex: 1;
+		overflow-y: auto;
+		padding: var(--space-md);
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.thread-root {
+		border-bottom: 1px solid var(--border-subtle);
+		padding-bottom: var(--space-md) !important;
+		margin-bottom: var(--space-sm);
+	}
+	.thread-divider {
+		display: flex;
+		align-items: center;
+		gap: var(--space-sm);
+		padding: var(--space-xs) 0;
+		font-size: var(--text-xs);
+		color: var(--text-tertiary);
+	}
+	.thread-divider::before, .thread-divider::after {
+		content: '';
+		flex: 1;
+		height: 1px;
+		background: var(--border-subtle);
+	}
+	.thread-input {
+		display: flex;
+		gap: var(--space-sm);
+		padding: var(--space-md);
+		border-top: 1px solid var(--border-subtle);
+	}
+	.thread-input input {
+		flex: 1;
+		padding: 8px 12px;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		color: var(--text-primary);
+		font-size: var(--text-sm);
+		outline: none;
+	}
+	.thread-input input:focus { border-color: var(--accent); }
+	.thread-input .send-button {
+		padding: 8px;
+		background: var(--accent);
+		border: none;
+		border-radius: var(--radius-md);
+		color: var(--bg-primary);
+		cursor: pointer;
+	}
+	.thread-input .send-button:disabled { opacity: 0.4; cursor: default; }
+
+	/* Emoji picker popover */
+	.emoji-picker-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 999;
+	}
+	.emoji-picker-popover {
+		position: fixed;
+		z-index: 1000;
+		transform: translateY(-100%);
+	}
+
+	/* Mention avatar */
+	.mention-avatar {
+		width: 22px;
+		height: 22px;
+		border-radius: var(--radius-sm);
+		background: var(--accent-glow);
+		border: 1px solid var(--accent-border);
+		color: var(--accent);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		font-weight: 700;
+		font-size: 11px;
+		flex-shrink: 0;
+	}
+
+	/* Drag & drop overlay */
+	.messages-area.drag-over {
+		position: relative;
+	}
+	.messages-area.drag-over::after {
+		content: 'Drop file to upload';
+		position: absolute;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: color-mix(in srgb, var(--accent) 10%, var(--bg-primary) 90%);
+		border: 2px dashed var(--accent);
+		border-radius: var(--radius-md);
+		color: var(--accent);
+		font-size: var(--text-lg);
+		font-weight: 600;
+		z-index: 10;
+		pointer-events: none;
+	}
+
 	/* Responsive */
 	@media (max-width: 640px) {
 		.sidebar { width: 220px; min-width: 220px; }
+		.thread-panel { width: 100%; min-width: 100%; position: absolute; right: 0; z-index: 50; }
 	}
 </style>

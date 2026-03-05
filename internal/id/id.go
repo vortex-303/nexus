@@ -47,3 +47,15 @@ func Short() string {
 	}
 	return hex.EncodeToString(b)
 }
+
+// InviteCode generates a short human-friendly invite code like "NX-A7B3".
+// 4 alphanumeric chars = 1.6M combinations, safe for 24h expiry.
+func InviteCode() string {
+	const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // no 0/O/1/I to avoid confusion
+	b := make([]byte, 4)
+	rand.Read(b)
+	for i := range b {
+		b[i] = chars[int(b[i])%len(chars)]
+	}
+	return "NX-" + string(b)
+}

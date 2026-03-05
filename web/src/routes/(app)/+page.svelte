@@ -1,12 +1,14 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { createWorkspace, getWorkspaceSlug, login, setToken, setWorkspaceSlug, getCurrentUser } from '$lib/api';
+	import { createWorkspace, getWorkspaceSlug, login, joinByCode, setToken, setWorkspaceSlug, getCurrentUser } from '$lib/api';
 	import { onMount } from 'svelte';
 
-	let mode = $state<'create' | 'login'>('create');
+	let mode = $state<'create' | 'login' | 'join'>('create');
+	let workspaceName = $state('');
 	let displayName = $state('');
 	let email = $state('');
 	let password = $state('');
+	let inviteCode = $state('');
 	let loading = $state(false);
 	let error = $state('');
 
@@ -16,11 +18,12 @@
 	});
 
 	async function handleCreate() {
-		if (!displayName.trim()) { error = 'Enter your name to continue'; return; }
+		if (!workspaceName.trim()) { error = 'Give your workspace a name'; return; }
+		if (!displayName.trim()) { error = 'Enter your name'; return; }
 		loading = true;
 		error = '';
 		try {
-			const data = await createWorkspace(displayName.trim(), email.trim() || undefined, password || undefined);
+			const data = await createWorkspace(displayName.trim(), workspaceName.trim(), email.trim() || undefined, password || undefined);
 			goto(`/w/${data.slug}`);
 		} catch (e: any) {
 			error = e.message;
@@ -50,10 +53,26 @@
 		}
 	}
 
+	async function handleJoin() {
+		if (!inviteCode.trim()) { error = 'Enter your invite code'; return; }
+		if (!displayName.trim()) { error = 'Enter your name'; return; }
+		loading = true;
+		error = '';
+		try {
+			const data = await joinByCode(inviteCode.trim(), displayName.trim());
+			goto(`/w/${data.slug}`);
+		} catch (e: any) {
+			error = e.message;
+		} finally {
+			loading = false;
+		}
+	}
+
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter') {
 			if (mode === 'create') handleCreate();
-			else handleLogin();
+			else if (mode === 'login') handleLogin();
+			else handleJoin();
 		}
 	}
 </script>
@@ -85,15 +104,23 @@
 			<div class="form-inner">
 				<input
 					type="text"
-					placeholder="What's your name?"
-					bind:value={displayName}
+					placeholder="Workspace name"
+					bind:value={workspaceName}
 					onkeydown={handleKeydown}
 					maxlength="50"
 					class="name-input"
 				/>
+				<input
+					type="text"
+					placeholder="Your name"
+					bind:value={displayName}
+					onkeydown={handleKeydown}
+					maxlength="50"
+					class="name-input secondary-input"
+				/>
 
 				<div class="optional-auth">
-					<p class="optional-label">Save your account (optional)</p>
+					<p class="optional-label">Add email to access from other devices</p>
 					<input
 						type="email"
 						placeholder="Email"
@@ -115,14 +142,14 @@
 						<span class="spinner"></span>
 						Creating...
 					{:else}
-						Start a Workspace
+						Create Workspace
 						<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
 							<path d="M6.5 3.5L11 8L6.5 12.5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
 						</svg>
 					{/if}
 				</button>
 			</div>
-			{:else}
+			{:else if mode === 'login'}
 			<div class="form-inner">
 				<input
 					type="email"
@@ -150,6 +177,36 @@
 					{/if}
 				</button>
 			</div>
+			{:else}
+			<div class="form-inner">
+				<input
+					type="text"
+					placeholder="NX-XXXX"
+					bind:value={inviteCode}
+					onkeydown={handleKeydown}
+					maxlength="7"
+					class="name-input invite-code-input"
+				/>
+				<input
+					type="text"
+					placeholder="Your name"
+					bind:value={displayName}
+					onkeydown={handleKeydown}
+					maxlength="50"
+					class="name-input secondary-input"
+				/>
+				<button onclick={handleJoin} disabled={loading} class="btn btn-primary btn-launch">
+					{#if loading}
+						<span class="spinner"></span>
+						Joining...
+					{:else}
+						Join Workspace
+						<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+							<path d="M6.5 3.5L11 8L6.5 12.5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+						</svg>
+					{/if}
+				</button>
+			</div>
 			{/if}
 
 			{#if error}
@@ -159,9 +216,17 @@
 
 		<p class="mode-toggle">
 			{#if mode === 'create'}
-				Have an account? <button class="link-btn" onclick={() => { mode = 'login'; error = ''; }}>Log in</button>
+				Have an invite code? <button class="link-btn" onclick={() => { mode = 'join'; error = ''; }}>Join workspace</button>
+				&nbsp;·&nbsp;
+				<button class="link-btn" onclick={() => { mode = 'login'; error = ''; }}>Log in</button>
+			{:else if mode === 'login'}
+				New here? <button class="link-btn" onclick={() => { mode = 'create'; error = ''; }}>Create a workspace</button>
+				&nbsp;·&nbsp;
+				Have a code? <button class="link-btn" onclick={() => { mode = 'join'; error = ''; }}>Join</button>
 			{:else}
 				New here? <button class="link-btn" onclick={() => { mode = 'create'; error = ''; }}>Create a workspace</button>
+				&nbsp;·&nbsp;
+				<button class="link-btn" onclick={() => { mode = 'login'; error = ''; }}>Log in</button>
 			{/if}
 		</p>
 
@@ -279,6 +344,9 @@
 		background: var(--bg-root) !important;
 		border: 1px solid var(--border-default) !important;
 	}
+	.secondary-input {
+		font-size: var(--text-base) !important;
+	}
 
 	.optional-auth {
 		display: flex;
@@ -364,6 +432,13 @@
 		height: 3px;
 		border-radius: 50%;
 		background: var(--border-strong);
+	}
+
+	.invite-code-input {
+		text-transform: uppercase;
+		letter-spacing: 0.15em;
+		font-weight: 700 !important;
+		font-size: var(--text-xl) !important;
 	}
 
 	@media (max-width: 480px) {

@@ -3,25 +3,18 @@ package server
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"github.com/nexus-chat/nexus/internal/brain"
 	"github.com/nexus-chat/nexus/internal/id"
+	"github.com/nexus-chat/nexus/internal/logger"
 )
 
-// startHeartbeatRunner launches a goroutine that checks heartbeat schedules every minute.
-func (s *Server) startHeartbeatRunner() {
-	go func() {
-		ticker := time.NewTicker(1 * time.Minute)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			s.checkHeartbeats()
-		}
-	}()
-	log.Println("[heartbeat] scheduler started")
+// scheduleHeartbeats registers heartbeat checks with the cron scheduler.
+func (s *Server) scheduleHeartbeats() {
+	s.cron.AddFunc("@every 1m", func() { s.checkHeartbeats() })
+	logger.WithCategory(logger.CatBrain).Info().Msg("heartbeat scheduler started")
 }
 
 // checkHeartbeats iterates all workspaces and runs due heartbeat schedules.
@@ -50,18 +43,18 @@ func (s *Server) checkHeartbeats() {
 
 // runHeartbeat executes a single heartbeat schedule.
 func (s *Server) runHeartbeat(slug string, sched brain.HeartbeatSchedule, apiKey, model string) {
-	log.Printf("[heartbeat:%s] running: %s", slug, sched.Name)
+	logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("schedule", sched.Name).Msg("running heartbeat")
 
 	wdb, err := s.ws.Open(slug)
 	if err != nil {
-		log.Printf("[heartbeat:%s] workspace error: %v", slug, err)
+		logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("heartbeat workspace error")
 		return
 	}
 
 	// Find the target channel
 	channelID := resolveChannelByName(wdb.DB, sched.Channel)
 	if channelID == "" {
-		log.Printf("[heartbeat:%s] channel '%s' not found", slug, sched.Channel)
+		logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Str("channel", sched.Channel).Msg("heartbeat channel not found")
 		return
 	}
 
@@ -99,7 +92,7 @@ func (s *Server) runHeartbeat(slug string, sched brain.HeartbeatSchedule, apiKey
 	client := brain.NewClient(apiKey, model)
 	response, err := client.Complete(systemPrompt, messages)
 	if err != nil {
-		log.Printf("[heartbeat:%s] LLM error: %v", slug, err)
+		logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("heartbeat LLM error")
 		return
 	}
 
@@ -114,7 +107,7 @@ func (s *Server) runHeartbeat(slug string, sched brain.HeartbeatSchedule, apiKey
 	brain.LogAction(wdb.DB, id.New(), brain.ActionHeartbeat, channelID,
 		sched.Name, truncate(response, 500), model, nil)
 
-	log.Printf("[heartbeat:%s] completed: %s", slug, sched.Name)
+	logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("schedule", sched.Name).Msg("heartbeat completed")
 }
 
 // resolveChannelByName finds a channel ID by its name.

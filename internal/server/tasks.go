@@ -10,6 +10,7 @@ import (
 	"github.com/nexus-chat/nexus/internal/auth"
 	"github.com/nexus-chat/nexus/internal/hub"
 	"github.com/nexus-chat/nexus/internal/id"
+	"github.com/nexus-chat/nexus/internal/search"
 )
 
 type createTaskReq struct {
@@ -32,6 +33,7 @@ type updateTaskReq struct {
 	AssigneeID  *string  `json:"assignee_id"`
 	DueDate     *string  `json:"due_date"`
 	Tags        []string `json:"tags"`
+	Position    *int     `json:"position"`
 }
 
 var validStatuses = map[string]bool{
@@ -86,6 +88,11 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	tagsJSON, _ := json.Marshal(req.Tags)
 
+	// Auto-assign position: max position in same status + 1
+	var maxPos int
+	_ = wdb.DB.QueryRow("SELECT COALESCE(MAX(position), 0) FROM tasks WHERE status = ?", req.Status).Scan(&maxPos)
+	position := maxPos + 1
+
 	var dueDate sql.NullString
 	if req.DueDate != "" {
 		dueDate = sql.NullString{String: req.DueDate, Valid: true}
@@ -104,16 +111,21 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err = wdb.DB.Exec(
-		`INSERT INTO tasks (id, title, description, status, priority, assignee_id, created_by, due_date, tags, channel_id, message_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO tasks (id, title, description, status, priority, assignee_id, created_by, due_date, tags, channel_id, message_id, position, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		taskID, req.Title, req.Description, req.Status, req.Priority,
 		assigneeID, claims.UserID, dueDate, string(tagsJSON),
-		channelID, messageID, now, now,
+		channelID, messageID, position, now, now,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create task")
 		return
 	}
+
+	s.search.Index(slug, search.SearchDoc{
+		ID: taskID, Type: "task", Title: req.Title, Content: req.Description,
+		Status: req.Status, CreatedAt: now,
+	})
 
 	task := hub.TaskPayload{
 		ID:          taskID,
@@ -127,6 +139,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		Tags:        tagsJSON,
 		ChannelID:   req.ChannelID,
 		MessageID:   req.MessageID,
+		Position:    position,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -157,7 +170,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	assignee := r.URL.Query().Get("assignee")
 	priority := r.URL.Query().Get("priority")
 
-	query := "SELECT id, title, description, status, priority, COALESCE(assignee_id,''), created_by, COALESCE(due_date,''), tags, COALESCE(channel_id,''), COALESCE(message_id,''), created_at, updated_at FROM tasks WHERE 1=1"
+	query := "SELECT id, title, description, status, priority, COALESCE(assignee_id,''), created_by, COALESCE(due_date,''), tags, COALESCE(channel_id,''), COALESCE(message_id,''), position, created_at, updated_at FROM tasks WHERE 1=1"
 	var args []any
 
 	if status != "" {
@@ -173,7 +186,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		args = append(args, priority)
 	}
 
-	query += " ORDER BY created_at DESC"
+	query += " ORDER BY position ASC, created_at DESC"
 
 	rows, err := wdb.DB.Query(query, args...)
 	if err != nil {
@@ -188,7 +201,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		var tagsStr string
 		if err := rows.Scan(&t.ID, &t.Title, &t.Description, &t.Status, &t.Priority,
 			&t.AssigneeID, &t.CreatedBy, &t.DueDate, &tagsStr,
-			&t.ChannelID, &t.MessageID, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			&t.ChannelID, &t.MessageID, &t.Position, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			continue
 		}
 		t.Tags = json.RawMessage(tagsStr)
@@ -216,11 +229,11 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	var t hub.TaskPayload
 	var tagsStr string
 	err = wdb.DB.QueryRow(
-		"SELECT id, title, description, status, priority, COALESCE(assignee_id,''), created_by, COALESCE(due_date,''), tags, COALESCE(channel_id,''), COALESCE(message_id,''), created_at, updated_at FROM tasks WHERE id = ?",
+		"SELECT id, title, description, status, priority, COALESCE(assignee_id,''), created_by, COALESCE(due_date,''), tags, COALESCE(channel_id,''), COALESCE(message_id,''), position, created_at, updated_at FROM tasks WHERE id = ?",
 		taskID,
 	).Scan(&t.ID, &t.Title, &t.Description, &t.Status, &t.Priority,
 		&t.AssigneeID, &t.CreatedBy, &t.DueDate, &tagsStr,
-		&t.ChannelID, &t.MessageID, &t.CreatedAt, &t.UpdatedAt)
+		&t.ChannelID, &t.MessageID, &t.Position, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
@@ -301,6 +314,10 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		sets = append(sets, "tags = ?")
 		args = append(args, string(tagsJSON))
 	}
+	if req.Position != nil {
+		sets = append(sets, "position = ?")
+		args = append(args, *req.Position)
+	}
 
 	if len(sets) == 0 {
 		writeError(w, http.StatusBadRequest, "no fields to update")
@@ -326,12 +343,16 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 	var t hub.TaskPayload
 	var tagsStr string
 	_ = wdb.DB.QueryRow(
-		"SELECT id, title, description, status, priority, COALESCE(assignee_id,''), created_by, COALESCE(due_date,''), tags, COALESCE(channel_id,''), COALESCE(message_id,''), created_at, updated_at FROM tasks WHERE id = ?",
+		"SELECT id, title, description, status, priority, COALESCE(assignee_id,''), created_by, COALESCE(due_date,''), tags, COALESCE(channel_id,''), COALESCE(message_id,''), position, created_at, updated_at FROM tasks WHERE id = ?",
 		taskID,
 	).Scan(&t.ID, &t.Title, &t.Description, &t.Status, &t.Priority,
 		&t.AssigneeID, &t.CreatedBy, &t.DueDate, &tagsStr,
-		&t.ChannelID, &t.MessageID, &t.CreatedAt, &t.UpdatedAt)
+		&t.ChannelID, &t.MessageID, &t.Position, &t.CreatedAt, &t.UpdatedAt)
 	t.Tags = json.RawMessage(tagsStr)
+
+	s.search.Index(slug, search.SearchDoc{
+		ID: t.ID, Type: "task", Title: t.Title, Content: t.Description, Status: t.Status,
+	})
 
 	_ = claims // used for auth check above
 
@@ -365,6 +386,8 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
+
+	s.search.Delete(slug, taskID)
 
 	h := s.hubs.Get(slug)
 	h.BroadcastAll(hub.MakeEnvelope(hub.TypeTaskDeleted, hub.TaskDeletedPayload{ID: taskID}), "")

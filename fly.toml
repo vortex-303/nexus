@@ -22,6 +22,12 @@ primary_region = "ewr"
     hard_limit = 100
     soft_limit = 80
 
+[[services]]
+  internal_port = 2525
+  protocol = "tcp"
+  [[services.ports]]
+    port = 25
+
 [[vm]]
   size = "shared-cpu-1x"
   memory = "512mb"

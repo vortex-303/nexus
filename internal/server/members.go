@@ -49,6 +49,11 @@ func (s *Server) handleUpdateRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if currentRole == "agent" || currentRole == "brain" {
+		writeError(w, http.StatusBadRequest, "cannot change role of agent or brain")
+		return
+	}
+
 	// Update role
 	_, err = wdb.DB.Exec("UPDATE members SET role = ? WHERE id = ?", req.Role, req.MemberID)
 	if err != nil {

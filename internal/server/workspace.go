@@ -1,20 +1,69 @@
 package server
 
 import (
-	"log"
+	"fmt"
 	"net/http"
+	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/nexus-chat/nexus/internal/auth"
 	"github.com/nexus-chat/nexus/internal/brain"
+	"github.com/nexus-chat/nexus/internal/db"
 	"github.com/nexus-chat/nexus/internal/id"
+	"github.com/nexus-chat/nexus/internal/logger"
 )
 
+// memberColorPalette is a 12-color palette for auto-assigning member colors.
+var memberColorPalette = []string{
+	"#3b82f6", // blue
+	"#10b981", // emerald
+	"#8b5cf6", // violet
+	"#ef4444", // red
+	"#f59e0b", // amber
+	"#ec4899", // pink
+	"#06b6d4", // cyan
+	"#84cc16", // lime
+	"#f97316", // orange
+	"#6366f1", // indigo
+	"#14b8a6", // teal
+	"#e11d48", // rose
+}
+
+// assignMemberColor picks the next color from the palette based on member count.
+func assignMemberColor(wdb *db.WorkspaceDB) string {
+	var count int
+	_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM members WHERE color != ''").Scan(&count)
+	return memberColorPalette[count%len(memberColorPalette)]
+}
+
+// backfillMemberColors assigns colors to any member with an empty color.
+func backfillMemberColors(wdb *db.WorkspaceDB) {
+	rows, err := wdb.DB.Query("SELECT id FROM members WHERE color = '' ORDER BY joined_at")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	for _, memberID := range ids {
+		color := assignMemberColor(wdb)
+		_, _ = wdb.DB.Exec("UPDATE members SET color = ? WHERE id = ?", color, memberID)
+	}
+}
+
 type createWorkspaceReq struct {
-	DisplayName string `json:"display_name"`
-	Email       string `json:"email,omitempty"`
-	Password    string `json:"password,omitempty"`
+	DisplayName   string `json:"display_name"`
+	WorkspaceName string `json:"workspace_name"`
+	Email         string `json:"email,omitempty"`
+	Password      string `json:"password,omitempty"`
 }
 
 type createWorkspaceResp struct {
@@ -59,7 +108,7 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// Register workspace in global DB
 	_, err := s.global.DB.Exec(
 		"INSERT INTO workspaces (slug, name, created_by) VALUES (?, ?, ?)",
-		slug, "", userID,
+		slug, req.WorkspaceName, userID,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create workspace")
@@ -85,15 +134,16 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Add creator as admin member
+	creatorColor := assignMemberColor(wdb)
 	if accountID != "" {
 		_, err = wdb.DB.Exec(
-			"INSERT INTO members (id, display_name, role, account_id) VALUES (?, ?, ?, ?)",
-			userID, req.DisplayName, "admin", accountID,
+			"INSERT INTO members (id, display_name, role, account_id, color) VALUES (?, ?, ?, ?, ?)",
+			userID, req.DisplayName, "admin", accountID, creatorColor,
 		)
 	} else {
 		_, err = wdb.DB.Exec(
-			"INSERT INTO members (id, display_name, role) VALUES (?, ?, ?)",
-			userID, req.DisplayName, "admin",
+			"INSERT INTO members (id, display_name, role, color) VALUES (?, ?, ?, ?)",
+			userID, req.DisplayName, "admin", creatorColor,
 		)
 	}
 	if err != nil {
@@ -103,18 +153,16 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	// Add Brain as first member and create definition files
 	if err := s.ensureBrainMember(slug); err != nil {
-		log.Printf("[brain] failed to create brain member for %s: %v", slug, err)
+		logger.WithCategory(logger.CatBrain).Error().Err(err).Str("slug", slug).Msg("failed to create brain member")
 	}
 	brainDir := brain.BrainDir(s.cfg.DataDir, slug)
 	if err := brain.EnsureDefaults(brainDir); err != nil {
-		log.Printf("[brain] failed to create definition files for %s: %v", slug, err)
-	}
-	if err := brain.EnsureDefaultSkills(brainDir); err != nil {
-		log.Printf("[brain] failed to create default skills for %s: %v", slug, err)
+		logger.WithCategory(logger.CatBrain).Error().Err(err).Str("slug", slug).Msg("failed to create definition files")
 	}
 	if err := s.ensureBuiltinAgents(slug); err != nil {
-		log.Printf("[builtin] failed to seed built-in agents for %s: %v", slug, err)
+		logger.WithCategory(logger.CatAgent).Error().Err(err).Str("slug", slug).Msg("failed to seed built-in agents")
 	}
+	s.seedFreeMCPServers(slug)
 
 	// Issue JWT
 	token, err := s.jwt.Issue(userID, req.DisplayName, slug, "admin", accountID)
@@ -176,9 +224,10 @@ func (s *Server) handleJoinWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	// Add as member
 	userID := id.New()
+	joinColor := assignMemberColor(wdb)
 	_, err = wdb.DB.Exec(
-		"INSERT INTO members (id, display_name, role) VALUES (?, ?, ?)",
-		userID, req.DisplayName, "member",
+		"INSERT INTO members (id, display_name, role, color) VALUES (?, ?, ?, ?)",
+		userID, req.DisplayName, "member", joinColor,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to add member")
@@ -198,9 +247,10 @@ func (s *Server) handleJoinWorkspace(w http.ResponseWriter, r *http.Request) {
 type createInviteResp struct {
 	InviteToken string `json:"invite_token"`
 	InviteURL   string `json:"invite_url"`
+	InviteCode  string `json:"invite_code"`
 }
 
-// handleCreateInvite generates an invite link for the workspace. Admin only.
+// handleCreateInvite generates an invite code + link for the workspace. Admin only.
 func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	claims := auth.GetClaims(r)
@@ -209,6 +259,130 @@ func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	inviteToken := id.Short()
+	inviteCode := id.InviteCode()
+	expires := time.Now().UTC().Add(24 * time.Hour).Format("2006-01-02T15:04:05Z")
+
+	_, err := s.global.DB.Exec(
+		"INSERT INTO invite_tokens (token, workspace_slug, created_by, expires_at) VALUES (?, ?, ?, ?)",
+		inviteToken, slug, claims.UserID, expires,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create invite")
+		return
+	}
+
+	// Also store the short code pointing to the same workspace
+	_, err = s.global.DB.Exec(
+		"INSERT INTO invite_tokens (token, workspace_slug, created_by, expires_at) VALUES (?, ?, ?, ?)",
+		inviteCode, slug, claims.UserID, expires,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create invite code")
+		return
+	}
+
+	inviteURL := "/w/" + slug + "?invite=" + inviteToken
+	if s.cfg.Domain != "" {
+		inviteURL = "https://" + s.cfg.Domain + inviteURL
+	}
+
+	writeJSON(w, http.StatusCreated, createInviteResp{
+		InviteToken: inviteToken,
+		InviteURL:   inviteURL,
+		InviteCode:  inviteCode,
+	})
+}
+
+// handleJoinByCode joins a workspace using a short invite code (e.g. NX-A7B3).
+// POST /api/join
+func (s *Server) handleJoinByCode(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code        string `json:"code"`
+		DisplayName string `json:"display_name"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	code := strings.TrimSpace(strings.ToUpper(req.Code))
+	if code == "" {
+		writeError(w, http.StatusBadRequest, "code is required")
+		return
+	}
+	if req.DisplayName == "" {
+		req.DisplayName = "Anonymous"
+	}
+
+	// Look up the code
+	var wsSlug string
+	err := s.global.DB.QueryRow(
+		"SELECT workspace_slug FROM invite_tokens WHERE token = ? AND (expires_at IS NULL OR expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
+		code,
+	).Scan(&wsSlug)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "invalid or expired invite code")
+		return
+	}
+
+	// Open workspace DB
+	wdb, err := s.ws.Open(wsSlug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to open workspace")
+		return
+	}
+
+	// Add as member
+	userID := id.New()
+	joinColor := assignMemberColor(wdb)
+	_, err = wdb.DB.Exec(
+		"INSERT INTO members (id, display_name, role, color) VALUES (?, ?, ?, ?)",
+		userID, req.DisplayName, "member", joinColor,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to add member")
+		return
+	}
+
+	// Issue JWT
+	token, err := s.jwt.Issue(userID, req.DisplayName, wsSlug, "member", "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create session")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token":     token,
+		"member_id": userID,
+		"slug":      wsSlug,
+	})
+}
+
+// handleInviteByEmail sends an invite link via email.
+func (s *Server) handleInviteByEmail(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	claims := auth.GetClaims(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := readJSON(r, &req); err != nil || req.Email == "" {
+		writeError(w, http.StatusBadRequest, "email required")
+		return
+	}
+
+	// Check SMTP is configured
+	host := s.getBrainSetting(slug, "email_outbound_host")
+	if host == "" {
+		writeError(w, http.StatusBadRequest, "SMTP not configured. Set up outbound email in Brain → Integrations.")
+		return
+	}
+
+	// Create invite token
 	inviteToken := id.Short()
 	_, err := s.global.DB.Exec(
 		"INSERT INTO invite_tokens (token, workspace_slug, created_by) VALUES (?, ?, ?)",
@@ -224,10 +398,26 @@ func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 		inviteURL = "https://" + s.cfg.Domain + inviteURL
 	}
 
-	writeJSON(w, http.StatusCreated, createInviteResp{
-		InviteToken: inviteToken,
-		InviteURL:   inviteURL,
-	})
+	// Get workspace name for email
+	wsName := slug
+	var displayName string
+	row := s.global.DB.QueryRow("SELECT display_name FROM workspaces WHERE slug = ?", slug)
+	if row.Scan(&displayName) == nil && displayName != "" {
+		wsName = displayName
+	}
+
+	inviterName := claims.DisplayName
+	if inviterName == "" {
+		inviterName = "A team member"
+	}
+
+	subject := fmt.Sprintf("You're invited to join %s", wsName)
+	body := fmt.Sprintf("%s has invited you to join the %s workspace.\n\nClick the link below to join:\n%s\n\nSee you there!", inviterName, wsName, inviteURL)
+
+	s.sendOutboundEmail(slug, req.Email, subject, body, "")
+	logger.WithCategory(logger.CatSystem).Info().Str("slug", slug).Str("email", req.Email).Str("inviter", claims.UserID).Msg("invite email sent")
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
 }
 
 type workspaceInfoResp struct {
@@ -240,6 +430,7 @@ type memberResp struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name"`
 	Role        string `json:"role"`
+	Color       string `json:"color"`
 }
 
 // handleGetWorkspace returns workspace info.
@@ -271,7 +462,10 @@ func (s *Server) handleGetWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := wdb.DB.Query("SELECT id, display_name, role FROM members ORDER BY joined_at")
+	// Backfill colors for members that don't have one yet
+	backfillMemberColors(wdb)
+
+	rows, err := wdb.DB.Query("SELECT id, display_name, role, color FROM members ORDER BY joined_at")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list members")
 		return
@@ -281,7 +475,7 @@ func (s *Server) handleGetWorkspace(w http.ResponseWriter, r *http.Request) {
 	var members []memberResp
 	for rows.Next() {
 		var m memberResp
-		if err := rows.Scan(&m.ID, &m.DisplayName, &m.Role); err != nil {
+		if err := rows.Scan(&m.ID, &m.DisplayName, &m.Role, &m.Color); err != nil {
 			continue
 		}
 		members = append(members, m)

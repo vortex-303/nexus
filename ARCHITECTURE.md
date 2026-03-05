@@ -25,6 +25,10 @@
 | **Visualization** | D3.js + d3-org-chart | Organization chart rendering |
 | **Config** | TOML | `~/.nexus/nexus.toml` |
 | **Build** | Vite (frontend) + `go build` (backend) | Web assets embedded via `//go:embed` |
+| **Metrics** | Prometheus (`/metrics` endpoint) | LLM calls, tool calls, agent executions, WS connections, messages |
+| **Task Queue** | asynq (Redis, optional) | Persistent async tasks with retry; goroutine fallback |
+| **Vector Search** | Qdrant (gRPC, optional) | Semantic knowledge search with 1536-dim embeddings; SQL LIKE fallback |
+| **Embeddings** | OpenRouter (`text-embedding-3-small`) | Reuses existing API key for knowledge vectorization |
 
 ### Key Dependencies (Go)
 - `github.com/mattn/go-sqlite3` — SQLite driver (CGO)
@@ -32,6 +36,9 @@
 - `nhooyr.io/websocket` — WebSocket server
 - `github.com/BurntSushi/toml` — Config parsing
 - `golang.org/x/crypto` — bcrypt, TLS/ACME
+- `github.com/prometheus/client_golang` — Prometheus metrics
+- `github.com/hibiken/asynq` — Redis-backed task queue
+- `github.com/qdrant/go-client` — Qdrant vector DB (gRPC)
 
 ### Key Dependencies (Web)
 - `@tiptap/*` — Rich text editor with code blocks, images, tasks, links
@@ -105,18 +112,30 @@ Target: law firms (privilege), healthcare (HIPAA), finance (SOX), government (IT
 │  │  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────────┐  │  │
 │  │  │ Skills      │  │ Knowledge    │  │ Heartbeat Scheduler     │  │  │
 │  │  │ .md files   │  │ Base         │  │ Cron-like routines      │  │  │
-│  │  │ per agent   │  │ (docs, URLs) │  │ driven by HEARTBEAT.md  │  │  │
+│  │  │ per agent   │  │ (docs, URLs, │  │ driven by HEARTBEAT.md  │  │  │
+│  │  │             │  │  vectors)    │  │                         │  │  │
 │  │  └─────────────┘  └──────────────┘  └─────────────────────────┘  │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
 │                                                                         │
 │  ┌───────────────────────────────────────────────────────────────────┐  │
 │  │                    TOOL ACCESS                                     │  │
 │  │  ┌───────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐            │  │
-│  │  │OpenRouter │ │ Gemini   │ │ Internal │ │ Future:  │            │  │
-│  │  │(cloud LLM)│ │(image gen│ │ (tasks,  │ │ MCP,     │            │  │
-│  │  │           │ │ API)     │ │ docs,    │ │ SMTP,    │            │  │
-│  │  │           │ │          │ │ search)  │ │ llama)   │            │  │
+│  │  │OpenRouter │ │ Gemini   │ │ Internal │ │ MCP      │            │  │
+│  │  │(cloud LLM)│ │(image gen│ │ (tasks,  │ │(stdio/SSE│            │  │
+│  │  │           │ │ API)     │ │ docs,    │ │ tools)   │            │  │
+│  │  │           │ │          │ │ search)  │ │          │            │  │
 │  │  └───────────┘ └──────────┘ └──────────┘ └──────────┘            │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                    OBSERVABILITY & ASYNC                           │  │
+│  │  ┌────────────────┐  ┌──────────────┐  ┌──────────────────────┐  │  │
+│  │  │ Prometheus     │  │ asynq        │  │ Qdrant               │  │  │
+│  │  │ GET /metrics   │  │ (Redis queue)│  │ (vector search)      │  │  │
+│  │  │ LLM, tools, WS │  │ memory ext.  │  │ knowledge embeddings │  │  │
+│  │  │ latency, counts│  │ summarization│  │ 1536-dim cosine      │  │  │
+│  │  └────────────────┘  └──────────────┘  └──────────────────────┘  │  │
+│  │  (all optional — graceful fallback when services unavailable)     │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
 │                                                                         │
 │  ┌───────────────────────────────────────────────────────────────────┐  │
@@ -149,12 +168,12 @@ nexus/
 │   │   ├── brain.go               # Brain init, default definition files
 │   │   ├── memory.go              # Memory types, summaries, extraction prompts
 │   │   ├── heartbeat.go           # Cron-like scheduled actions
-│   │   ├── knowledge.go           # Knowledge base management
+│   │   ├── knowledge.go           # Knowledge base management + semantic search
 │   │   ├── skills.go              # Skill loading, parsing, context building
 │   │   ├── tools.go               # Tool definitions (OpenAI function calling format)
 │   │   ├── actionlog.go           # Brain action audit trail
 │   │   ├── templates.go           # Agent templates (Sales, Support, PM, etc.)
-│   │   ├── openrouter.go          # OpenRouter API client
+│   │   ├── openrouter.go          # OpenRouter API client + embeddings
 │   │   ├── gemini_image.go        # Gemini image generation API
 │   │   └── builtin_agents.go      # Built-in agent definitions
 │   ├── config/
@@ -168,9 +187,13 @@ nexus/
 │   │   └── protocol.go            # Message types, envelope, payloads
 │   ├── id/
 │   │   └── id.go                  # Unique ID generation
+│   ├── metrics/
+│   │   └── metrics.go             # Prometheus metric definitions (promauto)
 │   ├── roles/
 │   │   ├── roles.go               # Role definitions, permission maps
 │   │   └── checker.go             # Permission checking logic
+│   ├── vectorstore/
+│   │   └── vectorstore.go         # Qdrant gRPC wrapper (upsert, search, delete)
 │   └── server/
 │       ├── server.go              # Server init, route registration
 │       ├── api.go                 # REST API handlers
@@ -189,7 +212,8 @@ nexus/
 │       ├── agents.go              # Agent CRUD, templates
 │       ├── brain.go               # Brain settings, definitions API
 │       ├── brain_heartbeat.go     # Heartbeat scheduling
-│       ├── brain_knowledge.go     # Knowledge base API
+│       ├── brain_knowledge.go     # Knowledge base API + vector embedding
+│       ├── taskqueue.go           # asynq task queue with goroutine fallback
 │       ├── brain_memory.go        # Memory extraction, channel summaries
 │       ├── brain_skills.go        # Skill management API
 │       ├── brain_tools.go         # Tool execution, Brain mention handler

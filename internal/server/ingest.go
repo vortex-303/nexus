@@ -1,13 +1,13 @@
 package server
 
 import (
-	"log"
 	"strings"
 	"time"
 
 	"github.com/nexus-chat/nexus/internal/brain"
 	"github.com/nexus-chat/nexus/internal/hub"
 	"github.com/nexus-chat/nexus/internal/id"
+	"github.com/nexus-chat/nexus/internal/logger"
 )
 
 // ingestExternalMessage is the shared entry point for all external adapters (webhooks, email, telegram).
@@ -15,7 +15,7 @@ import (
 func (s *Server) ingestExternalMessage(slug, channelID, senderID, senderName, content, source, autonomy string, replyFn func(string)) {
 	wdb, err := s.ws.Open(slug)
 	if err != nil {
-		log.Printf("[ingest:%s] workspace error: %v", slug, err)
+		logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("workspace error during ingest")
 		return
 	}
 
@@ -34,7 +34,7 @@ func (s *Server) ingestExternalMessage(slug, channelID, senderID, senderName, co
 		msgID, channelID, senderID, content, now,
 	)
 	if err != nil {
-		log.Printf("[ingest:%s] failed to save message: %v", slug, err)
+		logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("failed to save ingest message")
 		return
 	}
 
@@ -80,7 +80,7 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 	go func() {
 		apiKey, model := s.getBrainSettings(slug)
 		if apiKey == "" {
-			log.Printf("[brain:%s] no API key configured, ignoring mention", slug)
+			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Msg("no API key configured, ignoring mention")
 			return
 		}
 
@@ -91,13 +91,13 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 		brainDir := brain.BrainDir(s.cfg.DataDir, slug)
 		systemPrompt, err := brain.BuildSystemPrompt(brainDir)
 		if err != nil {
-			log.Printf("[brain:%s] failed to build system prompt: %v", slug, err)
+			logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("failed to build system prompt")
 			return
 		}
 
 		wdb, err := s.ws.Open(slug)
 		if err != nil {
-			log.Printf("[brain:%s] workspace error: %v", slug, err)
+			logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("workspace error")
 			return
 		}
 
@@ -107,15 +107,22 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 			systemPrompt += "\n\n---\n\n" + memoryContext
 		}
 
-		// Append skills
+		// Append skills (role-gated + enabled filter)
 		skills := brain.LoadSkills(brainDir)
+		s.applySkillEnabledState(slug, skills)
+		var senderRole string
+		_ = wdb.DB.QueryRow("SELECT role FROM members WHERE LOWER(display_name) = LOWER(?)", senderName).Scan(&senderRole)
+		skills = brain.FilterSkillsByRole(skills, senderRole)
+		skills = filterEnabledSkills(skills)
 		skillContext := brain.BuildSkillContext(skills)
 		if skillContext != "" {
 			systemPrompt += "\n\n---\n\n" + skillContext
 		}
 
 		// Append knowledge base
-		kbContext := brain.BuildKnowledgeContext(wdb.DB, content)
+		kbContext := brain.BuildKnowledgeContext(wdb.DB, content, brain.SemanticOpts{
+			VectorStore: s.vectors, APIKey: apiKey, Slug: slug,
+		})
 		if kbContext != "" {
 			systemPrompt += "\n\n---\n\n" + kbContext
 		}
@@ -133,10 +140,11 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 		messages := s.getRecentMessages(wdb, channelID, 40)
 		client := brain.NewClient(apiKey, model)
 
-		// First call with tools
-		responseContent, toolCalls, err := client.CompleteWithTools(systemPrompt, messages, brain.Tools)
+		// First call with tools (built-in + MCP)
+		allTools := s.getAllTools(slug)
+		responseContent, toolCalls, err := client.CompleteWithTools(systemPrompt, messages, allTools)
 		if err != nil {
-			log.Printf("[brain:%s] LLM error: %v", slug, err)
+			logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("LLM error")
 			s.sendBrainMessage(slug, channelID, "Sorry, I encountered an error.")
 			return
 		}
@@ -153,15 +161,15 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 		}
 
 		// Execute tools
-		log.Printf("[brain:%s] executing %d tool calls", slug, len(toolCalls))
+		logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("count", len(toolCalls)).Msg("executing tool calls")
 		assistantMsg := brain.Message{Role: "assistant", Content: responseContent, ToolCalls: toolCalls}
 		followUp := append(messages, assistantMsg)
 
 		var imageRefs []string
 		for _, call := range toolCalls {
 			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", call.Function.Name)
-			result := s.executeTool(slug, channelID, call)
-			log.Printf("[brain:%s] tool %s → %s", slug, call.Function.Name, truncate(result, 100))
+			result := s.executeTool(slug, channelID, "", call)
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("tool", call.Function.Name).Str("result", truncate(result, 100)).Msg("tool executed")
 			imageRefs = append(imageRefs, extractImageMarkdown(result)...)
 			followUp = append(followUp, brain.Message{
 				Role:       "tool",
@@ -173,7 +181,7 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 		// Second call: final response
 		finalResponse, err := client.Complete(systemPrompt, followUp)
 		if err != nil {
-			log.Printf("[brain:%s] follow-up LLM error: %v", slug, err)
+			logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("follow-up LLM error")
 			if responseContent != "" {
 				s.sendBrainMessage(slug, channelID, appendMissingImages(responseContent, imageRefs))
 				onReply(responseContent)
@@ -183,14 +191,15 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 
 		finalResponse = strings.TrimSpace(finalResponse)
 		finalResponse = appendMissingImages(finalResponse, imageRefs)
-		if finalResponse != "" {
-			s.sendBrainMessage(slug, channelID, finalResponse)
-			onReply(finalResponse)
-		}
 
 		var toolNames []string
 		for _, call := range toolCalls {
 			toolNames = append(toolNames, call.Function.Name)
+		}
+
+		if finalResponse != "" {
+			s.sendBrainMessage(slug, channelID, finalResponse, toolNames...)
+			onReply(finalResponse)
 		}
 		brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 			truncate(content, 200), truncate(finalResponse, 500), model, toolNames)

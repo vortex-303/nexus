@@ -37,8 +37,9 @@ async function request(method: string, path: string, body?: any): Promise<any> {
 	return data;
 }
 
-export async function createWorkspace(displayName: string, email?: string, password?: string) {
+export async function createWorkspace(displayName: string, workspaceName?: string, email?: string, password?: string) {
 	const body: any = { display_name: displayName };
+	if (workspaceName) body.workspace_name = workspaceName;
 	if (email && password) { body.email = email; body.password = password; }
 	const data = await request('POST', '/api/workspaces', body);
 	setToken(data.token);
@@ -76,6 +77,14 @@ export async function getMessages(slug: string, channelId: string, before?: stri
 	let url = `/api/workspaces/${slug}/channels/${channelId}/messages`;
 	if (before) url += `?before=${before}`;
 	return request('GET', url);
+}
+
+export async function getThread(slug: string, channelId: string, messageId: string) {
+	return request('GET', `/api/workspaces/${slug}/channels/${channelId}/messages/${messageId}/thread`);
+}
+
+export async function toggleFavorite(slug: string, channelId: string) {
+	return request('PUT', `/api/workspaces/${slug}/channels/${channelId}/favorite`);
 }
 
 export async function getOnlineMembers(slug: string) {
@@ -130,15 +139,17 @@ export async function deleteTask(slug: string, taskId: string) {
 }
 
 // Documents
-export async function listDocs(slug: string) {
-	return request('GET', `/api/workspaces/${slug}/documents`);
+export async function listDocs(slug: string, folderId?: string) {
+	let url = `/api/workspaces/${slug}/documents`;
+	if (folderId) url += `?folder_id=${folderId}`;
+	return request('GET', url);
 }
 
-export async function createDoc(slug: string, doc: { title?: string; content?: string }) {
+export async function createDoc(slug: string, doc: { title?: string; content?: string; folder_id?: string }) {
 	return request('POST', `/api/workspaces/${slug}/documents`, doc);
 }
 
-export async function updateDoc(slug: string, docId: string, updates: { title?: string; content?: string }) {
+export async function updateDoc(slug: string, docId: string, updates: { title?: string; content?: string; folder_id?: string }) {
 	return request('PUT', `/api/workspaces/${slug}/documents/${docId}`, updates);
 }
 
@@ -169,6 +180,59 @@ export async function listFiles(slug: string, channelId?: string) {
 
 export function fileUrl(slug: string, hash: string): string {
 	return `/api/workspaces/${slug}/files/${hash}`;
+}
+
+// Folders
+export async function createFolder(slug: string, folder: { name: string; parent_id?: string; is_private?: boolean }) {
+	return request('POST', `/api/workspaces/${slug}/folders`, folder);
+}
+
+export async function listFolders(slug: string, parentId?: string) {
+	let url = `/api/workspaces/${slug}/folders`;
+	if (parentId) url += `?parent_id=${parentId}`;
+	return request('GET', url);
+}
+
+export async function updateFolder(slug: string, folderId: string, updates: { name?: string; parent_id?: string; is_private?: boolean }) {
+	return request('PUT', `/api/workspaces/${slug}/folders/${folderId}`, updates);
+}
+
+export async function deleteFolder(slug: string, folderId: string) {
+	return request('DELETE', `/api/workspaces/${slug}/folders/${folderId}`);
+}
+
+export async function uploadToFolder(slug: string, folderId: string, file: File): Promise<any> {
+	const formData = new FormData();
+	formData.append('file', file);
+	const token = getToken();
+	const res = await fetch(`/api/workspaces/${slug}/folders/${folderId}/files`, {
+		method: 'POST',
+		headers: token ? { Authorization: `Bearer ${token}` } : {},
+		body: formData,
+	});
+	const data = await res.json();
+	if (!res.ok) throw new Error(data.error || 'Upload failed');
+	return data;
+}
+
+export async function updateFile(slug: string, fileId: string, updates: { name?: string; description?: string; is_private?: boolean }) {
+	return request('PUT', `/api/workspaces/${slug}/files/${fileId}/update`, updates);
+}
+
+export async function moveFile(slug: string, fileId: string, folderId: string) {
+	return request('PUT', `/api/workspaces/${slug}/files/${fileId}/move`, { folder_id: folderId });
+}
+
+export async function moveDoc(slug: string, docId: string, folderId: string) {
+	return updateDoc(slug, docId, { folder_id: folderId });
+}
+
+export async function deleteFile(slug: string, fileId: string) {
+	return request('DELETE', `/api/workspaces/${slug}/files/${fileId}/delete`);
+}
+
+export async function duplicateFile(slug: string, fileId: string) {
+	return request('POST', `/api/workspaces/${slug}/files/${fileId}/duplicate`);
 }
 
 // Brain
@@ -225,6 +289,26 @@ export async function deleteSkill(slug: string, file: string) {
 	return request('DELETE', `/api/workspaces/${slug}/brain/skills/${file}`);
 }
 
+export async function listSkillTemplates(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/brain/skills/templates`);
+}
+
+export async function createSkill(slug: string, fileName: string, content: string) {
+	return request('POST', `/api/workspaces/${slug}/brain/skills`, { file_name: fileName, content });
+}
+
+export async function generateSkill(slug: string, description: string) {
+	return request('POST', `/api/workspaces/${slug}/brain/skills/generate`, { description });
+}
+
+export async function toggleSkill(slug: string, file: string, enabled: boolean) {
+	return request('PUT', `/api/workspaces/${slug}/brain/skills/${file}/toggle`, { enabled });
+}
+
+export async function inviteByEmail(slug: string, email: string) {
+	return request('POST', `/api/workspaces/${slug}/invite/email`, { email });
+}
+
 export function getCurrentUser(): { uid: string; name: string; ws: string; role: string; aid?: string; email?: string; sa?: boolean } | null {
 	const token = getToken();
 	if (!token) return null;
@@ -249,7 +333,15 @@ export async function register(email: string, password: string, displayName: str
 export async function login(email: string, password: string, workspaceSlug?: string) {
 	const data = await request('POST', '/api/auth/login', { email, password, workspace_slug: workspaceSlug || '' });
 	setToken(data.token);
-	if (workspaceSlug) setWorkspaceSlug(workspaceSlug);
+	const slug = workspaceSlug || data.workspace_slug;
+	if (slug) setWorkspaceSlug(slug);
+	return data;
+}
+
+export async function switchWorkspace(slug: string) {
+	const data = await request('POST', '/api/auth/switch-workspace', { workspace_slug: slug });
+	setToken(data.token);
+	setWorkspaceSlug(slug);
 	return data;
 }
 
@@ -335,8 +427,19 @@ export async function createAgentFromTemplate(slug: string, templateId: string) 
 	return request('POST', `/api/workspaces/${slug}/agents/from-template`, { template_id: templateId });
 }
 
+export async function joinByCode(code: string, displayName: string) {
+	const data = await request('POST', '/api/join', { code, display_name: displayName });
+	setToken(data.token);
+	setWorkspaceSlug(data.slug);
+	return data;
+}
+
 export async function generateAgentConfig(slug: string, description: string) {
 	return request('POST', `/api/workspaces/${slug}/agents/generate`, { description });
+}
+
+export async function editAgentWithAI(slug: string, instruction: string, current: any) {
+	return request('POST', `/api/workspaces/${slug}/agents/edit-with-ai`, { instruction, current });
 }
 
 // Org Chart
@@ -353,6 +456,10 @@ export async function updateMemberProfile(slug: string, memberId: string, profil
 }
 
 // Org Roles
+export async function listOrgRoles(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/org-chart/roles`);
+}
+
 export async function createOrgRole(slug: string, role: { title: string; description?: string; reports_to?: string }) {
 	return request('POST', `/api/workspaces/${slug}/org-chart/roles`, role);
 }
@@ -503,4 +610,110 @@ export async function listTelegramChats(slug: string) {
 
 export async function deleteTelegramChat(slug: string, id: string) {
 	return request('DELETE', `/api/workspaces/${slug}/brain/telegram/chats/${id}`);
+}
+
+// MCP Templates
+export async function listMCPTemplates() {
+	return request('GET', '/api/mcp-templates');
+}
+
+// MCP Servers
+export async function listMCPServers(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/mcp-servers`);
+}
+
+export async function createMCPServer(slug: string, server: {
+	name: string; transport: string; command?: string; args?: string[];
+	url?: string; env?: Record<string, string>; headers?: Record<string, string>;
+	tool_prefix?: string;
+}) {
+	return request('POST', `/api/workspaces/${slug}/mcp-servers`, server);
+}
+
+export async function getMCPServer(slug: string, id: string) {
+	return request('GET', `/api/workspaces/${slug}/mcp-servers/${id}`);
+}
+
+export async function updateMCPServer(slug: string, id: string, updates: any) {
+	return request('PUT', `/api/workspaces/${slug}/mcp-servers/${id}`, updates);
+}
+
+export async function deleteMCPServer(slug: string, id: string) {
+	return request('DELETE', `/api/workspaces/${slug}/mcp-servers/${id}`);
+}
+
+export async function refreshMCPServer(slug: string, id: string) {
+	return request('POST', `/api/workspaces/${slug}/mcp-servers/${id}/refresh`);
+}
+
+// Calendar Events
+export async function listCalendarEvents(slug: string, filters?: { start?: string; end?: string; calendar?: string }) {
+	let url = `/api/workspaces/${slug}/calendar/events`;
+	const params = new URLSearchParams();
+	if (filters?.start) params.set('start', filters.start);
+	if (filters?.end) params.set('end', filters.end);
+	if (filters?.calendar) params.set('calendar', filters.calendar);
+	const qs = params.toString();
+	if (qs) url += `?${qs}`;
+	return request('GET', url);
+}
+
+export async function createCalendarEvent(slug: string, event: {
+	title: string; start_time: string; end_time: string;
+	description?: string; location?: string; all_day?: boolean;
+	recurrence_rule?: string; color?: string; calendar?: string;
+	attendees?: any[]; reminders?: any[]; channel_id?: string;
+}) {
+	return request('POST', `/api/workspaces/${slug}/calendar/events`, event);
+}
+
+export async function getCalendarEvent(slug: string, eventId: string) {
+	return request('GET', `/api/workspaces/${slug}/calendar/events/${eventId}`);
+}
+
+export async function updateCalendarEvent(slug: string, eventId: string, updates: Record<string, any>) {
+	return request('PUT', `/api/workspaces/${slug}/calendar/events/${eventId}`, updates);
+}
+
+export async function deleteCalendarEvent(slug: string, eventId: string) {
+	return request('DELETE', `/api/workspaces/${slug}/calendar/events/${eventId}`);
+}
+
+// Workspace Models
+export async function getWorkspaceModels(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/models`);
+}
+
+export async function addWorkspaceModel(slug: string, model: {
+	id: string; display_name: string; provider: string;
+	context_length?: number; supports_tools?: boolean;
+	pricing_prompt?: string; pricing_completion?: string;
+}) {
+	return request('POST', `/api/workspaces/${slug}/models`, model);
+}
+
+export async function removeWorkspaceModel(slug: string, modelId: string) {
+	return request('DELETE', `/api/workspaces/${slug}/models/${encodeURIComponent(modelId)}`);
+}
+
+export async function checkModelAvailability(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/models/check`);
+}
+
+// Logs
+export async function getLogs(slug: string, params?: { category?: string; level?: string; since?: string; limit?: number; offset?: number }) {
+	const q = new URLSearchParams();
+	if (params?.category) q.set('category', params.category);
+	if (params?.level) q.set('level', params.level);
+	if (params?.since) q.set('since', params.since);
+	if (params?.limit) q.set('limit', String(params.limit));
+	if (params?.offset) q.set('offset', String(params.offset));
+	return request('GET', `/api/workspaces/${slug}/logs?${q}`);
+}
+
+// Search
+export async function searchWorkspace(slug: string, query: string, types?: string) {
+	const params = new URLSearchParams({ q: query });
+	if (types) params.set('type', types);
+	return request('GET', `/api/workspaces/${slug}/search?${params}`);
 }

@@ -6,12 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/nexus-chat/nexus/internal/auth"
 	"github.com/nexus-chat/nexus/internal/id"
+	"github.com/nexus-chat/nexus/internal/logger"
 )
 
 // Telegram Bot API types (minimal subset)
@@ -92,7 +92,7 @@ func (s *Server) handleTelegramUpdate(w http.ResponseWriter, r *http.Request) {
 			channelID, chName,
 		)
 		if err != nil {
-			log.Printf("[telegram:%s] failed to create channel: %v", slug, err)
+			logger.WithCategory(logger.CatSystem).Error().Err(err).Str("workspace", slug).Msg("telegram: failed to create channel")
 			writeError(w, http.StatusInternalServerError, "channel creation failed")
 			return
 		}
@@ -142,13 +142,13 @@ func sendTelegramMessage(botToken string, chatID int64, text string) error {
 
 	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
-		log.Printf("[telegram] failed to send message: %v", err)
+		logger.WithCategory(logger.CatSystem).Error().Err(err).Msg("telegram: failed to send message")
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		log.Printf("[telegram] API error: status %d", resp.StatusCode)
+		logger.WithCategory(logger.CatSystem).Error().Int("status", resp.StatusCode).Msg("telegram: API error")
 		return fmt.Errorf("telegram API error: %d", resp.StatusCode)
 	}
 	return nil
@@ -158,7 +158,7 @@ func sendTelegramMessage(botToken string, chatID int64, text string) error {
 func (s *Server) registerTelegramWebhook(slug, botToken, secret string) {
 	domain := s.cfg.Domain
 	if domain == "" {
-		log.Printf("[telegram:%s] no domain configured, can't register webhook", slug)
+		logger.WithCategory(logger.CatSystem).Warn().Str("workspace", slug).Msg("telegram: no domain configured, cannot register webhook")
 		return
 	}
 
@@ -170,15 +170,15 @@ func (s *Server) registerTelegramWebhook(slug, botToken, secret string) {
 
 	resp, err := http.Post(apiURL, "application/json", bytes.NewReader(body))
 	if err != nil {
-		log.Printf("[telegram:%s] failed to register webhook: %v", slug, err)
+		logger.WithCategory(logger.CatSystem).Error().Err(err).Str("workspace", slug).Msg("telegram: failed to register webhook")
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 200 {
-		log.Printf("[telegram:%s] webhook registered: %s", slug, webhookURL)
+		logger.WithCategory(logger.CatSystem).Info().Str("workspace", slug).Str("url", webhookURL).Msg("telegram: webhook registered")
 	} else {
-		log.Printf("[telegram:%s] webhook registration failed: status %d", slug, resp.StatusCode)
+		logger.WithCategory(logger.CatSystem).Error().Str("workspace", slug).Int("status", resp.StatusCode).Msg("telegram: webhook registration failed")
 	}
 }
 

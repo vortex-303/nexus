@@ -274,6 +274,34 @@ func (s *Server) handleCreateOrgRole(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleListOrgRoles(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	rows, err := wdb.DB.Query(`SELECT id, title, description, reports_to, COALESCE(filled_by,''), filled_type, created_at FROM org_roles ORDER BY created_at ASC`)
+	if err != nil {
+		writeJSON(w, http.StatusOK, []OrgRole{})
+		return
+	}
+	defer rows.Close()
+
+	var roles []OrgRole
+	for rows.Next() {
+		var r OrgRole
+		if err := rows.Scan(&r.ID, &r.Title, &r.Description, &r.ReportsTo, &r.FilledBy, &r.FilledType, &r.CreatedAt); err == nil {
+			roles = append(roles, r)
+		}
+	}
+	if roles == nil {
+		roles = []OrgRole{}
+	}
+	writeJSON(w, http.StatusOK, roles)
+}
+
 func (s *Server) handleUpdateOrgRole(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	roleID := r.PathValue("roleID")

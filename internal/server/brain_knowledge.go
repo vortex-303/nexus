@@ -12,7 +12,10 @@ import (
 	"golang.org/x/net/html"
 
 	"github.com/nexus-chat/nexus/internal/auth"
+	"github.com/nexus-chat/nexus/internal/brain"
 	"github.com/nexus-chat/nexus/internal/id"
+	"github.com/nexus-chat/nexus/internal/logger"
+	"github.com/nexus-chat/nexus/internal/search"
 )
 
 type knowledgeArticle struct {
@@ -62,6 +65,12 @@ func (s *Server) handleCreateKnowledge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create article")
 		return
 	}
+
+	s.search.Index(slug, search.SearchDoc{
+		ID: articleID, Type: "knowledge", Title: req.Title, Content: req.Content,
+	})
+
+	go s.embedKnowledge(slug, articleID, req.Title+" "+req.Content)
 
 	writeJSON(w, http.StatusCreated, map[string]string{"id": articleID})
 }
@@ -151,6 +160,12 @@ func (s *Server) handleUploadKnowledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.search.Index(slug, search.SearchDoc{
+		ID: articleID, Type: "knowledge", Title: title, Content: content,
+	})
+
+	go s.embedKnowledge(slug, articleID, title+" "+content)
+
 	writeJSON(w, http.StatusCreated, map[string]string{"id": articleID})
 }
 
@@ -239,6 +254,12 @@ func (s *Server) handleUpdateKnowledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.search.Index(slug, search.SearchDoc{
+		ID: articleID, Type: "knowledge", Title: req.Title, Content: req.Content,
+	})
+
+	go s.embedKnowledge(slug, articleID, req.Title+" "+req.Content)
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -261,6 +282,12 @@ func (s *Server) handleDeleteKnowledge(w http.ResponseWriter, r *http.Request) {
 	if n == 0 {
 		writeError(w, http.StatusNotFound, "article not found")
 		return
+	}
+
+	s.search.Delete(slug, articleID)
+
+	if s.vectors != nil {
+		go s.vectors.Delete(slug, articleID)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -370,5 +397,27 @@ func extractHTMLText(rawHTML string) (string, string) {
 		}
 	}
 	return title, strings.Join(cleaned, "\n")
+}
+
+// embedKnowledge computes an embedding for a knowledge article and stores it in the vector store.
+func (s *Server) embedKnowledge(slug, articleID, text string) {
+	if s.vectors == nil {
+		return
+	}
+	apiKey, _ := s.getBrainSettings(slug)
+	if apiKey == "" {
+		return
+	}
+
+	client := brain.NewClient(apiKey, "")
+	vector, err := client.Embed(text)
+	if err != nil {
+		logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Str("article_id", articleID).Msg("embedding failed")
+		return
+	}
+
+	if err := s.vectors.Upsert(slug, articleID, vector, map[string]any{"type": "knowledge"}); err != nil {
+		logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Str("article_id", articleID).Msg("vector upsert failed")
+	}
 }
 

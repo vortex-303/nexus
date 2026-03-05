@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
+	"time"
 )
 
 // Envelope is the wire format for all WebSocket messages.
@@ -20,6 +21,7 @@ type Conn struct {
 	WorkspaceSlug string
 	Role          string
 	Send          chan []byte
+	LastMessageAt time.Time
 	channels      map[string]bool // subscribed channel IDs
 	mu            sync.Mutex
 }
@@ -139,6 +141,20 @@ func (h *Hub) SendTo(connID string, msg []byte) {
 	}
 }
 
+// SendToUser sends a message to all connections of a specific user.
+func (h *Hub) SendToUser(userID string, msg []byte) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, c := range h.conns {
+		if c.UserID == userID {
+			select {
+			case c.Send <- msg:
+			default:
+			}
+		}
+	}
+}
+
 // OnlineMembers returns user IDs and names of connected members.
 func (h *Hub) OnlineMembers() []map[string]string {
 	h.mu.RLock()
@@ -165,6 +181,63 @@ func (h *Hub) SubscribeAll(channelID string) {
 	defer h.mu.RUnlock()
 	for _, c := range h.conns {
 		c.Subscribe(channelID)
+	}
+}
+
+// SubscribeUsersByID subscribes only connections belonging to specific user IDs.
+func (h *Hub) SubscribeUsersByID(channelID string, userIDs []string) {
+	allowed := make(map[string]bool, len(userIDs))
+	for _, uid := range userIDs {
+		allowed[uid] = true
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, c := range h.conns {
+		if allowed[c.UserID] {
+			c.Subscribe(channelID)
+		}
+	}
+}
+
+// BroadcastLowPriority sends a message but drops it for connections whose buffer is > 50% full.
+func (h *Hub) BroadcastLowPriority(channelID string, msg []byte, exceptConnID string) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, c := range h.conns {
+		if c.ID == exceptConnID {
+			continue
+		}
+		if c.IsSubscribed(channelID) {
+			if len(c.Send)*2 > cap(c.Send) {
+				log.Printf("[hub:%s] dropping low-priority message for conn %s (buffer %d/%d)", h.slug, c.ID, len(c.Send), cap(c.Send))
+				continue
+			}
+			select {
+			case c.Send <- msg:
+			default:
+				log.Printf("[hub:%s] dropped message for conn %s (buffer full)", h.slug, c.ID)
+			}
+		}
+	}
+}
+
+// BroadcastAllLowPriority sends to all connections but drops when buffer > 50% full.
+func (h *Hub) BroadcastAllLowPriority(msg []byte, exceptConnID string) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, c := range h.conns {
+		if c.ID == exceptConnID {
+			continue
+		}
+		if len(c.Send)*2 > cap(c.Send) {
+			log.Printf("[hub:%s] dropping low-priority message for conn %s (buffer %d/%d)", h.slug, c.ID, len(c.Send), cap(c.Send))
+			continue
+		}
+		select {
+		case c.Send <- msg:
+		default:
+			log.Printf("[hub:%s] dropped message for conn %s (buffer full)", h.slug, c.ID)
+		}
 	}
 }
 

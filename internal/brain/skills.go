@@ -12,9 +12,11 @@ type Skill struct {
 	Description string   `json:"description"`
 	Trigger     string   `json:"trigger"`     // "mention", "schedule", "keyword"
 	Channels    []string `json:"channels"`    // empty = all channels
+	Roles       []string `json:"roles"`       // empty = all roles
 	Autonomy    string   `json:"autonomy"`    // "reactive", "proactive"
 	Prompt      string   `json:"prompt"`      // The skill's instruction prompt
 	FileName    string   `json:"file_name"`
+	Enabled     bool     `json:"enabled"`
 }
 
 // LoadSkills reads all SKILL.md files from the brain/skills/ directory.
@@ -81,6 +83,13 @@ func parseSkill(content string) Skill {
 					ch = strings.TrimSpace(ch)
 					if ch != "" {
 						skill.Channels = append(skill.Channels, ch)
+					}
+				}
+			case "roles":
+				for _, r := range strings.Split(val, ",") {
+					r = strings.TrimSpace(r)
+					if r != "" {
+						skill.Roles = append(skill.Roles, r)
 					}
 				}
 			case "autonomy":
@@ -338,6 +347,137 @@ When asked to run a retrospective:
 5. Create action items as tasks for the top improvements
 6. Save key insights as memories for future reference
 `,
+
+	// --- Sales & Finance ---
+
+	"proposal-tracker.md": `---
+name: Proposal Tracker
+description: Track proposals/quotes, follow-up cadence, deal stages, weekly pipeline digest
+trigger: mention
+channels: sales
+roles: sales, admin
+autonomy: reactive
+---
+
+# Proposal Tracker
+
+Track proposals and quotes sent to prospects:
+- When a proposal is mentioned, create a task with client name, amount, and date sent
+- Set follow-up reminders at 3, 7, and 14 days after sending
+- Track deal stages: drafted → sent → viewed → follow-up → negotiation → won/lost
+- When someone mentions a proposal update, move it to the appropriate stage
+
+When asked "@Brain pipeline" or "@Brain proposals":
+- Show all active proposals grouped by stage
+- Highlight proposals needing follow-up (past due date)
+- Weekly digest: new proposals sent, deals progressed, win/loss ratio
+`,
+
+	"invoice-reminder.md": `---
+name: Invoice Reminder
+description: Track payment deadlines, send reminders before due, escalate overdue
+trigger: schedule
+channels: finance, general
+roles: finance, admin
+autonomy: proactive
+---
+
+# Invoice Reminder
+
+Track invoices and payment deadlines:
+- When an invoice is logged, create a task with client name, amount, and due date
+- Send reminders in the channel at 7, 3, and 1 day(s) before the due date
+- On the due date, post a final reminder
+- If payment is overdue, escalate: notify at 1, 7, and 14 days past due
+- Mark invoices as paid when someone confirms payment
+
+When asked "@Brain invoices" or "@Brain overdue":
+- Show all outstanding invoices sorted by due date
+- Highlight overdue invoices with days past due
+- Weekly summary: total outstanding, total overdue, recently paid
+`,
+
+	// --- Strategy ---
+
+	"competitive-intel.md": `---
+name: Competitive Intel
+description: Track competitor mentions, compile digest, maintain competitive matrix
+trigger: keyword
+channels:
+autonomy: reactive
+---
+
+# Competitive Intel
+
+Monitor conversations for competitor mentions and competitive intelligence:
+- Watch for competitor names, product comparisons, and market mentions
+- When a competitor is mentioned, log the context as a memory tagged "competitive"
+- Track: what was said, who said it, what channel, any specific features or pricing mentioned
+- Maintain a competitive matrix in memory: competitor → strengths, weaknesses, pricing, features
+
+When asked "@Brain competitors" or "@Brain competitive intel":
+- Compile a digest of recent competitor mentions
+- Show the competitive matrix with latest updates
+- Weekly: summarize new competitive intelligence gathered
+- Flag any trends (e.g., multiple mentions of a competitor's new feature)
+`,
+
+	// --- HR ---
+
+	"hiring-pipeline.md": `---
+name: Hiring Pipeline
+description: Candidate tracking through stages, interview feedback, weekly summary
+trigger: mention
+channels: hiring, general
+roles: hiring, hr, admin
+autonomy: reactive
+---
+
+# Hiring Pipeline
+
+Track candidates through the hiring process:
+- When a candidate is mentioned, create a task with name, role, and current stage
+- Stages: applied → screened → phone-screen → interviewed → offered → hired / rejected
+- When interview feedback is shared, attach it to the candidate's task
+- Track interviewer assignments and schedule conflicts
+
+When asked "@Brain candidates" or "@Brain hiring":
+- Show all active candidates grouped by stage
+- List upcoming interviews this week
+- Weekly summary: new applicants, interviews completed, offers extended, hires made
+- Flag candidates stuck in a stage for more than 7 days
+`,
+
+	// --- Engineering ---
+
+	"release-notes.md": `---
+name: Release Notes
+description: Compile changelog from completed tasks, format as release notes by category
+trigger: mention
+channels: engineering, general
+autonomy: reactive
+---
+
+# Release Notes
+
+Compile release notes from recent work:
+- When asked "@Brain release notes" or "@Brain changelog", scan completed tasks from the past sprint/week
+- Categorize changes: features, improvements, bug fixes, infrastructure, documentation
+- Format as a clean release notes document with version/date header
+- Include who worked on each item and link to relevant conversations
+- Tag entries by impact: major, minor, patch
+
+Output format:
+## [Version/Date]
+### New Features
+- Feature description (@person)
+### Improvements
+- Improvement description (@person)
+### Bug Fixes
+- Fix description (@person)
+
+When asked for a draft, show in channel. When asked to publish, create as a document.
+`,
 }
 
 // EnsureDefaultSkills creates bundled skill files if the skills directory is empty.
@@ -419,6 +559,34 @@ func BuildAgentSkillContext(skills []Skill) string {
 		parts = append(parts, "")
 	}
 	return strings.Join(parts, "\n")
+}
+
+// ParseSkillContent parses skill content into a Skill struct (exported wrapper).
+func ParseSkillContent(content string) Skill {
+	return parseSkill(content)
+}
+
+// FilterSkillsByRole returns only skills whose Roles list is empty or contains the given role.
+// Admin role always has access to all skills.
+func FilterSkillsByRole(skills []Skill, role string) []Skill {
+	if role == "admin" {
+		return skills
+	}
+	roleLower := strings.ToLower(role)
+	var filtered []Skill
+	for _, s := range skills {
+		if len(s.Roles) == 0 {
+			filtered = append(filtered, s)
+			continue
+		}
+		for _, r := range s.Roles {
+			if strings.ToLower(r) == roleLower {
+				filtered = append(filtered, s)
+				break
+			}
+		}
+	}
+	return filtered
 }
 
 // BuildSkillContext formats loaded skills into context for the system prompt.

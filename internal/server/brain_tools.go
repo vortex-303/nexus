@@ -1,20 +1,41 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
+	"golang.org/x/net/html"
+
 	"github.com/nexus-chat/nexus/internal/brain"
+	"github.com/nexus-chat/nexus/internal/logger"
 	"github.com/nexus-chat/nexus/internal/db"
 	"github.com/nexus-chat/nexus/internal/hub"
 	"github.com/nexus-chat/nexus/internal/id"
+	"github.com/nexus-chat/nexus/internal/metrics"
 )
 
 // executeTool runs a tool call and returns the result as a string.
-func (s *Server) executeTool(slug, channelID string, call brain.ToolCall) string {
+// senderMemberID is the member who triggered the tool (for attribution). Empty = Brain.
+func (s *Server) executeTool(slug, channelID, senderMemberID string, call brain.ToolCall) string {
+	start := time.Now()
+	result := s.executeToolInner(slug, channelID, senderMemberID, call)
+	metrics.ToolLatency.WithLabelValues(call.Function.Name).Observe(time.Since(start).Seconds())
+	status := "ok"
+	if strings.HasPrefix(result, "Error") {
+		status = "error"
+	}
+	metrics.ToolCallsTotal.WithLabelValues(call.Function.Name, status).Inc()
+	return result
+}
+
+func (s *Server) executeToolInner(slug, channelID, senderMemberID string, call brain.ToolCall) string {
 	switch call.Function.Name {
 	case "create_task":
 		return s.toolCreateTask(slug, channelID, call.Function.Arguments)
@@ -30,12 +51,34 @@ func (s *Server) executeTool(slug, channelID string, call brain.ToolCall) string
 		return s.handleDelegateToAgent(slug, channelID, call.Function.Arguments)
 	case "generate_image":
 		return s.toolGenerateImage(slug, channelID, call.Function.Arguments)
+	case "create_calendar_event":
+		return s.toolCreateCalendarEvent(slug, channelID, senderMemberID, call.Function.Arguments)
+	case "list_calendar_events":
+		return s.toolListCalendarEvents(slug, call.Function.Arguments)
+	case "update_calendar_event":
+		return s.toolUpdateCalendarEvent(slug, call.Function.Arguments)
+	case "delete_calendar_event":
+		return s.toolDeleteCalendarEvent(slug, call.Function.Arguments)
 	case "send_email":
 		return s.toolSendEmail(slug, call.Function.Arguments)
 	case "send_telegram":
 		return s.toolSendTelegram(slug, channelID, call.Function.Arguments)
+	case "web_search":
+		return toolWebSearch(call.Function.Arguments)
+	case "fetch_url":
+		return toolFetchURL(call.Function.Arguments)
 	default:
-		return fmt.Sprintf("Unknown tool: %s", call.Function.Name)
+		// Route to MCP server
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		mgr := s.getMCPManager(slug)
+		var args map[string]any
+		json.Unmarshal([]byte(call.Function.Arguments), &args)
+		result, err := mgr.CallTool(ctx, call.Function.Name, args)
+		if err != nil {
+			return fmt.Sprintf("MCP tool error: %s", err)
+		}
+		return result
 	}
 }
 
@@ -166,40 +209,22 @@ func (s *Server) toolSearchMessages(slug, channelID, argsJSON string) string {
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "Error parsing arguments"
 	}
-	if args.ChannelID == "" {
-		args.ChannelID = channelID
-	}
 	if args.Limit <= 0 || args.Limit > 20 {
 		args.Limit = 10
 	}
 
-	wdb, err := s.ws.Open(slug)
-	if err != nil {
-		return "Error opening workspace"
-	}
-
-	rows, err := wdb.DB.Query(`
-		SELECT m.content, COALESCE(mem.display_name, m.sender_id), m.created_at
-		FROM messages m
-		LEFT JOIN members mem ON mem.id = m.sender_id
-		WHERE m.channel_id = ? AND m.deleted = FALSE AND m.content LIKE ?
-		ORDER BY m.created_at DESC
-		LIMIT ?
-	`, args.ChannelID, "%"+args.Query+"%", args.Limit)
+	results, err := s.search.Search(slug, args.Query, []string{"message"}, args.Limit)
 	if err != nil {
 		return "Error searching messages"
 	}
-	defer rows.Close()
 
 	var lines []string
-	for rows.Next() {
-		var content, sender, createdAt string
-		rows.Scan(&content, &sender, &createdAt)
-		// Truncate long messages
+	for _, r := range results {
+		content := r.Content
 		if len(content) > 150 {
 			content = content[:147] + "..."
 		}
-		lines = append(lines, fmt.Sprintf("[%s] %s: %s", createdAt, sender, content))
+		lines = append(lines, fmt.Sprintf("[%.2f] %s", r.Score, content))
 	}
 
 	if len(lines) == 0 {
@@ -257,15 +282,32 @@ func (s *Server) toolSearchKnowledge(slug, argsJSON string) string {
 		return "Error opening workspace"
 	}
 
-	return brain.SearchKnowledgeForTool(wdb.DB, args.Query)
+	apiKey, _ := s.getBrainSettings(slug)
+	return brain.SearchKnowledgeForTool(wdb.DB, args.Query, brain.SemanticOpts{
+		VectorStore: s.vectors, APIKey: apiKey, Slug: slug,
+	})
+}
+
+// resolveMemberIDByName looks up a member ID by display name.
+func (s *Server) resolveMemberIDByName(slug, name string) string {
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return ""
+	}
+	var memberID string
+	_ = wdb.DB.QueryRow(
+		"SELECT id FROM members WHERE LOWER(display_name) = LOWER(?)", name,
+	).Scan(&memberID)
+	return memberID
 }
 
 // handleBrainMentionWithTools processes a @Brain mention with tool support.
 func (s *Server) handleBrainMentionWithTools(slug, channelID, senderName, content string) {
 	go func() {
+		metrics.AgentExecutionsTotal.WithLabelValues("Brain", "started").Inc()
 		apiKey, model := s.getBrainSettings(slug)
 		if apiKey == "" {
-			log.Printf("[brain:%s] no API key configured, ignoring mention", slug)
+			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Msg("no API key configured, ignoring mention")
 			return
 		}
 
@@ -276,13 +318,14 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, senderName, conten
 		brainDir := brain.BrainDir(s.cfg.DataDir, slug)
 		systemPrompt, err := brain.BuildSystemPrompt(brainDir)
 		if err != nil {
-			log.Printf("[brain:%s] failed to build system prompt: %v", slug, err)
+			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("failed to build system prompt")
 			return
 		}
+		logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(systemPrompt)).Msg("base prompt")
 
 		wdb, err := s.ws.Open(slug)
 		if err != nil {
-			log.Printf("[brain:%s] workspace error: %v", slug, err)
+			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("workspace error")
 			return
 		}
 
@@ -290,39 +333,59 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, senderName, conten
 		memoryContext := brain.BuildMemoryContext(wdb.DB)
 		if memoryContext != "" {
 			systemPrompt += "\n\n---\n\n" + memoryContext
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(memoryContext)).Int("total", len(systemPrompt)).Msg("+memories")
 		}
 
-		// Append skills context
+		// Append skills context (role-gated + enabled filter)
 		skills := brain.LoadSkills(brainDir)
+		s.applySkillEnabledState(slug, skills)
+		var senderRole string
+		_ = wdb.DB.QueryRow("SELECT role FROM members WHERE LOWER(display_name) = LOWER(?)", senderName).Scan(&senderRole)
+		skills = brain.FilterSkillsByRole(skills, senderRole)
+		skills = filterEnabledSkills(skills)
 		skillContext := brain.BuildSkillContext(skills)
 		if skillContext != "" {
 			systemPrompt += "\n\n---\n\n" + skillContext
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(skillContext)).Int("total", len(systemPrompt)).Msg("+skills")
 		}
 
 		// Append knowledge base context
-		kbContext := brain.BuildKnowledgeContext(wdb.DB, content)
+		kbContext := brain.BuildKnowledgeContext(wdb.DB, content, brain.SemanticOpts{
+			VectorStore: s.vectors, APIKey: apiKey, Slug: slug,
+		})
 		if kbContext != "" {
 			systemPrompt += "\n\n---\n\n" + kbContext
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(kbContext)).Int("total", len(systemPrompt)).Msg("+knowledge")
 		}
 
 		// Append channel history summary (this channel)
 		if chSummary := brain.BuildSingleChannelContext(wdb.DB, channelID); chSummary != "" {
 			systemPrompt += "\n\n---\n\n" + chSummary
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(chSummary)).Int("total", len(systemPrompt)).Msg("+channel_summary")
 		}
 
 		// Append cross-channel awareness (Brain only)
 		if crossCtx := brain.BuildCrossChannelContext(wdb.DB, channelID); crossCtx != "" {
 			systemPrompt += "\n\n---\n\n" + crossCtx
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(crossCtx)).Int("total", len(systemPrompt)).Msg("+cross_channel")
+		}
+
+		// Hard cap: if system prompt is too large, truncate to prevent token overflow
+		if len(systemPrompt) > 100000 {
+			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Int("chars", len(systemPrompt)).Msg("system prompt too large, truncating to 100000")
+			systemPrompt = systemPrompt[:100000]
 		}
 
 		messages := s.getRecentMessages(wdb, channelID, 40)
+		logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("count", len(messages)).Msg("messages")
 
 		client := brain.NewClient(apiKey, model)
 
-		// First call: with tools
-		responseContent, toolCalls, err := client.CompleteWithTools(systemPrompt, messages, brain.Tools)
+		// First call: with tools (built-in + MCP)
+		allTools := s.getAllTools(slug)
+		responseContent, toolCalls, err := client.CompleteWithTools(systemPrompt, messages, allTools)
 		if err != nil {
-			log.Printf("[brain:%s] LLM error: %v", slug, err)
+			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("LLM error")
 			s.sendBrainMessage(slug, channelID, "Sorry, I encountered an error. Check that the API key is configured correctly.")
 			return
 		}
@@ -340,7 +403,7 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, senderName, conten
 		}
 
 		// Execute tool calls and build follow-up messages
-		log.Printf("[brain:%s] executing %d tool calls", slug, len(toolCalls))
+		logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("count", len(toolCalls)).Msg("executing tool calls")
 
 		// Add the assistant's tool-call message
 		assistantMsg := brain.Message{Role: "assistant", Content: responseContent, ToolCalls: toolCalls}
@@ -349,8 +412,9 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, senderName, conten
 		var imageRefs []string
 		for _, call := range toolCalls {
 			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", call.Function.Name)
-			result := s.executeTool(slug, channelID, call)
-			log.Printf("[brain:%s] tool %s → %s", slug, call.Function.Name, truncate(result, 100))
+			senderID := s.resolveMemberIDByName(slug, senderName)
+			result := s.executeTool(slug, channelID, senderID, call)
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("tool", call.Function.Name).Str("result", truncate(result, 100)).Msg("tool result")
 
 			// Extract image markdown from tool results so the follow-up LLM can't drop it
 			imageRefs = append(imageRefs, extractImageMarkdown(result)...)
@@ -366,7 +430,7 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, senderName, conten
 		// Second call: get final response incorporating tool results
 		finalResponse, err := client.Complete(systemPrompt, followUp)
 		if err != nil {
-			log.Printf("[brain:%s] follow-up LLM error: %v", slug, err)
+			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("follow-up LLM error")
 			// Fall back to the initial response if any
 			if responseContent != "" {
 				s.sendBrainMessage(slug, channelID, appendMissingImages(responseContent, imageRefs))
@@ -377,18 +441,31 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, senderName, conten
 		finalResponse = strings.TrimSpace(finalResponse)
 		// Append any image markdown that the LLM may have omitted
 		finalResponse = appendMissingImages(finalResponse, imageRefs)
-		if finalResponse != "" {
-			s.sendBrainMessage(slug, channelID, finalResponse)
-		}
 
-		// Log the action with tool names
+		// Collect tool names for metadata
 		var toolNames []string
 		for _, call := range toolCalls {
 			toolNames = append(toolNames, call.Function.Name)
 		}
+
+		if finalResponse != "" {
+			s.sendBrainMessage(slug, channelID, finalResponse, toolNames...)
+		}
+
 		brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 			truncate(content, 200), truncate(finalResponse, 500), model, toolNames)
 	}()
+}
+
+// filterEnabledSkills returns only skills where Enabled is true.
+func filterEnabledSkills(skills []brain.Skill) []brain.Skill {
+	var out []brain.Skill
+	for _, sk := range skills {
+		if sk.Enabled {
+			out = append(out, sk)
+		}
+	}
+	return out
 }
 
 func truncate(s string, n int) string {
@@ -581,19 +658,19 @@ func (s *Server) toolGenerateImageForAgent(slug, channelID string, agent *Agent,
 			{Role: "user", Content: userMsg},
 		})
 		if err != nil {
-			log.Printf("[generate_image:%s] prompt enrichment failed, using raw prompt: %v", slug, err)
+			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("prompt enrichment failed, using raw prompt")
 		} else {
 			enrichedPrompt = strings.TrimSpace(result)
-			log.Printf("[generate_image:%s] enriched prompt: %s", slug, truncate(enrichedPrompt, 200))
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("prompt", truncate(enrichedPrompt, 200)).Msg("enriched prompt")
 		}
 	}
 
 	imageModel := s.getImageModel(slug)
-	log.Printf("[generate_image:%s] using Gemini model %s", slug, imageModel)
+	logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("model", imageModel).Msg("using Gemini model")
 
 	text, imageData, mimeType, err := brain.GenerateImageGemini(geminiKey, imageModel, enrichedPrompt)
 	if err != nil {
-		log.Printf("[generate_image:%s] error: %v", slug, err)
+		logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("image generation error")
 		return "Error generating image: " + err.Error()
 	}
 
@@ -630,11 +707,11 @@ func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
 	}
 
 	imageModel := s.getImageModel(slug)
-	log.Printf("[generate_image:%s] using Gemini model %s", slug, imageModel)
+	logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("model", imageModel).Msg("using Gemini model")
 
 	text, imageData, mimeType, err := brain.GenerateImageGemini(geminiKey, imageModel, args.Prompt)
 	if err != nil {
-		log.Printf("[generate_image:%s] error: %v", slug, err)
+		logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("image generation error")
 		return "Error generating image: " + err.Error()
 	}
 
@@ -718,4 +795,236 @@ func (s *Server) toolSendTelegram(slug, channelID, argsJSON string) string {
 	}
 
 	return fmt.Sprintf("Message sent to Telegram chat %s", chatIDStr)
+}
+
+// toolWebSearch searches DuckDuckGo HTML and returns formatted results.
+func toolWebSearch(argsJSON string) string {
+	var args struct {
+		Query      string `json:"query"`
+		NumResults int    `json:"num_results"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "Error parsing arguments: " + err.Error()
+	}
+	if args.Query == "" {
+		return "Error: query is required"
+	}
+	if args.NumResults <= 0 {
+		args.NumResults = 5
+	}
+	if args.NumResults > 10 {
+		args.NumResults = 10
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.PostForm("https://html.duckduckgo.com/html/", url.Values{
+		"q": {args.Query},
+	})
+	if err != nil {
+		return "Error searching: " + err.Error()
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return "Error reading search results: " + err.Error()
+	}
+
+	doc, err := html.Parse(strings.NewReader(string(body)))
+	if err != nil {
+		return "Error parsing search results"
+	}
+
+	type searchResult struct {
+		Title   string
+		Snippet string
+		URL     string
+	}
+	var results []searchResult
+
+	// Walk the DOM to find result elements
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "div" {
+			for _, a := range n.Attr {
+				if a.Key == "class" && strings.Contains(a.Val, "result__body") {
+					r := extractDDGResult(n)
+					if r.Title != "" && r.URL != "" {
+						results = append(results, searchResult(r))
+					}
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+
+	if len(results) == 0 {
+		return fmt.Sprintf("No results found for \"%s\"", args.Query)
+	}
+	if len(results) > args.NumResults {
+		results = results[:args.NumResults]
+	}
+
+	var lines []string
+	for i, r := range results {
+		lines = append(lines, fmt.Sprintf("%d. **%s**\n   %s\n   %s", i+1, r.Title, r.Snippet, r.URL))
+	}
+	return fmt.Sprintf("Search results for \"%s\":\n\n%s", args.Query, strings.Join(lines, "\n\n"))
+}
+
+// extractDDGResult extracts title, URL, and snippet from a DuckDuckGo result__body div.
+func extractDDGResult(n *html.Node) struct {
+	Title, Snippet, URL string
+} {
+	var result struct{ Title, Snippet, URL string }
+
+	var walk func(*html.Node)
+	walk = func(node *html.Node) {
+		if node.Type == html.ElementNode {
+			if node.Data == "a" {
+				for _, a := range node.Attr {
+					if a.Key == "class" && strings.Contains(a.Val, "result__a") {
+						result.Title = textContent(node)
+						for _, attr := range node.Attr {
+							if attr.Key == "href" {
+								u := attr.Val
+								// DDG wraps URLs in a redirect; extract the actual URL
+								if idx := strings.Index(u, "uddg="); idx >= 0 {
+									u = u[idx+5:]
+									if end := strings.Index(u, "&"); end >= 0 {
+										u = u[:end]
+									}
+									if decoded, err := url.QueryUnescape(u); err == nil {
+										u = decoded
+									}
+								}
+								result.URL = u
+							}
+						}
+					}
+				}
+			}
+			if node.Data == "a" || node.Data == "span" || node.Data == "div" {
+				for _, a := range node.Attr {
+					if a.Key == "class" && strings.Contains(a.Val, "result__snippet") {
+						result.Snippet = textContent(node)
+					}
+				}
+			}
+		}
+		for c := node.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(n)
+	return result
+}
+
+// textContent returns the text content of an HTML node and its descendants.
+func textContent(n *html.Node) string {
+	if n.Type == html.TextNode {
+		return n.Data
+	}
+	var sb strings.Builder
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		sb.WriteString(textContent(c))
+	}
+	return strings.TrimSpace(sb.String())
+}
+
+// toolFetchURL fetches a URL and extracts text content.
+func toolFetchURL(argsJSON string) string {
+	var args struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "Error parsing arguments: " + err.Error()
+	}
+	if args.URL == "" {
+		return "Error: url is required"
+	}
+
+	parsed, err := url.Parse(args.URL)
+	if err != nil {
+		return "Error: invalid URL"
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "Error: only http and https URLs are supported"
+	}
+
+	// SSRF protection: resolve DNS and block private IPs
+	host := parsed.Hostname()
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return "Error: could not resolve host " + host
+	}
+	for _, ip := range ips {
+		if isPrivateIP(ip) {
+			return "Error: access to private/internal addresses is not allowed"
+		}
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	req, err := http.NewRequest("GET", args.URL, nil)
+	if err != nil {
+		return "Error creating request: " + err.Error()
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; NexusBot/1.0)")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "Error fetching URL: " + err.Error()
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return fmt.Sprintf("Error: server returned status %d", resp.StatusCode)
+	}
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return "Error reading response: " + err.Error()
+	}
+
+	title, content := extractHTMLText(string(bodyBytes))
+
+	// Truncate to 8000 chars
+	if len(content) > 8000 {
+		content = content[:8000] + "\n\n[content truncated]"
+	}
+
+	if title != "" {
+		return fmt.Sprintf("**Title:** %s\n\n%s", title, content)
+	}
+	return content
+}
+
+// isPrivateIP checks if an IP is in a private/reserved range.
+func isPrivateIP(ip net.IP) bool {
+	privateRanges := []struct {
+		network *net.IPNet
+	}{
+		{parseCIDR("127.0.0.0/8")},
+		{parseCIDR("10.0.0.0/8")},
+		{parseCIDR("172.16.0.0/12")},
+		{parseCIDR("192.168.0.0/16")},
+		{parseCIDR("169.254.0.0/16")},
+		{parseCIDR("::1/128")},
+		{parseCIDR("fc00::/7")},
+		{parseCIDR("fe80::/10")},
+	}
+	for _, r := range privateRanges {
+		if r.network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseCIDR(s string) *net.IPNet {
+	_, n, _ := net.ParseCIDR(s)
+	return n
 }

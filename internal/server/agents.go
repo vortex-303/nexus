@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,7 +12,24 @@ import (
 	"github.com/nexus-chat/nexus/internal/brain"
 	"github.com/nexus-chat/nexus/internal/hub"
 	"github.com/nexus-chat/nexus/internal/id"
+	"github.com/nexus-chat/nexus/internal/logger"
 )
+
+// BehaviorConfig holds agent behavior settings.
+type BehaviorConfig struct {
+	FollowTTLMinutes  int               `json:"follow_ttl_minutes"`
+	FollowMaxMessages int               `json:"follow_max_messages"`
+	CooldownSeconds   int               `json:"cooldown_seconds"`
+	ChannelModes      map[string]string `json:"channel_modes"` // "active" or "silent" per channel
+}
+
+// isChannelSilenced returns true if the agent has explicitly silenced this channel.
+func isChannelSilenced(agent *Agent, channelID string) bool {
+	if mode, ok := agent.BehaviorConfig.ChannelModes[channelID]; ok {
+		return mode == "silent"
+	}
+	return false
+}
 
 // Agent represents an AI agent in a workspace.
 type Agent struct {
@@ -41,8 +57,9 @@ type Agent struct {
 	Constraints      string `json:"constraints"`
 	EscalationPrompt string `json:"escalation_prompt"`
 
-	TriggerType   string `json:"trigger_type"`
-	TriggerConfig string `json:"trigger_config"`
+	TriggerType    string         `json:"trigger_type"`
+	TriggerConfig  string         `json:"trigger_config"`
+	BehaviorConfig BehaviorConfig `json:"behavior_config"`
 
 	IsSystem bool `json:"is_system"`
 	IsActive bool `json:"is_active"`
@@ -80,8 +97,9 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		MaxIterations    *int     `json:"max_iterations"`
 		Constraints      string   `json:"constraints"`
 		EscalationPrompt string   `json:"escalation_prompt"`
-		TriggerType      string   `json:"trigger_type"`
-		TemplateID       string   `json:"template_id"`
+		TriggerType      string          `json:"trigger_type"`
+		BehaviorConfig   json.RawMessage `json:"behavior_config"`
+		TemplateID       string          `json:"template_id"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -125,15 +143,19 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	if req.Channels == nil {
 		channelsJSON = []byte("[]")
 	}
+	behaviorJSON := "{}"
+	if len(req.BehaviorConfig) > 0 {
+		behaviorJSON = string(req.BehaviorConfig)
+	}
 
 	_, err = wdb.DB.Exec(`
 		INSERT INTO agents (id, name, description, avatar, role, goal, backstory, instructions,
 			model, temperature, max_tokens, tools, channels, knowledge_access, memory_access, can_delegate,
-			max_iterations, constraints, escalation_prompt, trigger_type, template_id, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			max_iterations, constraints, escalation_prompt, trigger_type, behavior_config, template_id, created_by, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		agentID, req.Name, req.Description, req.Avatar, req.Role, req.Goal, req.Backstory, req.Instructions,
 		req.Model, temp, maxTok, string(toolsJSON), string(channelsJSON), req.KnowledgeAccess, req.MemoryAccess, req.CanDelegate,
-		maxIter, req.Constraints, req.EscalationPrompt, req.TriggerType, req.TemplateID, claims.UserID, now, now,
+		maxIter, req.Constraints, req.EscalationPrompt, req.TriggerType, behaviorJSON, req.TemplateID, claims.UserID, now, now,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create agent: "+err.Error())
@@ -141,12 +163,13 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create matching member so agent appears in channels and can send messages
+	agentColor := assignMemberColor(wdb)
 	_, err = wdb.DB.Exec(
-		"INSERT INTO members (id, display_name, role) VALUES (?, ?, 'agent')",
-		agentID, req.Name,
+		"INSERT INTO members (id, display_name, role, color) VALUES (?, ?, 'agent', ?)",
+		agentID, req.Name, agentColor,
 	)
 	if err != nil {
-		log.Printf("[agents:%s] failed to create member for agent %s: %v", slug, agentID, err)
+		logger.WithCategory(logger.CatAgent).Error().Err(err).Str("workspace", slug).Str("agent_id", agentID).Msg("failed to create member for agent")
 	}
 
 	agent := s.loadAgentByID(slug, agentID)
@@ -170,7 +193,7 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		SELECT id, name, description, avatar, role, goal, backstory, instructions,
 			model, temperature, max_tokens, tools, channels, knowledge_access, memory_access, can_delegate,
 			max_iterations, requires_approval, constraints, escalation_prompt,
-			trigger_type, trigger_config, is_system, is_active, COALESCE(template_id,''), created_by, created_at, updated_at
+			trigger_type, trigger_config, behavior_config, is_system, is_active, COALESCE(template_id,''), created_by, created_at, updated_at
 		FROM agents ORDER BY is_system DESC, created_at ASC`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query error")
@@ -181,17 +204,18 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	agents := []Agent{}
 	for rows.Next() {
 		var a Agent
-		var toolsStr, channelsStr, reqApprovalStr string
+		var toolsStr, channelsStr, reqApprovalStr, behaviorStr string
 		if err := rows.Scan(&a.ID, &a.Name, &a.Description, &a.Avatar, &a.Role, &a.Goal, &a.Backstory, &a.Instructions,
 			&a.Model, &a.Temperature, &a.MaxTokens, &toolsStr, &channelsStr, &a.KnowledgeAccess, &a.MemoryAccess, &a.CanDelegate,
 			&a.MaxIterations, &reqApprovalStr, &a.Constraints, &a.EscalationPrompt,
-			&a.TriggerType, &a.TriggerConfig, &a.IsSystem, &a.IsActive, &a.TemplateID, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt,
+			&a.TriggerType, &a.TriggerConfig, &behaviorStr, &a.IsSystem, &a.IsActive, &a.TemplateID, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt,
 		); err != nil {
 			continue
 		}
 		a.Tools = json.RawMessage(toolsStr)
 		a.Channels = json.RawMessage(channelsStr)
 		a.RequiresApproval = json.RawMessage(reqApprovalStr)
+		_ = json.Unmarshal([]byte(behaviorStr), &a.BehaviorConfig)
 		agents = append(agents, a)
 	}
 
@@ -257,7 +281,7 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Handle JSON array fields
+	// Handle JSON array/object fields
 	if tools, ok := req["tools"]; ok {
 		j, _ := json.Marshal(tools)
 		sets = append(sets, "tools = ?")
@@ -266,6 +290,11 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 	if channels, ok := req["channels"]; ok {
 		j, _ := json.Marshal(channels)
 		sets = append(sets, "channels = ?")
+		args = append(args, string(j))
+	}
+	if bc, ok := req["behavior_config"]; ok {
+		j, _ := json.Marshal(bc)
+		sets = append(sets, "behavior_config = ?")
 		args = append(args, string(j))
 	}
 
@@ -394,6 +423,92 @@ User description: ` + req.Description
 	writeJSON(w, http.StatusOK, config)
 }
 
+func (s *Server) handleEditAgentWithAI(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	claims := auth.GetClaims(r)
+	if claims == nil || claims.Role != "admin" {
+		writeError(w, http.StatusForbidden, "admin only")
+		return
+	}
+
+	var req struct {
+		Instruction string         `json:"instruction"`
+		Current     map[string]any `json:"current"`
+	}
+	if err := readJSON(r, &req); err != nil || req.Instruction == "" {
+		writeError(w, http.StatusBadRequest, "instruction is required")
+		return
+	}
+
+	apiKey, model := s.getBrainSettings(slug)
+	if apiKey == "" {
+		writeError(w, http.StatusBadRequest, "no API key configured")
+		return
+	}
+
+	currentJSON, _ := json.Marshal(req.Current)
+
+	metaPrompt := `You are editing an existing AI agent's configuration. The user will describe what they want to change. Apply their instructions to the current config and return the COMPLETE updated config.
+
+Rules:
+- Only change the fields the user's instruction targets. Keep everything else exactly as-is.
+- If the user asks to improve or enhance a field, rewrite it better while keeping the intent.
+- If the user asks to add tools, add them to the existing tools list.
+- If the user asks to change personality/tone, update backstory + instructions accordingly.
+- Return the COMPLETE config (not just changed fields).
+
+Return ONLY valid JSON with these fields:
+{
+  "name": "Short agent name (2-3 words)",
+  "description": "One sentence description",
+  "avatar": "A single emoji that represents this agent",
+  "role": "Their job title/role",
+  "goal": "Their primary objective in one sentence",
+  "backstory": "2-3 sentences about their background and expertise",
+  "instructions": "Specific instructions for how they should behave. 3-5 bullet points.",
+  "constraints": "Things they should NOT do. 1-3 bullet points.",
+  "escalation_prompt": "When and how they should hand off to Brain or a human",
+  "tools": ["list", "of", "tool", "names"],
+  "knowledge_access": true/false,
+  "memory_access": true/false,
+  "temperature": 0.0-2.0,
+  "can_delegate": true/false,
+  "max_iterations": 1-20,
+  "trigger_type": "mention"
+}
+
+Available tools: create_task, list_tasks, search_messages, create_document, search_knowledge, generate_image, web_search, fetch_url, delegate_to_agent
+
+Current agent config:
+` + string(currentJSON) + `
+
+User instruction: ` + req.Instruction
+
+	client := brain.NewClient(apiKey, model)
+	response, err := client.Complete(metaPrompt, nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "LLM error: "+err.Error())
+		return
+	}
+
+	response = strings.TrimSpace(response)
+	if strings.HasPrefix(response, "```") {
+		lines := strings.Split(response, "\n")
+		if len(lines) > 2 {
+			lines = lines[1 : len(lines)-1]
+			response = strings.Join(lines, "\n")
+		}
+	}
+
+	var config map[string]any
+	if err := json.Unmarshal([]byte(response), &config); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to parse LLM response")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, config)
+}
+
 func (s *Server) handleListAgentTemplates(w http.ResponseWriter, r *http.Request) {
 	templates := brain.GetTemplates()
 	writeJSON(w, http.StatusOK, templates)
@@ -447,9 +562,10 @@ func (s *Server) handleCreateAgentFromTemplate(w http.ResponseWriter, r *http.Re
 	}
 
 	// Create matching member
+	tmplColor := assignMemberColor(wdb)
 	_, _ = wdb.DB.Exec(
-		"INSERT INTO members (id, display_name, role) VALUES (?, ?, 'agent')",
-		agentID, tmpl.Name,
+		"INSERT INTO members (id, display_name, role, color) VALUES (?, ?, 'agent', ?)",
+		agentID, tmpl.Name, tmplColor,
 	)
 
 	// Copy default skills from template
@@ -473,17 +589,17 @@ func (s *Server) loadAgentByID(slug, agentID string) *Agent {
 	}
 
 	var a Agent
-	var toolsStr, channelsStr, reqApprovalStr string
+	var toolsStr, channelsStr, reqApprovalStr, behaviorStr string
 	err = wdb.DB.QueryRow(`
 		SELECT id, name, description, avatar, role, goal, backstory, instructions,
 			model, temperature, max_tokens, tools, channels, knowledge_access, memory_access, can_delegate,
 			max_iterations, requires_approval, constraints, escalation_prompt,
-			trigger_type, trigger_config, is_system, is_active, COALESCE(template_id,''), created_by, created_at, updated_at
+			trigger_type, trigger_config, behavior_config, is_system, is_active, COALESCE(template_id,''), created_by, created_at, updated_at
 		FROM agents WHERE id = ?`, agentID,
 	).Scan(&a.ID, &a.Name, &a.Description, &a.Avatar, &a.Role, &a.Goal, &a.Backstory, &a.Instructions,
 		&a.Model, &a.Temperature, &a.MaxTokens, &toolsStr, &channelsStr, &a.KnowledgeAccess, &a.MemoryAccess, &a.CanDelegate,
 		&a.MaxIterations, &reqApprovalStr, &a.Constraints, &a.EscalationPrompt,
-		&a.TriggerType, &a.TriggerConfig, &a.IsSystem, &a.IsActive, &a.TemplateID, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt,
+		&a.TriggerType, &a.TriggerConfig, &behaviorStr, &a.IsSystem, &a.IsActive, &a.TemplateID, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt,
 	)
 	if err != nil {
 		return nil
@@ -491,6 +607,7 @@ func (s *Server) loadAgentByID(slug, agentID string) *Agent {
 	a.Tools = json.RawMessage(toolsStr)
 	a.Channels = json.RawMessage(channelsStr)
 	a.RequiresApproval = json.RawMessage(reqApprovalStr)
+	_ = json.Unmarshal([]byte(behaviorStr), &a.BehaviorConfig)
 	return &a
 }
 
@@ -510,7 +627,7 @@ func (s *Server) loadAgentByName(slug, name string) *Agent {
 }
 
 // getAgentTools returns the tool definitions filtered to only the tools this agent has access to.
-func getAgentTools(agent *Agent) []brain.ToolDef {
+func getAgentTools(agent *Agent, allTools []brain.ToolDef) []brain.ToolDef {
 	var allowedTools []string
 	_ = json.Unmarshal(agent.Tools, &allowedTools)
 	if len(allowedTools) == 0 {
@@ -523,7 +640,7 @@ func getAgentTools(agent *Agent) []brain.ToolDef {
 	}
 
 	var filtered []brain.ToolDef
-	for _, tool := range brain.Tools {
+	for _, tool := range allTools {
 		if allowed[tool.Function.Name] {
 			filtered = append(filtered, tool)
 		}
@@ -531,13 +648,13 @@ func getAgentTools(agent *Agent) []brain.ToolDef {
 	return filtered
 }
 
-// checkAllAgents returns active non-system agents with trigger_type='all' scoped to a channel.
-func (s *Server) checkAllAgents(slug, channelID string) []*Agent {
+// checkDMAgents returns active custom agents whose ID appears in the DM channel name.
+func (s *Server) checkDMAgents(slug, channelName string) []*Agent {
 	wdb, err := s.ws.Open(slug)
 	if err != nil {
 		return nil
 	}
-	rows, err := wdb.DB.Query("SELECT id FROM agents WHERE is_active = TRUE AND id != 'brain' AND trigger_type = 'all'")
+	rows, err := wdb.DB.Query("SELECT id FROM agents WHERE is_active = TRUE AND is_system = FALSE")
 	if err != nil {
 		return nil
 	}
@@ -549,8 +666,8 @@ func (s *Server) checkAllAgents(slug, channelID string) []*Agent {
 		if err := rows.Scan(&agentID); err != nil {
 			continue
 		}
-		if agent := s.loadAgentByID(slug, agentID); agent != nil {
-			if isAgentInChannel(agent, channelID) {
+		if strings.Contains(channelName, agentID) {
+			if agent := s.loadAgentByID(slug, agentID); agent != nil {
 				agents = append(agents, agent)
 			}
 		}
@@ -558,13 +675,15 @@ func (s *Server) checkAllAgents(slug, channelID string) []*Agent {
 	return agents
 }
 
-// checkAlwaysAgents returns active agents (except Brain) with trigger_type='always' scoped to a channel.
-func (s *Server) checkAlwaysAgents(slug, channelID string) []*Agent {
+// checkChannelAgents returns active agents assigned to this channel that should auto-respond.
+// An agent qualifies if: active, not brain, has a non-empty channels list that includes this channel,
+// channel is not silenced, and cooldown has elapsed.
+func (s *Server) checkChannelAgents(slug, channelID, senderID string) []*Agent {
 	wdb, err := s.ws.Open(slug)
 	if err != nil {
 		return nil
 	}
-	rows, err := wdb.DB.Query("SELECT id FROM agents WHERE is_active = TRUE AND id != 'brain' AND trigger_type = 'always'")
+	rows, err := wdb.DB.Query("SELECT id FROM agents WHERE is_active = TRUE AND id != 'brain'")
 	if err != nil {
 		return nil
 	}
@@ -576,8 +695,72 @@ func (s *Server) checkAlwaysAgents(slug, channelID string) []*Agent {
 		if err := rows.Scan(&agentID); err != nil {
 			continue
 		}
-		if agent := s.loadAgentByID(slug, agentID); agent != nil {
-			if isAgentInChannel(agent, channelID) {
+		// Don't trigger on agent's own messages
+		if agentID == senderID {
+			continue
+		}
+		agent := s.loadAgentByID(slug, agentID)
+		if agent == nil {
+			continue
+		}
+		// Must have explicit channels assigned (empty channels = @mention only)
+		var channels []string
+		_ = json.Unmarshal(agent.Channels, &channels)
+		if len(channels) == 0 {
+			continue
+		}
+		// Must be in this channel
+		if !isAgentInChannel(agent, channelID) {
+			continue
+		}
+		// Check per-channel silence override
+		if isChannelSilenced(agent, channelID) {
+			continue
+		}
+		// Check cooldown
+		if s.convTracker != nil {
+			cooldown := agent.BehaviorConfig.CooldownSeconds
+			if cooldown > 0 {
+				key := ConversationKey{Slug: slug, ChannelID: channelID, AgentID: agentID}
+				if !s.convTracker.CheckCooldown(key, cooldown) {
+					continue
+				}
+			}
+		}
+		agents = append(agents, agent)
+	}
+	return agents
+}
+
+// checkFollowingAgents returns active agents that are following conversations in this channel.
+func (s *Server) checkFollowingAgents(slug, channelID string, senderID string) []*Agent {
+	if s.convTracker == nil {
+		return nil
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return nil
+	}
+	rows, err := wdb.DB.Query("SELECT id FROM agents WHERE is_active = TRUE AND id != 'brain'")
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var agents []*Agent
+	for rows.Next() {
+		var agentID string
+		if err := rows.Scan(&agentID); err != nil {
+			continue
+		}
+		// Don't trigger on agent's own messages
+		if agentID == senderID {
+			continue
+		}
+		key := ConversationKey{Slug: slug, ChannelID: channelID, AgentID: agentID}
+		if s.convTracker.RecordMessage(key) {
+			if agent := s.loadAgentByID(slug, agentID); agent != nil {
 				agents = append(agents, agent)
 			}
 		}
@@ -601,7 +784,7 @@ func isAgentInChannel(agent *Agent, channelID string) bool {
 }
 
 // sendAgentMessage saves and broadcasts a message from an agent.
-func (s *Server) sendAgentMessage(slug, channelID string, agent *Agent, content string) {
+func (s *Server) sendAgentMessage(slug, channelID string, agent *Agent, content string, toolsUsed ...string) {
 	wdb, err := s.ws.Open(slug)
 	if err != nil {
 		return
@@ -610,12 +793,18 @@ func (s *Server) sendAgentMessage(slug, channelID string, agent *Agent, content 
 	msgID := id.New()
 	now := time.Now().UTC().Format(time.RFC3339)
 
+	metadata := "{}"
+	if len(toolsUsed) > 0 {
+		metaJSON, _ := json.Marshal(map[string]any{"tools_used": toolsUsed})
+		metadata = string(metaJSON)
+	}
+
 	_, err = wdb.DB.Exec(
-		"INSERT INTO messages (id, channel_id, sender_id, content, created_at) VALUES (?, ?, ?, ?, ?)",
-		msgID, channelID, agent.ID, content, now,
+		"INSERT INTO messages (id, channel_id, sender_id, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		msgID, channelID, agent.ID, content, metadata, now,
 	)
 	if err != nil {
-		log.Printf("[agent:%s] failed to save message: %v", agent.Name, err)
+		logger.WithCategory(logger.CatAgent).Error().Err(err).Str("agent", agent.Name).Msg("failed to save message")
 		return
 	}
 
@@ -627,6 +816,7 @@ func (s *Server) sendAgentMessage(slug, channelID string, agent *Agent, content 
 		SenderName: agent.Name,
 		Content:    content,
 		CreatedAt:  now,
+		ToolsUsed:  toolsUsed,
 	}), "")
 }
 

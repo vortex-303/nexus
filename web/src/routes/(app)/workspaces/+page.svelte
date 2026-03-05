@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { listWorkspaces, setWorkspaceSlug, setToken, login, getCurrentUser, clearSession } from '$lib/api';
+	import { listWorkspaces, switchWorkspace, getCurrentUser, clearSession } from '$lib/api';
 
 	let workspaces = $state<any[]>([]);
 	let loading = $state(true);
@@ -24,19 +24,12 @@
 	});
 
 	async function selectWorkspace(ws: any) {
-		const user = getCurrentUser();
-		if (!user) return;
 		try {
-			// Re-login with the specific workspace to get a workspace-scoped token
-			// We need the email from the current token - parse it
-			const data = await login(user.email || '', '', ws.slug);
-			setWorkspaceSlug(ws.slug);
-			goto(`/w/${ws.slug}`);
-		} catch (e: any) {
-			// If login fails, try just setting slug and redirecting
-			setWorkspaceSlug(ws.slug);
-			goto(`/w/${ws.slug}`);
+			await switchWorkspace(ws.slug);
+		} catch {
+			// Token exchange failed, try navigating anyway
 		}
+		goto(`/w/${ws.slug}`);
 	}
 
 	function handleLogout() {

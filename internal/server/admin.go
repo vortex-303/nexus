@@ -298,9 +298,10 @@ func (s *Server) handleAdminEnterWorkspace(w http.ResponseWriter, r *http.Reques
 		// Create a temporary admin member record for the superadmin
 		memberID = id.New()
 		memberRole = "admin"
+		adminColor := assignMemberColor(wdb)
 		_, err = wdb.DB.Exec(
-			"INSERT INTO members (id, display_name, role, account_id) VALUES (?, ?, ?, ?)",
-			memberID, claims.DisplayName, "admin", claims.AccountID,
+			"INSERT INTO members (id, display_name, role, account_id, color) VALUES (?, ?, ?, ?, ?)",
+			memberID, claims.DisplayName, "admin", claims.AccountID, adminColor,
 		)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to join workspace")

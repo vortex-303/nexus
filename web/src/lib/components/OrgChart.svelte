@@ -165,13 +165,15 @@
 			})
 			.render();
 
-		if (isAdmin) {
+		if (isAdmin && typeof chart.dragEnabled === 'function') {
 			chart.dragEnabled(true);
-			chart.onNodeDrop((source, target) => {
-				if (source && target) {
-					onReparent(source.id, target.id);
-				}
-			});
+			if (typeof chart.onNodeDrop === 'function') {
+				chart.onNodeDrop((source, target) => {
+					if (source && target) {
+						onReparent(source.id, target.id);
+					}
+				});
+			}
 		}
 
 		chart.expandAll();

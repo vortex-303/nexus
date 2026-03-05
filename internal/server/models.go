@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nexus-chat/nexus/internal/auth"
+	"github.com/nexus-chat/nexus/internal/id"
 )
 
 // Model represents a normalized OpenRouter model.
@@ -207,3 +208,173 @@ func (s *Server) handleAdminSetModels(w http.ResponseWriter, r *http.Request) {
 	s.logAdminAction(claims, "models.update", "platform", "", "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
+
+// --- Workspace-scoped models ---
+
+type workspaceModel struct {
+	ID                string `json:"id"`
+	DisplayName       string `json:"display_name"`
+	Provider          string `json:"provider"`
+	ContextLength     int    `json:"context_length"`
+	SupportsTools     bool   `json:"supports_tools"`
+	PricingPrompt     string `json:"pricing_prompt"`
+	PricingCompletion string `json:"pricing_completion"`
+	AddedBy           string `json:"added_by"`
+	AddedAt           string `json:"added_at"`
+}
+
+// handleGetWorkspaceModels returns models saved to this workspace.
+func (s *Server) handleGetWorkspaceModels(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	claims := auth.GetClaims(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	rows, err := wdb.DB.Query("SELECT id, display_name, provider, context_length, supports_tools, pricing_prompt, pricing_completion, added_by, added_at FROM workspace_models ORDER BY added_at DESC")
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"models": []any{}})
+		return
+	}
+	defer rows.Close()
+
+	var models []workspaceModel
+	for rows.Next() {
+		var m workspaceModel
+		if err := rows.Scan(&m.ID, &m.DisplayName, &m.Provider, &m.ContextLength, &m.SupportsTools, &m.PricingPrompt, &m.PricingCompletion, &m.AddedBy, &m.AddedAt); err != nil {
+			continue
+		}
+		models = append(models, m)
+	}
+	if models == nil {
+		models = []workspaceModel{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
+// handleAddWorkspaceModel adds a model to the workspace's saved list.
+func (s *Server) handleAddWorkspaceModel(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	claims := auth.GetClaims(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	var req struct {
+		ID                string `json:"id"`
+		DisplayName       string `json:"display_name"`
+		Provider          string `json:"provider"`
+		ContextLength     int    `json:"context_length"`
+		SupportsTools     bool   `json:"supports_tools"`
+		PricingPrompt     string `json:"pricing_prompt"`
+		PricingCompletion string `json:"pricing_completion"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.ID == "" {
+		writeError(w, http.StatusBadRequest, "id required")
+		return
+	}
+	if req.DisplayName == "" {
+		req.DisplayName = req.ID
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = wdb.DB.Exec(
+		`INSERT INTO workspace_models (id, display_name, provider, context_length, supports_tools, pricing_prompt, pricing_completion, added_by, added_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET display_name = ?, provider = ?, context_length = ?, supports_tools = ?, pricing_prompt = ?, pricing_completion = ?`,
+		req.ID, req.DisplayName, req.Provider, req.ContextLength, req.SupportsTools, req.PricingPrompt, req.PricingCompletion, claims.UserID, now,
+		req.DisplayName, req.Provider, req.ContextLength, req.SupportsTools, req.PricingPrompt, req.PricingCompletion,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to add model")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]string{"status": "ok", "id": req.ID})
+}
+
+// handleRemoveWorkspaceModel removes a model from the workspace's saved list.
+func (s *Server) handleRemoveWorkspaceModel(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	modelID := r.PathValue("modelID")
+	claims := auth.GetClaims(r)
+	if claims == nil || claims.Role != "admin" {
+		writeError(w, http.StatusForbidden, "admin only")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	res, err := wdb.DB.Exec("DELETE FROM workspace_models WHERE id = ?", modelID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove model")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeError(w, http.StatusNotFound, "model not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// handleCheckModelAvailability checks if the configured model is available.
+func (s *Server) handleCheckModelAvailability(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	claims := auth.GetClaims(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	_, model := s.getBrainSettings(slug)
+	fallback := "anthropic/claude-sonnet-4"
+
+	available := true
+	modelCacheMu.Lock()
+	if modelCache != nil {
+		found := false
+		for _, m := range modelCache {
+			if m.ID == model {
+				found = true
+				break
+			}
+		}
+		if !found {
+			available = false
+		}
+	}
+	modelCacheMu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"model":           model,
+		"model_available": available,
+		"fallback_model":  fallback,
+	})
+}
+
+// Ensure id import is used (for future use)
+var _ = id.New

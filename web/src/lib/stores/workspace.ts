@@ -6,6 +6,7 @@ export interface Channel {
 	type: string;
 	classification: string;
 	unread?: number;
+	is_favorite?: boolean;
 }
 
 export interface Member {
@@ -24,6 +25,11 @@ export interface Message {
 	created_at: string;
 	edited_at?: string;
 	reactions?: { emoji: string; count: number; users: string[] }[];
+	status?: 'pending' | 'sent' | 'failed';
+	clientId?: string;
+	parent_id?: string;
+	reply_count?: number;
+	latest_reply_at?: string;
 }
 
 export const channels = writable<Channel[]>([]);

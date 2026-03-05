@@ -6,16 +6,57 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"sync"
+
 	"github.com/nexus-chat/nexus/internal/brain"
 	"github.com/nexus-chat/nexus/internal/hub"
 	"github.com/nexus-chat/nexus/internal/id"
+	"github.com/nexus-chat/nexus/internal/logger"
+	"github.com/nexus-chat/nexus/internal/metrics"
 )
+
+// generatedImagesFolderCache caches the folder ID per workspace slug.
+var generatedImagesFolderCache sync.Map
+
+// ensureGeneratedImagesFolder returns the folder ID for "Generated Images",
+// creating it if it doesn't exist.
+func (s *Server) ensureGeneratedImagesFolder(slug string) string {
+	if cached, ok := generatedImagesFolderCache.Load(slug); ok {
+		return cached.(string)
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return ""
+	}
+
+	var folderID string
+	err = wdb.DB.QueryRow("SELECT id FROM folders WHERE name = 'Generated Images' AND parent_id IS NULL LIMIT 1").Scan(&folderID)
+	if err == nil {
+		generatedImagesFolderCache.Store(slug, folderID)
+		return folderID
+	}
+
+	// Create the folder
+	folderID = id.New()
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = wdb.DB.Exec(
+		"INSERT INTO folders (id, parent_id, name, created_by, is_private, created_at, updated_at) VALUES (?, NULL, 'Generated Images', 'system', 0, ?, ?)",
+		folderID, now, now,
+	)
+	if err != nil {
+		logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Err(err).Msg("failed to create Generated Images folder")
+		return ""
+	}
+
+	generatedImagesFolderCache.Store(slug, folderID)
+	return folderID
+}
 
 // broadcastAgentState sends an agent.state event to all clients in the channel.
 func (s *Server) broadcastAgentState(slug, channelID, agentID, agentName, state, toolName string) {
@@ -33,15 +74,16 @@ func (s *Server) broadcastAgentState(slug, channelID, agentID, agentName, state,
 // It runs asynchronously in a goroutine.
 func (s *Server) handleAgentMention(slug, channelID, senderName, content string, agent *Agent) {
 	go func() {
-		log.Printf("[agent:%s:%s] handleAgentMention triggered, active=%v", slug, agent.Name, agent.IsActive)
+		metrics.AgentExecutionsTotal.WithLabelValues(agent.Name, "started").Inc()
+		logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Bool("active", agent.IsActive).Msg("handleAgentMention triggered")
 		if !agent.IsActive {
-			log.Printf("[agent:%s:%s] agent not active, skipping", slug, agent.Name)
+			logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Msg("agent not active, skipping")
 			return
 		}
 
 		// Check channel scope
 		if !isAgentInChannel(agent, channelID) {
-			log.Printf("[agent:%s:%s] agent not in channel %s, skipping", slug, agent.Name, channelID)
+			logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Str("channel", channelID).Msg("agent not in channel, skipping")
 			return
 		}
 
@@ -51,7 +93,7 @@ func (s *Server) handleAgentMention(slug, channelID, senderName, content string,
 
 		apiKey, _ := s.getBrainSettings(slug)
 		if apiKey == "" {
-			log.Printf("[agent:%s:%s] no API key configured", slug, agent.Name)
+			logger.WithCategory(logger.CatAgent).Warn().Str("workspace", slug).Str("agent", agent.Name).Msg("no API key configured")
 			return
 		}
 
@@ -62,25 +104,30 @@ func (s *Server) handleAgentMention(slug, channelID, senderName, content string,
 		}
 
 		systemPrompt := buildAgentSystemPrompt(agent)
+		logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Int("chars", len(systemPrompt)).Msg("base prompt")
 
 		// Append agent-specific skills
 		agentSkills := brain.LoadAgentSkills(s.cfg.DataDir, slug, agent.ID)
 		skillContext := brain.BuildAgentSkillContext(agentSkills)
 		if skillContext != "" {
 			systemPrompt += "\n\n---\n\n" + skillContext
+			logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Int("skill_chars", len(skillContext)).Int("total_chars", len(systemPrompt)).Msg("+skills")
 		}
 
 		wdb, err := s.ws.Open(slug)
 		if err != nil {
-			log.Printf("[agent:%s:%s] workspace error: %v", slug, agent.Name, err)
+			logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("workspace error")
 			return
 		}
 
 		// Optionally append knowledge context
 		if agent.KnowledgeAccess {
-			kbContext := brain.BuildKnowledgeContext(wdb.DB, content)
+			kbContext := brain.BuildKnowledgeContext(wdb.DB, content, brain.SemanticOpts{
+				VectorStore: s.vectors, APIKey: apiKey, Slug: slug,
+			})
 			if kbContext != "" {
 				systemPrompt += "\n\n---\n\n" + kbContext
+				logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Int("knowledge_chars", len(kbContext)).Int("total_chars", len(systemPrompt)).Msg("+knowledge")
 			}
 		}
 
@@ -89,18 +136,28 @@ func (s *Server) handleAgentMention(slug, channelID, senderName, content string,
 			memContext := brain.BuildMemoryContext(wdb.DB)
 			if memContext != "" {
 				systemPrompt += "\n\n---\n\n" + memContext
+				logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Int("memory_chars", len(memContext)).Int("total_chars", len(systemPrompt)).Msg("+memory")
 			}
 		}
 
 		// Append channel history summary
 		if chSummary := brain.BuildSingleChannelContext(wdb.DB, channelID); chSummary != "" {
 			systemPrompt += "\n\n---\n\n" + chSummary
+			logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Int("summary_chars", len(chSummary)).Int("total_chars", len(systemPrompt)).Msg("+channel_summary")
+		}
+
+		// Hard cap: if system prompt is too large, truncate to prevent token overflow
+		if len(systemPrompt) > 100000 {
+			logger.WithCategory(logger.CatAgent).Warn().Str("workspace", slug).Str("agent", agent.Name).Int("chars", len(systemPrompt)).Msg("system prompt too large, truncating to 100000")
+			systemPrompt = systemPrompt[:100000]
 		}
 
 		messages := s.getRecentMessages(wdb, channelID, 40)
+		logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Int("system_chars", len(systemPrompt)).Int("message_count", len(messages)).Msg("final prompt")
 
-		// Get agent's scoped tools
-		agentTools := getAgentTools(agent)
+		// Get agent's scoped tools (built-in + MCP)
+		allTools := s.getAllTools(slug)
+		agentTools := getAgentTools(agent, allTools)
 
 		client := &brain.Client{
 			APIKey:     apiKey,
@@ -117,7 +174,7 @@ func (s *Server) handleAgentMention(slug, channelID, senderName, content string,
 			if isMultimodalModel(model) {
 				responseText, images, err := client.CompleteMultimodal(systemPrompt, messages)
 				if err != nil {
-					log.Printf("[agent:%s:%s] multimodal LLM error: %v", slug, agent.Name, err)
+					logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("multimodal LLM error")
 					return
 				}
 				responseText = strings.TrimSpace(responseText)
@@ -129,12 +186,13 @@ func (s *Server) handleAgentMention(slug, channelID, senderName, content string,
 				}
 				brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 					truncate(content, 200), truncate(responseText, 500), model, nil)
+				s.maybeStartFollowing(slug, channelID, agent)
 				return
 			}
 
 			response, err := client.Complete(systemPrompt, messages)
 			if err != nil {
-				log.Printf("[agent:%s:%s] LLM error: %v", slug, agent.Name, err)
+				logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("LLM error")
 				return
 			}
 			response = strings.TrimSpace(response)
@@ -143,33 +201,35 @@ func (s *Server) handleAgentMention(slug, channelID, senderName, content string,
 			}
 			brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 				truncate(content, 200), truncate(response, 500), model, nil)
+			s.maybeStartFollowing(slug, channelID, agent)
 			return
 		}
 
 		// With tools
-		log.Printf("[agent:%s:%s] calling CompleteWithTools with %d tools, model=%s", slug, agent.Name, len(agentTools), model)
+		logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Int("tool_count", len(agentTools)).Str("model", model).Msg("calling CompleteWithTools")
 		for _, t := range agentTools {
-			log.Printf("[agent:%s:%s]   tool: %s", slug, agent.Name, t.Function.Name)
+			logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Str("tool", t.Function.Name).Msg("tool available")
 		}
 		responseContent, toolCalls, err := client.CompleteWithTools(systemPrompt, messages, agentTools)
 		if err != nil {
-			log.Printf("[agent:%s:%s] LLM error: %v", slug, agent.Name, err)
+			logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("LLM error")
 			return
 		}
 
 		if len(toolCalls) == 0 {
-			log.Printf("[agent:%s:%s] no tool calls returned, response: %s", slug, agent.Name, truncate(responseContent, 200))
+			logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Str("response", truncate(responseContent, 200)).Msg("no tool calls returned")
 			responseContent = strings.TrimSpace(responseContent)
 			if responseContent != "" {
 				s.sendAgentMessage(slug, channelID, agent, responseContent)
 			}
 			brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 				truncate(content, 200), truncate(responseContent, 500), model, nil)
+			s.maybeStartFollowing(slug, channelID, agent)
 			return
 		}
 
 		// Execute tools (up to max_iterations rounds)
-		log.Printf("[agent:%s:%s] executing %d tool calls", slug, agent.Name, len(toolCalls))
+		logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Int("count", len(toolCalls)).Msg("executing tool calls")
 
 		assistantMsg := brain.Message{Role: "assistant", Content: responseContent, ToolCalls: toolCalls}
 		followUp := append(messages, assistantMsg)
@@ -179,8 +239,9 @@ func (s *Server) handleAgentMention(slug, channelID, senderName, content string,
 		var imagePromptTag string
 		for _, call := range toolCalls {
 			s.broadcastAgentState(slug, channelID, agent.ID, agent.Name, "tool_executing", call.Function.Name)
-			result := s.executeAgentTool(slug, channelID, agent, call)
-			log.Printf("[agent:%s:%s] tool %s → %s", slug, agent.Name, call.Function.Name, truncate(result, 100))
+			senderID := s.resolveMemberIDByName(slug, senderName)
+			result := s.executeAgentTool(slug, channelID, senderID, agent, call)
+			logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Str("tool", call.Function.Name).Str("result", truncate(result, 100)).Msg("tool executed")
 			toolNames = append(toolNames, call.Function.Name)
 
 			// Extract image markdown so the follow-up LLM can't drop it
@@ -204,7 +265,7 @@ func (s *Server) handleAgentMention(slug, channelID, senderName, content string,
 			var err2 error
 			finalResponse, err2 = client.Complete(systemPrompt, followUp)
 			if err2 != nil {
-				log.Printf("[agent:%s:%s] follow-up LLM error: %v", slug, agent.Name, err2)
+				logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err2).Msg("follow-up LLM error")
 				if responseContent != "" {
 					s.sendAgentMessage(slug, channelID, agent, appendMissingImages(responseContent, imageRefs)+imagePromptTag)
 				}
@@ -218,20 +279,97 @@ func (s *Server) handleAgentMention(slug, channelID, senderName, content string,
 		// Re-append the image prompt tag for frontend display
 		finalResponse += imagePromptTag
 		if finalResponse != "" {
-			s.sendAgentMessage(slug, channelID, agent, finalResponse)
+			s.sendAgentMessage(slug, channelID, agent, finalResponse, toolNames...)
 		}
 
 		brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 			truncate(content, 200), truncate(finalResponse, 500), model, toolNames)
+
+		// Start conversation following if configured
+		s.maybeStartFollowing(slug, channelID, agent)
+	}()
+}
+
+// maybeStartFollowing starts conversation following for an agent if configured.
+func (s *Server) maybeStartFollowing(slug, channelID string, agent *Agent) {
+	if s.convTracker == nil || agent.BehaviorConfig.FollowTTLMinutes <= 0 {
+		return
+	}
+	key := ConversationKey{Slug: slug, ChannelID: channelID, AgentID: agent.ID}
+	s.convTracker.StartFollowing(key, agent.BehaviorConfig.FollowTTLMinutes, agent.BehaviorConfig.FollowMaxMessages)
+	logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Str("channel", channelID).Int("ttl_minutes", agent.BehaviorConfig.FollowTTLMinutes).Int("max_messages", agent.BehaviorConfig.FollowMaxMessages).Msg("started following conversation")
+}
+
+// handleAgentFollowUp is called when an agent is following a conversation (not directly mentioned).
+func (s *Server) handleAgentFollowUp(slug, channelID, senderName, content string, agent *Agent) {
+	go func() {
+		metrics.AgentExecutionsTotal.WithLabelValues(agent.Name, "follow_up").Inc()
+		logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Msg("handleAgentFollowUp triggered")
+		if !agent.IsActive {
+			return
+		}
+
+		s.broadcastAgentState(slug, channelID, agent.ID, agent.Name, "thinking", "")
+		defer s.broadcastAgentState(slug, channelID, agent.ID, agent.Name, "idle", "")
+
+		apiKey, _ := s.getBrainSettings(slug)
+		if apiKey == "" {
+			return
+		}
+
+		model := agent.Model
+		if model == "" {
+			_, model = s.getBrainSettings(slug)
+		}
+
+		systemPrompt := buildFollowUpSystemPrompt(agent)
+
+		wdb, err := s.ws.Open(slug)
+		if err != nil {
+			return
+		}
+
+		if agent.KnowledgeAccess {
+			kbContext := brain.BuildKnowledgeContext(wdb.DB, content, brain.SemanticOpts{
+				VectorStore: s.vectors, APIKey: apiKey, Slug: slug,
+			})
+			if kbContext != "" {
+				systemPrompt += "\n\n---\n\n" + kbContext
+			}
+		}
+
+		if chSummary := brain.BuildSingleChannelContext(wdb.DB, channelID); chSummary != "" {
+			systemPrompt += "\n\n---\n\n" + chSummary
+		}
+
+		messages := s.getRecentMessages(wdb, channelID, 40)
+
+		client := brain.NewClient(apiKey, model)
+		response, err := client.Complete(systemPrompt, messages)
+		if err != nil {
+			logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("follow-up LLM error")
+			return
+		}
+		response = strings.TrimSpace(response)
+
+		// Agent can respond with empty string to stay silent
+		if response == "" {
+			return
+		}
+
+		s.sendAgentMessage(slug, channelID, agent, response)
+
+		brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
+			truncate(content, 200), truncate(response, 500), model, nil)
 	}()
 }
 
 // executeAgentTool runs a tool call with agent context for enrichment.
-func (s *Server) executeAgentTool(slug, channelID string, agent *Agent, call brain.ToolCall) string {
+func (s *Server) executeAgentTool(slug, channelID, senderMemberID string, agent *Agent, call brain.ToolCall) string {
 	if call.Function.Name == "generate_image" {
 		return s.toolGenerateImageForAgent(slug, channelID, agent, call.Function.Arguments)
 	}
-	return s.executeTool(slug, channelID, call)
+	return s.executeTool(slug, channelID, senderMemberID, call)
 }
 
 // buildAgentSystemPrompt assembles a system prompt from agent configuration.
@@ -256,7 +394,16 @@ func buildAgentSystemPrompt(agent *Agent) string {
 		parts = append(parts, fmt.Sprintf("\n## Escalation\nIf you encounter something outside your scope: %s", agent.EscalationPrompt))
 	}
 
+	parts = append(parts, "\n## Response Guidelines\n- When you create something (task, document, etc.), ALWAYS tell the user where to find it.\n- When you use a tool, briefly mention what you did and the result.\n- Be concise.")
+
 	return strings.Join(parts, "\n")
+}
+
+// buildFollowUpSystemPrompt builds a system prompt for conversation-following or ambient responses.
+func buildFollowUpSystemPrompt(agent *Agent) string {
+	base := buildAgentSystemPrompt(agent)
+	base += "\n\n## Context\nYou were NOT directly @mentioned in this message. You are following this conversation because you were recently mentioned or the topic is relevant to your expertise.\n- Only respond if you have something genuinely useful to add.\n- If following up on a previous conversation, start with brief context like \"Following up on...\"\n- If the message doesn't need your input, respond with an empty string to stay silent.\n- Do NOT repeat information you've already shared."
+	return base
 }
 
 // checkAgentMentions scans message content for @AgentName mentions.
@@ -326,7 +473,9 @@ func (s *Server) handleDelegateToAgent(slug, channelID, argsJSON string) string 
 	}
 
 	if agent.KnowledgeAccess {
-		kbContext := brain.BuildKnowledgeContext(wdb.DB, args.Task)
+		kbContext := brain.BuildKnowledgeContext(wdb.DB, args.Task, brain.SemanticOpts{
+			VectorStore: s.vectors, APIKey: apiKey, Slug: slug,
+		})
 		if kbContext != "" {
 			systemPrompt += "\n\n---\n\n" + kbContext
 		}
@@ -366,7 +515,7 @@ func looksLikeImageRequest(content string) bool {
 func (s *Server) saveBase64ImageBlob(slug, channelID, b64Data, mimeType string) string {
 	data, err := base64.StdEncoding.DecodeString(b64Data)
 	if err != nil {
-		log.Printf("[image:%s] failed to decode base64: %v", slug, err)
+		logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Err(err).Msg("failed to decode base64 image")
 		return ""
 	}
 
@@ -399,11 +548,12 @@ func (s *Server) saveBase64ImageBlob(slug, channelID, b64Data, mimeType string) 
 	}
 	fileID := id.New()
 	now := time.Now().UTC().Format(time.RFC3339)
+	folderID := s.ensureGeneratedImagesFolder(slug)
 	_, _ = wdb.DB.Exec(
-		`INSERT INTO files (id, channel_id, uploader_id, name, mime, size, hash, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO files (id, channel_id, uploader_id, name, mime, size, hash, folder_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		fileID, channelID, "system",
-		fmt.Sprintf("generated.%s", ext), mimeType, len(data), hash, now,
+		fmt.Sprintf("generated.%s", ext), mimeType, len(data), hash, nilIfEmpty(folderID), now,
 	)
 
 	return fmt.Sprintf("\n\n![Generated Image](/api/workspaces/%s/files/%s)", slug, hash)
@@ -420,7 +570,7 @@ func (s *Server) saveImageBlob(slug, channelID string, img brain.MessageImage, i
 	b64Data := url[commaIdx+1:]
 	data, err := base64.StdEncoding.DecodeString(b64Data)
 	if err != nil {
-		log.Printf("[image:%s] failed to decode image %d: %v", slug, index, err)
+		logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Int("index", index).Err(err).Msg("failed to decode image")
 		return ""
 	}
 
@@ -446,11 +596,12 @@ func (s *Server) saveImageBlob(slug, channelID string, img brain.MessageImage, i
 	}
 	fileID := id.New()
 	now := time.Now().UTC().Format(time.RFC3339)
+	folderID := s.ensureGeneratedImagesFolder(slug)
 	_, _ = wdb.DB.Exec(
-		`INSERT INTO files (id, channel_id, uploader_id, name, mime, size, hash, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO files (id, channel_id, uploader_id, name, mime, size, hash, folder_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		fileID, channelID, "system",
-		fmt.Sprintf("generated-%d.png", index+1), "image/png", len(data), hash, now,
+		fmt.Sprintf("generated-%d.png", index+1), "image/png", len(data), hash, nilIfEmpty(folderID), now,
 	)
 
 	return fmt.Sprintf("\n\n![Generated Image](/api/workspaces/%s/files/%s)", slug, hash)

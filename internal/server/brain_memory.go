@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"sync"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/nexus-chat/nexus/internal/brain"
 	"github.com/nexus-chat/nexus/internal/db"
 	"github.com/nexus-chat/nexus/internal/id"
+	"github.com/nexus-chat/nexus/internal/logger"
 )
 
 // messageCounter tracks messages per channel for triggering memory extraction.
@@ -49,8 +49,8 @@ func (s *Server) trackMessageAndMaybeExtract(slug, channelID string) {
 	msgCountersMu.Unlock()
 
 	if count >= freq {
-		go s.extractMemories(slug, channelID)
-		go s.updateChannelSummary(slug, channelID)
+		s.enqueueTask(TaskExtractMemories, ExtractMemoriesPayload{Slug: slug, ChannelID: channelID})
+		s.enqueueTask(TaskUpdateSummary, UpdateSummaryPayload{Slug: slug, ChannelID: channelID})
 	}
 }
 
@@ -126,7 +126,7 @@ func (s *Server) extractMemories(slug, channelID string) {
 
 	result, err := client.Complete(brain.ExtractionPrompt, llmMessages)
 	if err != nil {
-		log.Printf("[brain:%s] memory extraction failed: %v", slug, err)
+		logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("memory extraction failed")
 		return
 	}
 
@@ -143,7 +143,7 @@ func (s *Server) extractMemories(slug, channelID string) {
 			json.Unmarshal([]byte(result[start:end+1]), &extracted)
 		}
 		if len(extracted) == 0 {
-			log.Printf("[brain:%s] failed to parse extraction: %v", slug, err)
+			logger.WithCategory(logger.CatBrain).Warn().Err(err).Str("workspace", slug).Msg("failed to parse extraction")
 			return
 		}
 	}
@@ -164,12 +164,12 @@ func (s *Server) extractMemories(slug, channelID string) {
 		}
 
 		if err := brain.SaveMemory(wdb.DB, id.New(), m.Type, m.Content, channelID, ""); err != nil {
-			log.Printf("[brain:%s] failed to save memory: %v", slug, err)
+			logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("failed to save memory")
 		}
 	}
 
 	if len(extracted) > 0 {
-		log.Printf("[brain:%s] extracted %d memories from #%s", slug, len(extracted), channelID)
+		logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("count", len(extracted)).Str("channel_id", channelID).Msg("extracted memories")
 		brain.LogAction(wdb.DB, id.New(), brain.ActionExtraction, channelID,
 			fmt.Sprintf("%d messages", len(messages)),
 			fmt.Sprintf("Extracted %d memories", len(extracted)),
@@ -222,7 +222,7 @@ func (s *Server) updateChannelSummary(slug, channelID string) {
 		{Role: "user", Content: userContent},
 	})
 	if err != nil {
-		log.Printf("[brain:%s] channel summary failed: %v", slug, err)
+		logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("channel summary failed")
 		return
 	}
 
@@ -239,11 +239,11 @@ func (s *Server) updateChannelSummary(slug, channelID string) {
 	}
 
 	if err := brain.SaveChannelSummary(wdb.DB, channelID, result, lastMsgID, totalCount); err != nil {
-		log.Printf("[brain:%s] failed to save channel summary: %v", slug, err)
+		logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("failed to save channel summary")
 		return
 	}
 
-	log.Printf("[brain:%s] updated channel summary for #%s (%d new msgs, %d total)", slug, channelID, len(newMsgs), totalCount)
+	logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("channel_id", channelID).Int("new_msgs", len(newMsgs)).Int("total", totalCount).Msg("updated channel summary")
 }
 
 // getRecentMessagesRaw fetches recent messages without role mapping.

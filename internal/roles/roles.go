@@ -55,6 +55,29 @@ const (
 	PermBrainDM      Permission = "brain.dm"
 	PermBrainConfig  Permission = "brain.config"
 
+	// Agents
+	PermAgentCreate Permission = "agent.create"
+	PermAgentManage Permission = "agent.manage"
+
+	// Documents
+	PermDocCreate Permission = "doc.create"
+	PermDocEdit   Permission = "doc.edit"
+	PermDocDelete Permission = "doc.delete"
+
+	// Files
+	PermFileUpload Permission = "file.upload"
+
+	// Knowledge
+	PermKnowledgeManage Permission = "knowledge.manage"
+
+	// Calendar
+	PermEventCreate Permission = "event.create"
+	PermEventEdit   Permission = "event.edit"
+	PermEventDelete Permission = "event.delete"
+
+	// Skills
+	PermSkillManage Permission = "skill.manage"
+
 	// Workspace
 	PermWorkspaceSettings Permission = "workspace.settings"
 	PermWorkspaceInvite   Permission = "workspace.invite"
@@ -67,8 +90,14 @@ var AllPermissions = []Permission{
 	PermChatSend, PermChatEdit, PermChatDelete, PermChatDeleteAny, PermChatReact,
 	PermChannelCreate, PermChannelArchive,
 	PermTaskCreate, PermTaskAssign, PermTaskEdit, PermTaskDelete,
+	PermEventCreate, PermEventEdit, PermEventDelete,
 	PermContactView, PermContactCreate, PermContactEdit, PermContactDelete,
 	PermBrainMention, PermBrainDM, PermBrainConfig,
+	PermAgentCreate, PermAgentManage,
+	PermDocCreate, PermDocEdit, PermDocDelete,
+	PermFileUpload,
+	PermKnowledgeManage,
+	PermSkillManage,
 	PermWorkspaceSettings, PermWorkspaceInvite, PermWorkspaceRoles, PermWorkspaceKick,
 }
 
@@ -80,8 +109,11 @@ var DefaultPermissions = map[Role]map[Permission]bool{
 		PermChatSend, PermChatEdit, PermChatDelete, PermChatReact,
 		PermChannelCreate,
 		PermTaskCreate, PermTaskAssign, PermTaskEdit,
+		PermEventCreate, PermEventEdit, PermEventDelete,
 		PermContactView,
 		PermBrainMention, PermBrainDM,
+		PermAgentCreate, PermDocCreate, PermDocEdit, PermFileUpload,
+		PermSkillManage,
 		PermWorkspaceInvite,
 	),
 
@@ -89,8 +121,10 @@ var DefaultPermissions = map[Role]map[Permission]bool{
 		PermChatSend, PermChatEdit, PermChatDelete, PermChatReact,
 		PermChannelCreate,
 		PermTaskCreate, PermTaskAssign, PermTaskEdit,
+		PermEventCreate, PermEventEdit,
 		PermContactView,
 		PermBrainMention, PermBrainDM,
+		PermAgentCreate, PermDocCreate, PermDocEdit, PermFileUpload,
 		PermWorkspaceInvite,
 	),
 
@@ -98,8 +132,10 @@ var DefaultPermissions = map[Role]map[Permission]bool{
 		PermChatSend, PermChatEdit, PermChatDelete, PermChatReact,
 		PermChannelCreate,
 		PermTaskCreate, PermTaskAssign, PermTaskEdit,
+		PermEventCreate, PermEventEdit, PermEventDelete,
 		PermContactView, PermContactCreate, PermContactEdit,
 		PermBrainMention, PermBrainDM,
+		PermAgentCreate, PermDocCreate, PermDocEdit, PermFileUpload,
 		PermWorkspaceInvite,
 	),
 
@@ -107,8 +143,10 @@ var DefaultPermissions = map[Role]map[Permission]bool{
 		PermChatSend, PermChatEdit, PermChatDelete, PermChatReact,
 		PermChannelCreate,
 		PermTaskCreate, PermTaskAssign, PermTaskEdit,
+		PermEventCreate, PermEventEdit, PermEventDelete,
 		PermContactView, PermContactCreate, PermContactEdit,
 		PermBrainMention, PermBrainDM,
+		PermAgentCreate, PermDocCreate, PermDocEdit, PermFileUpload,
 		PermWorkspaceInvite,
 	),
 
@@ -116,16 +154,20 @@ var DefaultPermissions = map[Role]map[Permission]bool{
 		PermChatSend, PermChatEdit, PermChatDelete, PermChatReact,
 		PermChannelCreate,
 		PermTaskCreate, PermTaskEdit,
+		PermEventCreate, PermEventEdit,
 		PermContactView,
 		PermBrainMention, PermBrainDM,
+		PermDocCreate, PermDocEdit, PermFileUpload,
 	),
 
 	RoleSales: permSet(
 		PermChatSend, PermChatEdit, PermChatDelete, PermChatReact,
 		PermChannelCreate,
 		PermTaskCreate, PermTaskAssign, PermTaskEdit,
+		PermEventCreate, PermEventEdit, PermEventDelete,
 		PermContactView, PermContactCreate, PermContactEdit, PermContactDelete,
 		PermBrainMention, PermBrainDM,
+		PermAgentCreate, PermDocCreate, PermDocEdit, PermFileUpload,
 		PermWorkspaceInvite,
 	),
 
@@ -136,6 +178,7 @@ var DefaultPermissions = map[Role]map[Permission]bool{
 
 	RoleCustom: permSet(
 		PermChatSend, PermChatEdit, PermChatReact,
+		PermDocCreate,
 	),
 }
 

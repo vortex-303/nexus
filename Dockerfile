@@ -15,7 +15,7 @@ COPY --from=web /app/web/build web/build
 RUN CGO_ENABLED=1 go build -o nexus ./cmd/nexus/
 
 FROM alpine:3.21
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates nodejs npm python3 uv
 WORKDIR /app
 COPY --from=build /app/nexus .
 VOLUME /data

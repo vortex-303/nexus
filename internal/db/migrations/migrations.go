@@ -420,6 +420,143 @@ var workspaceMigrations = []migration{
 			CREATE INDEX IF NOT EXISTS idx_email_threads_msgid ON email_threads(message_id);
 		`,
 	},
+	{
+		version: 12,
+		name: "mcp_servers",
+		sql: `
+			CREATE TABLE IF NOT EXISTS mcp_servers (
+				id TEXT PRIMARY KEY,
+				name TEXT NOT NULL,
+				transport TEXT NOT NULL DEFAULT 'stdio',
+				command TEXT NOT NULL DEFAULT '',
+				args TEXT NOT NULL DEFAULT '[]',
+				url TEXT NOT NULL DEFAULT '',
+				env TEXT NOT NULL DEFAULT '{}',
+				headers TEXT NOT NULL DEFAULT '{}',
+				enabled INTEGER NOT NULL DEFAULT 1,
+				tool_prefix TEXT NOT NULL DEFAULT '',
+				created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+				updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+			);
+		`,
+	},
+	{
+		version: 13,
+		name:    "message_metadata",
+		sql: `
+			ALTER TABLE messages ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
+		`,
+	},
+	{
+		version: 14,
+		name:    "folders_and_file_metadata",
+		sql: `
+			CREATE TABLE IF NOT EXISTS folders (
+				id TEXT PRIMARY KEY,
+				parent_id TEXT,
+				name TEXT NOT NULL,
+				created_by TEXT NOT NULL,
+				is_private INTEGER NOT NULL DEFAULT 0,
+				created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+				updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+			);
+			CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);
+			ALTER TABLE files ADD COLUMN folder_id TEXT;
+			ALTER TABLE files ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0;
+			ALTER TABLE files ADD COLUMN description TEXT NOT NULL DEFAULT '';
+			CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder_id);
+		`,
+	},
+	{
+		version: 15,
+		name:    "task_position",
+		sql: `
+			ALTER TABLE tasks ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+		`,
+	},
+	{
+		version: 16,
+		name:    "agent_behavior_config",
+		sql: `
+			ALTER TABLE agents ADD COLUMN behavior_config TEXT NOT NULL DEFAULT '{}';
+		`,
+	},
+	{
+		version: 17,
+		name:    "documents_folder_id",
+		sql: `
+			ALTER TABLE documents ADD COLUMN folder_id TEXT NOT NULL DEFAULT '';
+			CREATE INDEX IF NOT EXISTS idx_documents_folder ON documents(folder_id);
+		`,
+	},
+	{
+		version: 18,
+		name:    "calendar_events",
+		sql: `
+			CREATE TABLE IF NOT EXISTS calendar_events (
+				id TEXT PRIMARY KEY,
+				title TEXT NOT NULL,
+				description TEXT NOT NULL DEFAULT '',
+				location TEXT NOT NULL DEFAULT '',
+				start_time TEXT NOT NULL,
+				end_time TEXT NOT NULL,
+				all_day INTEGER NOT NULL DEFAULT 0,
+				recurrence_rule TEXT NOT NULL DEFAULT '',
+				recurrence_parent_id TEXT,
+				color TEXT NOT NULL DEFAULT '',
+				calendar TEXT NOT NULL DEFAULT 'default',
+				created_by TEXT NOT NULL,
+				attendees TEXT NOT NULL DEFAULT '[]',
+				reminders TEXT NOT NULL DEFAULT '[]',
+				channel_id TEXT,
+				status TEXT NOT NULL DEFAULT 'confirmed',
+				created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+				updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+			);
+			CREATE INDEX IF NOT EXISTS idx_cal_events_time ON calendar_events(start_time, end_time);
+			CREATE INDEX IF NOT EXISTS idx_cal_events_creator ON calendar_events(created_by);
+
+			CREATE TABLE IF NOT EXISTS calendar_reminders_sent (
+				id TEXT PRIMARY KEY,
+				event_id TEXT NOT NULL,
+				reminder_key TEXT NOT NULL UNIQUE,
+				sent_at TEXT NOT NULL
+			);
+		`,
+	},
+	{
+		version: 19,
+		name:    "member_colors",
+		sql: `
+			ALTER TABLE members ADD COLUMN color TEXT NOT NULL DEFAULT '';
+		`,
+	},
+	{
+		version: 20,
+		name:    "workspace_models",
+		sql: `
+			CREATE TABLE IF NOT EXISTS workspace_models (
+				id TEXT PRIMARY KEY,
+				display_name TEXT NOT NULL,
+				provider TEXT NOT NULL,
+				context_length INTEGER DEFAULT 0,
+				supports_tools BOOLEAN DEFAULT FALSE,
+				pricing_prompt TEXT NOT NULL DEFAULT '0',
+				pricing_completion TEXT NOT NULL DEFAULT '0',
+				added_by TEXT NOT NULL,
+				added_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+			);
+		`,
+	},
+	{
+		version: 21,
+		name:    "reply_threads_and_favorites",
+		sql: `
+			ALTER TABLE messages ADD COLUMN parent_id TEXT REFERENCES messages(id);
+			CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_id);
+			ALTER TABLE channel_reads ADD COLUMN is_favorite BOOLEAN NOT NULL DEFAULT FALSE;
+		`,
+	},
 }
 
 func RunGlobal(db *sql.DB) error {

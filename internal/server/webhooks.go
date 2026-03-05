@@ -5,11 +5,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 
 	"github.com/nexus-chat/nexus/internal/auth"
 	"github.com/nexus-chat/nexus/internal/id"
+	"github.com/nexus-chat/nexus/internal/logger"
 )
 
 // handleIncomingWebhook is the public endpoint that receives webhook payloads.
@@ -212,7 +212,7 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[webhooks:%s] deleted webhook %s", slug, hookID)
+	logger.WithCategory(logger.CatSystem).Info().Str("workspace", slug).Str("hook_id", hookID).Msg("deleted webhook")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

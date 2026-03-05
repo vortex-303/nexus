@@ -543,10 +543,11 @@ Layer 4: Knowledge Graph
   - "Jake and Sarah disagree on pricing" (conflict)
   Updated continuously as new facts are extracted
 
-Layer 5: Semantic Index (optional, for document search)
-  Embeddings for uploaded documents and long-form content
-  SQLite-backed vector search (sqlite-vec extension)
-  Only used when structured memory doesn't have the answer
+Layer 5: Semantic Index (optional, for knowledge search)
+  Embeddings for knowledge base articles (1536-dim, text-embedding-3-small)
+  Qdrant vector search via gRPC (cosine distance, per-workspace collections)
+  Falls back to SQL LIKE keyword search when Qdrant is unavailable
+  Articles auto-embedded on create/update, vectors deleted on article delete
 ```
 
 ### Query Resolution Order
