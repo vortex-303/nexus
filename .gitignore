@@ -19,3 +19,4 @@ nexus-server
 web/svelte/node_modules/
 web/svelte/.svelte-kit/
 web/svelte/build/
+.claude/worktrees/
