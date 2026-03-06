@@ -20,7 +20,7 @@
 	// Brain settings state
 	let brainSettings = $state<any>({});
 	let brainApiKey = $state('');
-	let brainModel = $state('anthropic/claude-sonnet-4');
+	let brainModel = $state('nexus/free-auto');
 	let brainSaving = $state(false);
 	let pinnedModels = $state<any[]>([]);
 
@@ -263,6 +263,7 @@
 					<div class="setting-field">
 						<label>Model</label>
 						<select bind:value={brainModel}>
+							<option value="nexus/free-auto">Free Auto (Nexus)</option>
 							{#if pinnedModels.length > 0}
 								{#each pinnedModels as m}
 									<option value={m.id}>{m.display_name}</option>

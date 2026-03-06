@@ -302,7 +302,7 @@ func (s *Server) resolveMemberIDByName(slug, name string) string {
 }
 
 // handleBrainMentionWithTools processes a @Brain mention with tool support.
-func (s *Server) handleBrainMentionWithTools(slug, channelID, senderName, content string) {
+func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderName, content string) {
 	go func() {
 		metrics.AgentExecutionsTotal.WithLabelValues("Brain", "started").Inc()
 		apiKey, model := s.getBrainSettings(slug)
@@ -376,17 +376,21 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, senderName, conten
 			systemPrompt = systemPrompt[:100000]
 		}
 
-		messages := s.getRecentMessages(wdb, channelID, 40)
+		messages := s.getThreadOrChannelMessages(wdb, channelID, parentID, 40)
 		logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("count", len(messages)).Msg("messages")
 
-		client := brain.NewClient(apiKey, model)
+		// Resolve free-auto virtual model
+		resolvedModel, fallbacks := s.resolveFreeAuto(model)
+
+		client := brain.NewClient(apiKey, resolvedModel)
+		client.FreeModelFallbacks = fallbacks
 
 		// First call: with tools (built-in + MCP)
 		allTools := s.getAllTools(slug)
 		responseContent, toolCalls, err := client.CompleteWithTools(systemPrompt, messages, allTools)
 		if err != nil {
 			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("LLM error")
-			s.sendBrainMessage(slug, channelID, "Sorry, I encountered an error. Check that the API key is configured correctly.")
+			s.sendBrainMessage(slug, channelID, parentID, "Sorry, I encountered an error. Check that the API key is configured correctly.")
 			return
 		}
 
@@ -394,7 +398,7 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, senderName, conten
 		if len(toolCalls) == 0 {
 			responseContent = strings.TrimSpace(responseContent)
 			if responseContent != "" {
-				s.sendBrainMessage(slug, channelID, responseContent)
+				s.sendBrainMessage(slug, channelID, parentID, responseContent)
 			}
 			// Log the action
 			brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
@@ -433,7 +437,7 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, senderName, conten
 			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("follow-up LLM error")
 			// Fall back to the initial response if any
 			if responseContent != "" {
-				s.sendBrainMessage(slug, channelID, appendMissingImages(responseContent, imageRefs))
+				s.sendBrainMessage(slug, channelID, parentID, appendMissingImages(responseContent, imageRefs))
 			}
 			return
 		}
@@ -449,7 +453,7 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, senderName, conten
 		}
 
 		if finalResponse != "" {
-			s.sendBrainMessage(slug, channelID, finalResponse, toolNames...)
+			s.sendBrainMessage(slug, channelID, parentID, finalResponse, toolNames...)
 		}
 
 		brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,

@@ -71,8 +71,9 @@ func (s *Server) broadcastAgentState(slug, channelID, agentID, agentName, state,
 }
 
 // handleAgentMention is called when a message mentions an agent.
-// It runs asynchronously in a goroutine.
-func (s *Server) handleAgentMention(slug, channelID, senderName, content string, agent *Agent) {
+// It runs asynchronously in a goroutine. fromAgent indicates this was triggered by another agent.
+func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, content string, agent *Agent, fromAgent ...bool) {
+	isFromAgent := len(fromAgent) > 0 && fromAgent[0]
 	go func() {
 		metrics.AgentExecutionsTotal.WithLabelValues(agent.Name, "started").Inc()
 		logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Bool("active", agent.IsActive).Msg("handleAgentMention triggered")
@@ -152,21 +153,25 @@ func (s *Server) handleAgentMention(slug, channelID, senderName, content string,
 			systemPrompt = systemPrompt[:100000]
 		}
 
-		messages := s.getRecentMessages(wdb, channelID, 40)
+		messages := s.getThreadOrChannelMessages(wdb, channelID, parentID, 40)
 		logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Int("system_chars", len(systemPrompt)).Int("message_count", len(messages)).Msg("final prompt")
 
 		// Get agent's scoped tools (built-in + MCP)
 		allTools := s.getAllTools(slug)
 		agentTools := getAgentTools(agent, allTools)
 
+		// Resolve free-auto virtual model
+		resolvedModel, fallbacks := s.resolveFreeAuto(model)
+
 		client := &brain.Client{
-			APIKey:     apiKey,
-			Model:      model,
-			HTTPClient: nil, // will use default
+			APIKey:             apiKey,
+			Model:              resolvedModel,
+			FreeModelFallbacks: fallbacks,
+			HTTPClient:         nil, // will use default
 		}
 		// Use default HTTP client
 		if client.HTTPClient == nil {
-			client.HTTPClient = brain.NewClient(apiKey, model).HTTPClient
+			client.HTTPClient = brain.NewClient(apiKey, resolvedModel).HTTPClient
 		}
 
 		if len(agentTools) == 0 {
@@ -182,7 +187,7 @@ func (s *Server) handleAgentMention(slug, channelID, senderName, content string,
 				imagesMd := s.saveAgentImages(slug, channelID, agent, images)
 				responseText += imagesMd
 				if responseText != "" {
-					s.sendAgentMessage(slug, channelID, agent, responseText)
+					s.sendAgentMessage(slug, channelID, parentID, agent, responseText, isFromAgent)
 				}
 				brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 					truncate(content, 200), truncate(responseText, 500), model, nil)
@@ -197,7 +202,7 @@ func (s *Server) handleAgentMention(slug, channelID, senderName, content string,
 			}
 			response = strings.TrimSpace(response)
 			if response != "" {
-				s.sendAgentMessage(slug, channelID, agent, response)
+				s.sendAgentMessage(slug, channelID, parentID, agent, response, isFromAgent)
 			}
 			brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 				truncate(content, 200), truncate(response, 500), model, nil)
@@ -220,7 +225,7 @@ func (s *Server) handleAgentMention(slug, channelID, senderName, content string,
 			logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Str("response", truncate(responseContent, 200)).Msg("no tool calls returned")
 			responseContent = strings.TrimSpace(responseContent)
 			if responseContent != "" {
-				s.sendAgentMessage(slug, channelID, agent, responseContent)
+				s.sendAgentMessage(slug, channelID, parentID, agent, responseContent, isFromAgent)
 			}
 			brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 				truncate(content, 200), truncate(responseContent, 500), model, nil)
@@ -267,7 +272,7 @@ func (s *Server) handleAgentMention(slug, channelID, senderName, content string,
 			if err2 != nil {
 				logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err2).Msg("follow-up LLM error")
 				if responseContent != "" {
-					s.sendAgentMessage(slug, channelID, agent, appendMissingImages(responseContent, imageRefs)+imagePromptTag)
+					s.sendAgentMessage(slug, channelID, parentID, agent, appendMissingImages(responseContent, imageRefs)+imagePromptTag, isFromAgent)
 				}
 				return
 			}
@@ -279,7 +284,7 @@ func (s *Server) handleAgentMention(slug, channelID, senderName, content string,
 		// Re-append the image prompt tag for frontend display
 		finalResponse += imagePromptTag
 		if finalResponse != "" {
-			s.sendAgentMessage(slug, channelID, agent, finalResponse, toolNames...)
+			s.sendAgentMessage(slug, channelID, parentID, agent, finalResponse, isFromAgent, toolNames...)
 		}
 
 		brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
@@ -301,7 +306,7 @@ func (s *Server) maybeStartFollowing(slug, channelID string, agent *Agent) {
 }
 
 // handleAgentFollowUp is called when an agent is following a conversation (not directly mentioned).
-func (s *Server) handleAgentFollowUp(slug, channelID, senderName, content string, agent *Agent) {
+func (s *Server) handleAgentFollowUp(slug, channelID, parentID, senderName, content string, agent *Agent) {
 	go func() {
 		metrics.AgentExecutionsTotal.WithLabelValues(agent.Name, "follow_up").Inc()
 		logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Msg("handleAgentFollowUp triggered")
@@ -342,9 +347,11 @@ func (s *Server) handleAgentFollowUp(slug, channelID, senderName, content string
 			systemPrompt += "\n\n---\n\n" + chSummary
 		}
 
-		messages := s.getRecentMessages(wdb, channelID, 40)
+		messages := s.getThreadOrChannelMessages(wdb, channelID, parentID, 40)
 
-		client := brain.NewClient(apiKey, model)
+		resolvedModel, fallbacks := s.resolveFreeAuto(model)
+		client := brain.NewClient(apiKey, resolvedModel)
+		client.FreeModelFallbacks = fallbacks
 		response, err := client.Complete(systemPrompt, messages)
 		if err != nil {
 			logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("follow-up LLM error")
@@ -357,7 +364,7 @@ func (s *Server) handleAgentFollowUp(slug, channelID, senderName, content string
 			return
 		}
 
-		s.sendAgentMessage(slug, channelID, agent, response)
+		s.sendAgentMessage(slug, channelID, parentID, agent, response, false)
 
 		brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 			truncate(content, 200), truncate(response, 500), model, nil)
@@ -481,7 +488,9 @@ func (s *Server) handleDelegateToAgent(slug, channelID, argsJSON string) string 
 		}
 	}
 
-	client := brain.NewClient(apiKey, model)
+	resolvedModel, fallbacks := s.resolveFreeAuto(model)
+	client := brain.NewClient(apiKey, resolvedModel)
+	client.FreeModelFallbacks = fallbacks
 	taskMessages := []brain.Message{
 		{Role: "user", Content: args.Task},
 	}

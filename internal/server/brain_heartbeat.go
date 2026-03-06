@@ -101,7 +101,7 @@ func (s *Server) runHeartbeat(slug string, sched brain.HeartbeatSchedule, apiKey
 		return
 	}
 
-	s.sendBrainMessage(slug, channelID, response)
+	s.sendBrainMessage(slug, channelID, "", response)
 
 	// Log the action
 	brain.LogAction(wdb.DB, id.New(), brain.ActionHeartbeat, channelID,

@@ -178,11 +178,13 @@ func (s *Server) handleBrainMention(slug, channelID, senderName, content string)
 
 		messages := s.getRecentMessages(wdb, channelID, 20)
 
-		client := brain.NewClient(apiKey, model)
+		resolvedModel, fallbacks := s.resolveFreeAuto(model)
+		client := brain.NewClient(apiKey, resolvedModel)
+		client.FreeModelFallbacks = fallbacks
 		response, err := client.Complete(systemPrompt, messages)
 		if err != nil {
 			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("LLM error")
-			s.sendBrainMessage(slug, channelID, "Sorry, I encountered an error. Check that the API key is configured correctly.")
+			s.sendBrainMessage(slug, channelID, "", "Sorry, I encountered an error. Check that the API key is configured correctly.")
 			return
 		}
 
@@ -191,12 +193,12 @@ func (s *Server) handleBrainMention(slug, channelID, senderName, content string)
 			return
 		}
 
-		s.sendBrainMessage(slug, channelID, response)
+		s.sendBrainMessage(slug, channelID, "", response)
 	}()
 }
 
 // sendBrainMessage saves a message from Brain and broadcasts it.
-func (s *Server) sendBrainMessage(slug, channelID, content string, toolsUsed ...string) {
+func (s *Server) sendBrainMessage(slug, channelID, parentID, content string, toolsUsed ...string) {
 	wdb, err := s.ws.Open(slug)
 	if err != nil {
 		return
@@ -211,13 +213,24 @@ func (s *Server) sendBrainMessage(slug, channelID, content string, toolsUsed ...
 		metadata = string(metaJSON)
 	}
 
-	_, err = wdb.DB.Exec(
-		"INSERT INTO messages (id, channel_id, sender_id, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-		msgID, channelID, brain.BrainMemberID, content, metadata, now,
-	)
+	if parentID != "" {
+		_, err = wdb.DB.Exec(
+			"INSERT INTO messages (id, channel_id, sender_id, content, metadata, parent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			msgID, channelID, brain.BrainMemberID, content, metadata, parentID, now,
+		)
+	} else {
+		_, err = wdb.DB.Exec(
+			"INSERT INTO messages (id, channel_id, sender_id, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+			msgID, channelID, brain.BrainMemberID, content, metadata, now,
+		)
+	}
 	if err != nil {
 		logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("failed to save message")
 		return
+	}
+
+	if parentID != "" {
+		wdb.DB.Exec("UPDATE messages SET reply_count = reply_count + 1, latest_reply_at = ? WHERE id = ?", now, parentID)
 	}
 
 	h := s.hubs.Get(slug)
@@ -229,6 +242,7 @@ func (s *Server) sendBrainMessage(slug, channelID, content string, toolsUsed ...
 		Content:    content,
 		CreatedAt:  now,
 		ToolsUsed:  toolsUsed,
+		ParentID:   parentID,
 	}), "")
 }
 
@@ -280,6 +294,48 @@ func (s *Server) getRecentMessages(wdb *db.WorkspaceDB, channelID string, limit 
 	return msgs
 }
 
+// getThreadOrChannelMessages fetches thread messages if parentID is set, otherwise channel messages.
+func (s *Server) getThreadOrChannelMessages(wdb *db.WorkspaceDB, channelID, parentID string, limit int) []brain.Message {
+	if parentID == "" {
+		return s.getRecentMessages(wdb, channelID, limit)
+	}
+	// Fetch the parent message + all thread replies
+	rows, err := wdb.DB.Query(`
+		SELECT m.sender_id, COALESCE(mem.display_name, m.sender_id), m.content
+		FROM messages m
+		LEFT JOIN members mem ON mem.id = m.sender_id
+		WHERE (m.id = ? OR m.parent_id = ?) AND m.deleted = FALSE
+		ORDER BY m.created_at ASC
+		LIMIT ?
+	`, parentID, parentID, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var msgs []brain.Message
+	for rows.Next() {
+		var senderID, senderName, content string
+		if err := rows.Scan(&senderID, &senderName, &content); err != nil {
+			continue
+		}
+		content = stripBase64Images(content)
+		if len(content) > 4000 {
+			content = content[:4000] + "\n[...truncated]"
+		}
+		role := "user"
+		if senderID == brain.BrainMemberID {
+			role = "assistant"
+		}
+		msgs = append(msgs, brain.Message{
+			Role:    role,
+			Content: content,
+			Name:    senderName,
+		})
+	}
+	return msgs
+}
+
 // stripBase64Images removes base64-encoded image data from message content,
 // replacing it with a short placeholder to prevent token overflow.
 func stripBase64Images(content string) string {
@@ -310,10 +366,27 @@ func (s *Server) getBrainSettings(slug string) (apiKey, model string) {
 		return "", ""
 	}
 
-	model = "anthropic/claude-sonnet-4" // default
+	model = FreeAutoModelID // default
 	_ = wdb.DB.QueryRow("SELECT value FROM brain_settings WHERE key = 'api_key'").Scan(&apiKey)
 	_ = wdb.DB.QueryRow("SELECT value FROM brain_settings WHERE key = 'model'").Scan(&model)
 	return apiKey, model
+}
+
+// resolveFreeAuto resolves the virtual free-auto model ID to a primary model and fallback list.
+// If the model is not free-auto, returns the model unchanged with no fallbacks.
+func (s *Server) resolveFreeAuto(model string) (primaryModel string, fallbacks []string) {
+	if model != FreeAutoModelID {
+		return model, nil
+	}
+	freeModels := s.getFreeModels()
+	if len(freeModels) == 0 {
+		return DefaultFreeModels[0].ID, nil
+	}
+	primary := freeModels[0].ID
+	for _, m := range freeModels[1:] {
+		fallbacks = append(fallbacks, m.ID)
+	}
+	return primary, fallbacks
 }
 
 // getGeminiAPIKey reads the Gemini API key from workspace settings.
@@ -356,7 +429,7 @@ func (s *Server) handleGetBrainSettings(w http.ResponseWriter, r *http.Request) 
 	}
 
 	settings := map[string]string{
-		"model":                "anthropic/claude-sonnet-4",
+		"model":                FreeAutoModelID,
 		"image_model":          brain.DefaultGeminiImageModel,
 		"memory_model":         "openai/gpt-4o-mini",
 		"memory_enabled":       "true",

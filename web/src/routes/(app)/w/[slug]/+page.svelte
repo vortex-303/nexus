@@ -275,7 +275,7 @@
 	// Brain state
 	let brainSettings = $state<any>({});
 	let brainApiKey = $state('');
-	let brainModel = $state('anthropic/claude-sonnet-4');
+	let brainModel = $state('nexus/free-auto');
 	let brainImageModel = $state('gemini-2.5-flash-image');
 	let brainGeminiKey = $state('');
 	let brainMemoryEnabled = $state(true);
@@ -409,7 +409,8 @@
 		tools: [] as string[], channels: [] as string[], knowledge_access: false, memory_access: false,
 		can_delegate: false, max_iterations: 5, trigger_type: 'mention',
 		cooldown_seconds: 30, follow_ttl_minutes: 10, follow_max_messages: 20,
-		channel_modes: {} as Record<string, string>
+		channel_modes: {} as Record<string, string>,
+		respond_to_agents: false, auto_follow_threads: true, respond_in_threads: true
 	});
 	const BUILTIN_AGENT_TOOLS = ['create_task', 'list_tasks', 'search_messages', 'create_document', 'search_knowledge'];
 	let allAgentTools = $derived([...BUILTIN_AGENT_TOOLS, ...mcpServers.flatMap((s: any) => (s.tools || []).map((t: any) => t.qual_name))]);
@@ -752,10 +753,14 @@
 					channelID: payload.channel_id,
 					agentName: payload.agent_name
 				});
-				// Safety timeout: auto-clear after 30s
+				// Safety timeout: auto-clear after 120s (image generation can be slow)
 				setTimeout(() => {
 					agentStates = new Map([...agentStates].filter(([k]) => k !== payload.agent_id));
-				}, 30000);
+				}, 120000);
+				// Auto-scroll to show the indicator
+				requestAnimationFrame(() => {
+					if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+				});
 			}
 			agentStates = next;
 		}
@@ -1270,7 +1275,7 @@
 	async function loadBrainSettings() {
 		try {
 			brainSettings = await getBrainSettings(slug);
-			brainModel = brainSettings.model || 'anthropic/claude-sonnet-4';
+			brainModel = brainSettings.model || 'nexus/free-auto';
 			brainImageModel = brainSettings.image_model || 'gemini-2.5-flash-image';
 			brainGeminiKey = '';
 			brainMemoryModel = brainSettings.memory_model || 'openai/gpt-4o-mini';
@@ -2046,7 +2051,8 @@ autonomy: reactive
 			tools: [], channels: [], knowledge_access: false, memory_access: false,
 			can_delegate: false, max_iterations: 5, trigger_type: 'mention',
 			cooldown_seconds: 30, follow_ttl_minutes: 10, follow_max_messages: 20,
-			channel_modes: {}
+			channel_modes: {},
+			respond_to_agents: false, auto_follow_threads: true, respond_in_threads: true
 		};
 	}
 
@@ -2074,7 +2080,10 @@ autonomy: reactive
 			cooldown_seconds: bc.cooldown_seconds || 30,
 			follow_ttl_minutes: bc.follow_ttl_minutes || 10,
 			follow_max_messages: bc.follow_max_messages || 20,
-			channel_modes: bc.channel_modes || {}
+			channel_modes: bc.channel_modes || {},
+			respond_to_agents: bc.respond_to_agents ?? false,
+			auto_follow_threads: bc.auto_follow_threads ?? true,
+			respond_in_threads: bc.respond_in_threads ?? true
 		};
 		// Parse tools/channels if they're strings
 		if (typeof agentForm.tools === 'string') agentForm.tools = JSON.parse(agentForm.tools);
@@ -2100,10 +2109,13 @@ autonomy: reactive
 			cooldown_seconds: agentForm.cooldown_seconds || 30,
 			follow_ttl_minutes: agentForm.follow_ttl_minutes || 0,
 			follow_max_messages: agentForm.follow_max_messages || 20,
-			channel_modes: agentForm.channel_modes || {}
+			channel_modes: agentForm.channel_modes || {},
+			respond_to_agents: agentForm.respond_to_agents ?? false,
+			auto_follow_threads: agentForm.auto_follow_threads ?? true,
+			respond_in_threads: agentForm.respond_in_threads ?? true
 		};
 		// Coerce fields that LLM may return as arrays instead of strings
-		const { follow_ttl_minutes, follow_max_messages, cooldown_seconds, channel_modes, ...rest } = agentForm;
+		const { follow_ttl_minutes, follow_max_messages, cooldown_seconds, channel_modes, respond_to_agents, auto_follow_threads, respond_in_threads, ...rest } = agentForm;
 		const payload = {
 			...rest,
 			instructions: coerceToString(agentForm.instructions),
@@ -2185,7 +2197,8 @@ autonomy: reactive
 				memory_access: !!config.memory_access,
 				can_delegate: false, max_iterations: 5, trigger_type: 'mention',
 				cooldown_seconds: 30, follow_ttl_minutes: 10, follow_max_messages: 20,
-				channel_modes: {}
+				channel_modes: {},
+				respond_to_agents: false, auto_follow_threads: true, respond_in_threads: true
 			};
 			editingAgent = null;
 			showAgentForm = true;
@@ -3057,13 +3070,19 @@ autonomy: reactive
 			<!-- Agent state indicators -->
 			{#each [...agentStates.entries()] as [agentId, agentState]}
 				{#if agentState.channelID === $activeChannel?.id}
-					<div class="typing-bar agent-state-bar">
-						<span class="agent-state-dot"></span>
-						{#if agentState.state === 'thinking'}
-							<span>{agentState.agentName} is thinking...</span>
-						{:else if agentState.state === 'tool_executing'}
-							<span>{agentState.agentName} is executing {agentState.toolName}...</span>
-						{/if}
+					<div class="agent-working-indicator">
+						<div class="agent-working-dot-group">
+							<span class="agent-working-dot"></span>
+							<span class="agent-working-dot"></span>
+							<span class="agent-working-dot"></span>
+						</div>
+						<span class="agent-working-text">
+							{#if agentState.state === 'thinking'}
+								{agentState.agentName} is thinking...
+							{:else if agentState.state === 'tool_executing'}
+								{agentState.agentName} is using {agentState.toolName}...
+							{/if}
+						</span>
 					</div>
 				{/if}
 			{/each}
@@ -3429,6 +3448,7 @@ autonomy: reactive
 					<label>Model</label>
 					<div style="display: flex; gap: 0.5rem; align-items: center;">
 						<select class="brain-input" bind:value={brainModel} style="flex:1">
+							<option value="nexus/free-auto">Free Auto (Nexus)</option>
 							{#if pinnedModels.length > 0}
 								{#each pinnedModels as m}
 									<option value={m.id}>{m.display_name}</option>
@@ -4432,7 +4452,7 @@ autonomy: reactive
 							<h4>Capabilities</h4>
 							<label class="form-field">
 								<span>Model (empty = workspace default)</span>
-								<input type="text" bind:value={agentForm.model} placeholder="anthropic/claude-sonnet-4" />
+								<input type="text" bind:value={agentForm.model} placeholder="empty = Free Auto (nexus/free-auto)" />
 							</label>
 							<label class="form-field">
 								<span>Temperature: {agentForm.temperature}</span>
@@ -4475,6 +4495,20 @@ autonomy: reactive
 								<label class="form-field" style="flex:1">
 									<span>Max follow-up messages</span>
 									<input type="number" bind:value={agentForm.follow_max_messages} min="1" max="100" style="width:80px" />
+								</label>
+							</div>
+							<div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+								<label class="toggle-label">
+									<input type="checkbox" bind:checked={agentForm.respond_to_agents} /> Respond to other agents
+									<span class="form-hint">React to messages sent by other agents in the channel</span>
+								</label>
+								<label class="toggle-label">
+									<input type="checkbox" bind:checked={agentForm.auto_follow_threads} /> Auto-follow threads
+									<span class="form-hint">Respond when users reply to this agent's messages</span>
+								</label>
+								<label class="toggle-label">
+									<input type="checkbox" bind:checked={agentForm.respond_in_threads} /> Respond in threads
+									<span class="form-hint">Participate in thread conversations</span>
 								</label>
 							</div>
 							{#if (agentForm.channels || []).length > 0}
@@ -7334,21 +7368,40 @@ autonomy: reactive
 
 	.empty-state { color: var(--text-tertiary); font-size: 0.85rem; padding: 40px; text-align: center; }
 
-	/* Agent state indicator */
-	.agent-state-bar {
+	/* Agent working indicator */
+	.agent-working-indicator {
+		display: flex;
+		align-items: center;
+		gap: var(--space-sm);
+		padding: var(--space-sm) var(--space-xl);
 		color: var(--accent);
+		font-size: var(--text-sm);
+		animation: agentFadeIn 0.3s ease;
 	}
-	.agent-state-dot {
-		display: inline-block;
+	@keyframes agentFadeIn {
+		from { opacity: 0; transform: translateY(4px); }
+		to { opacity: 1; transform: translateY(0); }
+	}
+	.agent-working-dot-group {
+		display: flex;
+		gap: 3px;
+		align-items: center;
+	}
+	.agent-working-dot {
 		width: 6px;
 		height: 6px;
 		border-radius: 50%;
 		background: var(--accent);
-		animation: agentPulse 1.5s ease-in-out infinite;
+		animation: agentBounce 1.4s ease-in-out infinite;
 	}
-	@keyframes agentPulse {
-		0%, 100% { opacity: 0.4; }
-		50% { opacity: 1; }
+	.agent-working-dot:nth-child(2) { animation-delay: 0.2s; }
+	.agent-working-dot:nth-child(3) { animation-delay: 0.4s; }
+	@keyframes agentBounce {
+		0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+		40% { opacity: 1; transform: scale(1.1); }
+	}
+	.agent-working-text {
+		font-weight: 500;
 	}
 
 	/* Org chart toolbar */

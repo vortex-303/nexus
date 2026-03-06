@@ -116,7 +116,7 @@ func (s *Server) checkCalendarAgentTriggers() {
 					agent := s.loadAgentByID(slug, trigger.agentID)
 					if agent != nil {
 						logger.WithCategory(logger.CatCalendar).Info().Str("workspace", slug).Str("agent", trigger.agentName).Str("event", title).Msg("triggering agent for event")
-						s.handleAgentMention(slug, targetChannel, "Calendar", content, agent)
+						s.handleAgentMention(slug, targetChannel, "", "Calendar", content, agent)
 					}
 				}
 			}

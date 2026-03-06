@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { getCurrentUser, clearSession, setToken, setWorkspaceSlug, adminStats, adminListWorkspaces, adminListAccounts, adminSuspendWorkspace, adminDeleteWorkspace, adminBanAccount, adminEnterWorkspace, adminAuditLog, adminWorkspaceDetail, adminExportWorkspace, adminResetPassword, adminSetAnnouncement, adminClearAnnouncement, adminGetModels, adminSetModels, browseModels, getAnnouncement } from '$lib/api';
+	import { getCurrentUser, clearSession, setToken, setWorkspaceSlug, adminStats, adminListWorkspaces, adminListAccounts, adminSuspendWorkspace, adminDeleteWorkspace, adminBanAccount, adminEnterWorkspace, adminAuditLog, adminWorkspaceDetail, adminExportWorkspace, adminResetPassword, adminSetAnnouncement, adminClearAnnouncement, adminGetModels, adminSetModels, browseModels, getAnnouncement, getFreeModels, adminSetFreeModels } from '$lib/api';
 
 	type Tab = 'dashboard' | 'workspaces' | 'accounts' | 'audit' | 'models';
 	let activeTab = $state<Tab>('dashboard');
@@ -32,6 +32,11 @@
 	let allModels = $state<any[]>([]);
 	let modelSearch = $state('');
 	let modelsLoading = $state(false);
+
+	// Free Models
+	let freeModels = $state<any[]>([]);
+	let newFreeModelId = $state('');
+	let newFreeModelName = $state('');
 
 	onMount(async () => {
 		const user = getCurrentUser();
@@ -73,6 +78,10 @@
 		try {
 			const data = await adminGetModels();
 			pinnedModels = data.models || [];
+		} catch {}
+		try {
+			const data = await getFreeModels();
+			freeModels = data.models || [];
 		} catch {}
 	}
 
@@ -205,6 +214,35 @@
 			await adminSetModels(newList);
 			pinnedModels = newList;
 		} catch (e: any) { alert(e.message); }
+	}
+
+	async function saveFreeModels(newList: any[]) {
+		try {
+			await adminSetFreeModels(newList);
+			freeModels = newList;
+		} catch (e: any) { alert(e.message); }
+	}
+
+	async function removeFreeModel(modelId: string) {
+		await saveFreeModels(freeModels.filter((m: any) => m.id !== modelId));
+	}
+
+	async function moveFreeModel(index: number, direction: -1 | 1) {
+		const newIndex = index + direction;
+		if (newIndex < 0 || newIndex >= freeModels.length) return;
+		const newList = [...freeModels];
+		[newList[index], newList[newIndex]] = [newList[newIndex], newList[index]];
+		newList.forEach((m: any, i: number) => m.priority = i);
+		await saveFreeModels(newList);
+	}
+
+	async function addFreeModel() {
+		if (!newFreeModelId.trim()) return;
+		const name = newFreeModelName.trim() || newFreeModelId.trim();
+		const newList = [...freeModels, { id: newFreeModelId.trim(), name, priority: freeModels.length }];
+		await saveFreeModels(newList);
+		newFreeModelId = '';
+		newFreeModelName = '';
 	}
 
 	function handleLogout() {
@@ -472,6 +510,52 @@
 						</table>
 					</div>
 				{/if}
+
+				<h2 style="margin-top: 2rem;">Free Auto Models ({freeModels.length})</h2>
+				<p class="section-hint">The "Free Auto (Nexus)" model cycles through these free models on failure. Drag to reorder priority.</p>
+
+				{#if freeModels.length === 0}
+					<p class="empty-text">Using built-in defaults. Add custom models to override.</p>
+				{:else}
+					<div class="table-wrap">
+						<table class="admin-table">
+							<thead>
+								<tr>
+									<th>#</th>
+									<th>Model ID</th>
+									<th>Name</th>
+									<th>Actions</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each freeModels as model, i}
+								<tr>
+									<td>{i + 1}</td>
+									<td class="mono">{model.id}</td>
+									<td>{model.name}</td>
+									<td style="display: flex; gap: 0.25rem;">
+										<button class="btn btn-ghost btn-xs" onclick={() => moveFreeModel(i, -1)} disabled={i === 0}>Up</button>
+										<button class="btn btn-ghost btn-xs" onclick={() => moveFreeModel(i, 1)} disabled={i === freeModels.length - 1}>Down</button>
+										<button class="btn btn-ghost btn-xs danger" onclick={() => removeFreeModel(model.id)}>Remove</button>
+									</td>
+								</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				{/if}
+
+				<div style="display: flex; gap: 0.5rem; margin-top: 0.75rem; align-items: flex-end;">
+					<div style="flex: 1;">
+						<label style="font-size: 0.75rem; color: var(--text-tertiary);">Model ID</label>
+						<input class="admin-input" bind:value={newFreeModelId} placeholder="provider/model-name:free" />
+					</div>
+					<div style="flex: 1;">
+						<label style="font-size: 0.75rem; color: var(--text-tertiary);">Display Name</label>
+						<input class="admin-input" bind:value={newFreeModelName} placeholder="Model Name" />
+					</div>
+					<button class="btn btn-primary btn-sm" onclick={addFreeModel} disabled={!newFreeModelId.trim()}>Add</button>
+				</div>
 
 			{:else if activeTab === 'audit'}
 				<h2>Audit Log</h2>

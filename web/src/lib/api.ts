@@ -584,6 +584,14 @@ export async function adminSetModels(models: any[]) {
 	return request('PUT', '/api/admin/models', { models });
 }
 
+export async function getFreeModels() {
+	return request('GET', '/api/models/free');
+}
+
+export async function adminSetFreeModels(models: any[]) {
+	return request('PUT', '/api/admin/models/free', { models });
+}
+
 // Webhooks
 export async function createWebhook(slug: string, channelId: string, description: string) {
 	return request('POST', `/api/workspaces/${slug}/brain/webhooks`, { channel_id: channelId, description });

@@ -58,13 +58,13 @@ func (s *Server) ingestExternalMessage(slug, channelID, senderID, senderName, co
 		return
 	case "draft":
 		// Brain responds in channel only — no external reply
-		s.handleBrainMentionWithTools(slug, channelID, senderName, content)
+		s.handleBrainMentionWithTools(slug, channelID, "", senderName, content)
 	case "autonomous":
 		// Brain responds + calls replyFn to send back to external source
 		s.handleBrainMentionWithReply(slug, channelID, senderName, content, replyFn)
 	default:
 		// Default to draft
-		s.handleBrainMentionWithTools(slug, channelID, senderName, content)
+		s.handleBrainMentionWithTools(slug, channelID, "", senderName, content)
 	}
 }
 
@@ -73,7 +73,7 @@ func (s *Server) ingestExternalMessage(slug, channelID, senderID, senderName, co
 func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, content string, onReply func(string)) {
 	if onReply == nil {
 		// No reply function — fall back to normal mention
-		s.handleBrainMentionWithTools(slug, channelID, senderName, content)
+		s.handleBrainMentionWithTools(slug, channelID, "", senderName, content)
 		return
 	}
 
@@ -145,14 +145,14 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 		responseContent, toolCalls, err := client.CompleteWithTools(systemPrompt, messages, allTools)
 		if err != nil {
 			logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("LLM error")
-			s.sendBrainMessage(slug, channelID, "Sorry, I encountered an error.")
+			s.sendBrainMessage(slug, channelID, "", "Sorry, I encountered an error.")
 			return
 		}
 
 		if len(toolCalls) == 0 {
 			responseContent = strings.TrimSpace(responseContent)
 			if responseContent != "" {
-				s.sendBrainMessage(slug, channelID, responseContent)
+				s.sendBrainMessage(slug, channelID, "", responseContent)
 				onReply(responseContent)
 			}
 			brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
@@ -183,7 +183,7 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 		if err != nil {
 			logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("follow-up LLM error")
 			if responseContent != "" {
-				s.sendBrainMessage(slug, channelID, appendMissingImages(responseContent, imageRefs))
+				s.sendBrainMessage(slug, channelID, "", appendMissingImages(responseContent, imageRefs))
 				onReply(responseContent)
 			}
 			return
@@ -198,7 +198,7 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 		}
 
 		if finalResponse != "" {
-			s.sendBrainMessage(slug, channelID, finalResponse, toolNames...)
+			s.sendBrainMessage(slug, channelID, "", finalResponse, toolNames...)
 			onReply(finalResponse)
 		}
 		brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,

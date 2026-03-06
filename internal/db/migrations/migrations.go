@@ -572,6 +572,17 @@ var workspaceMigrations = []migration{
 			ALTER TABLE channel_reads ADD COLUMN is_favorite BOOLEAN NOT NULL DEFAULT FALSE;
 		`,
 	},
+	{
+		version: 22,
+		name:    "free_models",
+		sql: `
+			CREATE TABLE IF NOT EXISTS free_models (
+				model_id TEXT PRIMARY KEY,
+				display_name TEXT NOT NULL,
+				priority INTEGER NOT NULL DEFAULT 0
+			);
+		`,
+	},
 }
 
 func RunGlobal(db *sql.DB) error {

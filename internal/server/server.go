@@ -292,6 +292,7 @@ func (s *Server) routes() {
 	// Models
 	s.mux.Handle("GET /api/models/browse", authed(http.HandlerFunc(s.handleBrowseModels)))
 	s.mux.Handle("GET /api/models", authed(http.HandlerFunc(s.handleGetPinnedModels)))
+	s.mux.Handle("GET /api/models/free", authed(http.HandlerFunc(s.handleGetFreeModels)))
 
 	// Workspace models
 	s.mux.Handle("GET /api/workspaces/{slug}/models", authed(http.HandlerFunc(s.handleGetWorkspaceModels)))
@@ -319,6 +320,7 @@ func (s *Server) routes() {
 	s.mux.Handle("DELETE /api/admin/announcements", authed(http.HandlerFunc(s.requireSuperadmin(s.handleAdminClearAnnouncement))))
 	s.mux.Handle("GET /api/admin/models", authed(http.HandlerFunc(s.requireSuperadmin(s.handleAdminGetModels))))
 	s.mux.Handle("PUT /api/admin/models", authed(http.HandlerFunc(s.requireSuperadmin(s.handleAdminSetModels))))
+	s.mux.Handle("PUT /api/admin/models/free", authed(http.HandlerFunc(s.requireSuperadmin(s.handleAdminSetFreeModels))))
 
 	// Webhooks (public ingestion endpoint)
 	s.mux.HandleFunc("POST /w/{slug}/hook/{token}", s.handleIncomingWebhook)

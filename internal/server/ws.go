@@ -328,13 +328,13 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 		isBrainDM = true
 	}
 	if brain.ContainsMention(p.Content) || isBrainDM {
-		s.handleBrainMentionWithTools(conn.WorkspaceSlug, p.ChannelID, conn.DisplayName, p.Content)
+		s.handleBrainMentionWithTools(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content)
 	}
 
 	// Check for @Agent mentions
 	mentionedAgents := s.checkAgentMentions(conn.WorkspaceSlug, p.Content)
 	for _, agent := range mentionedAgents {
-		s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, conn.DisplayName, p.Content, agent)
+		s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent)
 	}
 
 	// Build set of already-triggered agent IDs
@@ -352,7 +352,7 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 			if strings.Contains(chName, ba.MemberID) && !triggered[ba.ID] {
 				if agent := s.loadAgentByID(conn.WorkspaceSlug, ba.ID); agent != nil && agent.IsActive {
 					triggered[ba.ID] = true
-					s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, conn.DisplayName, p.Content, agent)
+					s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent)
 				}
 			}
 		}
@@ -361,7 +361,7 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 			for _, agent := range customAgents {
 				if !triggered[agent.ID] {
 					triggered[agent.ID] = true
-					s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, conn.DisplayName, p.Content, agent)
+					s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent)
 				}
 			}
 		}
@@ -372,7 +372,7 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 	for _, agent := range followAgents {
 		if !triggered[agent.ID] {
 			triggered[agent.ID] = true
-			s.handleAgentFollowUp(conn.WorkspaceSlug, p.ChannelID, conn.DisplayName, p.Content, agent)
+			s.handleAgentFollowUp(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent)
 		}
 	}
 
@@ -386,7 +386,20 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 				key := ConversationKey{Slug: conn.WorkspaceSlug, ChannelID: p.ChannelID, AgentID: agent.ID}
 				s.convTracker.RecordResponse(key)
 			}
-			s.handleAgentFollowUp(conn.WorkspaceSlug, p.ChannelID, conn.DisplayName, p.Content, agent)
+			// Channel agents in "always" mode get full tool access (like @mention)
+			s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent)
+		}
+	}
+
+	// Auto-follow threads: if user replies to an agent's message, that agent auto-responds
+	if p.ParentID != "" {
+		var parentSenderID string
+		_ = wdb.DB.QueryRow("SELECT sender_id FROM messages WHERE id = ? AND deleted = FALSE", p.ParentID).Scan(&parentSenderID)
+		if parentSenderID != "" && !triggered[parentSenderID] {
+			if agent := s.loadAgentByID(conn.WorkspaceSlug, parentSenderID); agent != nil && agent.IsActive && agent.BehaviorConfig.AutoFollowThreads {
+				triggered[parentSenderID] = true
+				s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent)
+			}
 		}
 	}
 }

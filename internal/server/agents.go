@@ -21,6 +21,10 @@ type BehaviorConfig struct {
 	FollowMaxMessages int               `json:"follow_max_messages"`
 	CooldownSeconds   int               `json:"cooldown_seconds"`
 	ChannelModes      map[string]string `json:"channel_modes"` // "active" or "silent" per channel
+
+	RespondToAgents   bool `json:"respond_to_agents"`    // respond to other agent messages
+	AutoFollowThreads bool `json:"auto_follow_threads"`  // auto-follow threads when agent's message becomes a thread parent
+	RespondInThreads  bool `json:"respond_in_threads"`   // respond to thread replies
 }
 
 // isChannelSilenced returns true if the agent has explicitly silenced this channel.
@@ -216,6 +220,12 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		a.Channels = json.RawMessage(channelsStr)
 		a.RequiresApproval = json.RawMessage(reqApprovalStr)
 		_ = json.Unmarshal([]byte(behaviorStr), &a.BehaviorConfig)
+		if !strings.Contains(behaviorStr, "auto_follow_threads") {
+			a.BehaviorConfig.AutoFollowThreads = true
+		}
+		if !strings.Contains(behaviorStr, "respond_in_threads") {
+			a.BehaviorConfig.RespondInThreads = true
+		}
 		agents = append(agents, a)
 	}
 
@@ -608,6 +618,13 @@ func (s *Server) loadAgentByID(slug, agentID string) *Agent {
 	a.Channels = json.RawMessage(channelsStr)
 	a.RequiresApproval = json.RawMessage(reqApprovalStr)
 	_ = json.Unmarshal([]byte(behaviorStr), &a.BehaviorConfig)
+	// Default auto_follow_threads and respond_in_threads to true when not explicitly set
+	if !strings.Contains(behaviorStr, "auto_follow_threads") {
+		a.BehaviorConfig.AutoFollowThreads = true
+	}
+	if !strings.Contains(behaviorStr, "respond_in_threads") {
+		a.BehaviorConfig.RespondInThreads = true
+	}
 	return &a
 }
 
@@ -703,20 +720,27 @@ func (s *Server) checkChannelAgents(slug, channelID, senderID string) []*Agent {
 		if agent == nil {
 			continue
 		}
-		// Must have explicit channels assigned (empty channels = @mention only)
+
+		// Check if agent should auto-respond in this channel:
+		// 1. Via channels array (legacy)
+		// 2. Via channel_modes with "always" or "active" mode
+		inChannel := false
 		var channels []string
 		_ = json.Unmarshal(agent.Channels, &channels)
-		if len(channels) == 0 {
+		if len(channels) > 0 && isAgentInChannel(agent, channelID) {
+			inChannel = true
+		}
+		if mode, ok := agent.BehaviorConfig.ChannelModes[channelID]; ok {
+			if mode == "always" || mode == "active" {
+				inChannel = true
+			} else if mode == "silent" {
+				continue
+			}
+		}
+		if !inChannel {
 			continue
 		}
-		// Must be in this channel
-		if !isAgentInChannel(agent, channelID) {
-			continue
-		}
-		// Check per-channel silence override
-		if isChannelSilenced(agent, channelID) {
-			continue
-		}
+
 		// Check cooldown
 		if s.convTracker != nil {
 			cooldown := agent.BehaviorConfig.CooldownSeconds
@@ -784,7 +808,8 @@ func isAgentInChannel(agent *Agent, channelID string) bool {
 }
 
 // sendAgentMessage saves and broadcasts a message from an agent.
-func (s *Server) sendAgentMessage(slug, channelID string, agent *Agent, content string, toolsUsed ...string) {
+// fromAgent indicates the message was triggered by another agent (prevents infinite chains).
+func (s *Server) sendAgentMessage(slug, channelID, parentID string, agent *Agent, content string, fromAgent bool, toolsUsed ...string) {
 	wdb, err := s.ws.Open(slug)
 	if err != nil {
 		return
@@ -799,13 +824,25 @@ func (s *Server) sendAgentMessage(slug, channelID string, agent *Agent, content 
 		metadata = string(metaJSON)
 	}
 
-	_, err = wdb.DB.Exec(
-		"INSERT INTO messages (id, channel_id, sender_id, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-		msgID, channelID, agent.ID, content, metadata, now,
-	)
+	if parentID != "" {
+		_, err = wdb.DB.Exec(
+			"INSERT INTO messages (id, channel_id, sender_id, content, metadata, parent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			msgID, channelID, agent.ID, content, metadata, parentID, now,
+		)
+	} else {
+		_, err = wdb.DB.Exec(
+			"INSERT INTO messages (id, channel_id, sender_id, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+			msgID, channelID, agent.ID, content, metadata, now,
+		)
+	}
 	if err != nil {
 		logger.WithCategory(logger.CatAgent).Error().Err(err).Str("agent", agent.Name).Msg("failed to save message")
 		return
+	}
+
+	// Update thread metadata if replying in a thread
+	if parentID != "" {
+		wdb.DB.Exec("UPDATE messages SET reply_count = reply_count + 1, latest_reply_at = ? WHERE id = ?", now, parentID)
 	}
 
 	h := s.hubs.Get(slug)
@@ -817,7 +854,22 @@ func (s *Server) sendAgentMessage(slug, channelID string, agent *Agent, content 
 		Content:    content,
 		CreatedAt:  now,
 		ToolsUsed:  toolsUsed,
+		ParentID:   parentID,
 	}), "")
+
+	// Trigger agent-to-agent responses: only on top-level channel messages from human-triggered agents
+	if parentID == "" && !fromAgent {
+		channelAgents := s.checkChannelAgents(slug, channelID, agent.ID)
+		for _, other := range channelAgents {
+			if other.BehaviorConfig.RespondToAgents {
+				if s.convTracker != nil {
+					key := ConversationKey{Slug: slug, ChannelID: channelID, AgentID: other.ID}
+					s.convTracker.RecordResponse(key)
+				}
+				s.handleAgentMention(slug, channelID, "", agent.Name, content, other, true)
+			}
+		}
+	}
 }
 
 // --- Agent Skills CRUD ---

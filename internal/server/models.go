@@ -351,29 +351,120 @@ func (s *Server) handleCheckModelAvailability(w http.ResponseWriter, r *http.Req
 	}
 
 	_, model := s.getBrainSettings(slug)
-	fallback := "anthropic/claude-sonnet-4"
+	fallback := FreeAutoModelID
 
 	available := true
-	modelCacheMu.Lock()
-	if modelCache != nil {
-		found := false
-		for _, m := range modelCache {
-			if m.ID == model {
-				found = true
-				break
+	if model == FreeAutoModelID {
+		// Virtual model is always "available"
+	} else {
+		modelCacheMu.Lock()
+		if modelCache != nil {
+			found := false
+			for _, m := range modelCache {
+				if m.ID == model {
+					found = true
+					break
+				}
+			}
+			if !found {
+				available = false
 			}
 		}
-		if !found {
-			available = false
-		}
+		modelCacheMu.Unlock()
 	}
-	modelCacheMu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"model":           model,
 		"model_available": available,
 		"fallback_model":  fallback,
 	})
+}
+
+// --- Free Auto Model ---
+
+// FreeAutoModelID is the virtual model ID that resolves to a curated free model chain.
+const FreeAutoModelID = "nexus/free-auto"
+
+// FreeModel represents a curated free model entry.
+type FreeModel struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Priority int    `json:"priority"`
+}
+
+// DefaultFreeModels is the built-in priority list of free models with tool support.
+var DefaultFreeModels = []FreeModel{
+	{ID: "deepseek/deepseek-chat-v3-0324:free", Name: "DeepSeek V3", Priority: 0},
+	{ID: "qwen/qwen3-235b-a22b-thinking-2507:free", Name: "Qwen3 235B", Priority: 1},
+	{ID: "meta-llama/llama-3.3-70b-instruct:free", Name: "Llama 3.3 70B", Priority: 2},
+	{ID: "google/gemma-3-27b-it:free", Name: "Gemma 3 27B", Priority: 3},
+	{ID: "mistralai/mistral-small-3.1-24b-instruct:free", Name: "Mistral Small 3.1", Priority: 4},
+	{ID: "openai/gpt-oss-120b:free", Name: "GPT-OSS 120B", Priority: 5},
+	{ID: "nvidia/nemotron-3-nano-30b-a3b:free", Name: "Nemotron 30B", Priority: 6},
+	{ID: "qwen/qwen3-coder-480b-a35b-instruct:free", Name: "Qwen3 Coder 480B", Priority: 7},
+	{ID: "openrouter/free", Name: "OpenRouter Free", Priority: 8},
+}
+
+// getFreeModels returns the admin-customized free model list, or defaults.
+func (s *Server) getFreeModels() []FreeModel {
+	rows, err := s.global.DB.Query("SELECT model_id, display_name, priority FROM free_models ORDER BY priority ASC")
+	if err != nil {
+		return DefaultFreeModels
+	}
+	defer rows.Close()
+
+	var models []FreeModel
+	for rows.Next() {
+		var m FreeModel
+		if err := rows.Scan(&m.ID, &m.Name, &m.Priority); err != nil {
+			continue
+		}
+		models = append(models, m)
+	}
+	if len(models) == 0 {
+		return DefaultFreeModels
+	}
+	return models
+}
+
+// handleGetFreeModels returns the curated free model list.
+func (s *Server) handleGetFreeModels(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"models": s.getFreeModels()})
+}
+
+// handleAdminSetFreeModels replaces the free model list (superadmin only).
+func (s *Server) handleAdminSetFreeModels(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaims(r)
+
+	var req struct {
+		Models []FreeModel `json:"models"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	tx, err := s.global.DB.Begin()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "transaction error")
+		return
+	}
+
+	tx.Exec("DELETE FROM free_models")
+	for i, m := range req.Models {
+		tx.Exec(
+			"INSERT INTO free_models (model_id, display_name, priority) VALUES (?, ?, ?)",
+			m.ID, m.Name, i,
+		)
+	}
+
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save free models")
+		return
+	}
+
+	s.logAdminAction(claims, "free_models.update", "platform", "", "")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // Ensure id import is used (for future use)
