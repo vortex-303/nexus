@@ -427,8 +427,15 @@ export async function createAgentFromTemplate(slug: string, templateId: string) 
 	return request('POST', `/api/workspaces/${slug}/agents/from-template`, { template_id: templateId });
 }
 
-export async function joinByCode(code: string, displayName: string) {
-	const data = await request('POST', '/api/join', { code, display_name: displayName });
+export async function getAuthConfig() {
+	return request('GET', '/api/auth/config');
+}
+
+export async function joinByCode(code: string, displayName: string, email?: string, password?: string) {
+	const body: any = { code, display_name: displayName };
+	if (email) body.email = email;
+	if (password) body.password = password;
+	const data = await request('POST', '/api/join', body);
 	setToken(data.token);
 	setWorkspaceSlug(data.slug);
 	return data;

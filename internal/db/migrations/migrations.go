@@ -102,6 +102,21 @@ var globalMigrations = []migration{
 			);
 		`,
 	},
+	{
+		version: 4,
+		name:    "email_verifications",
+		sql: `
+			CREATE TABLE IF NOT EXISTS email_verifications (
+				id TEXT PRIMARY KEY,
+				email TEXT NOT NULL,
+				code TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				verified BOOLEAN NOT NULL DEFAULT FALSE,
+				created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+			);
+			CREATE INDEX IF NOT EXISTS idx_email_verifications_email ON email_verifications(email, verified);
+		`,
+	},
 }
 
 var workspaceMigrations = []migration{

@@ -174,6 +174,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/join", s.handleJoinByCode)
 	s.mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	s.mux.HandleFunc("POST /api/auth/login", s.handleLogin)
+	s.mux.HandleFunc("GET /api/auth/config", s.handleAuthConfig)
 
 	// Authenticated routes (with permission checks)
 	authed := auth.Middleware(s.jwt)

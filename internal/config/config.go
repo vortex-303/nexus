@@ -16,7 +16,8 @@ type Config struct {
 	Dev        bool   `toml:"dev"`
 	SMTPListen string `toml:"smtp_listen"`
 	RedisURL   string `toml:"redis_url"`
-	QdrantURL  string `toml:"qdrant_url"`
+	QdrantURL   string `toml:"qdrant_url"`
+	ResendAPIKey string `toml:"brevo_api_key"`
 }
 
 func defaults() Config {
@@ -79,6 +80,9 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("QDRANT_URL"); v != "" {
 		cfg.QdrantURL = v
+	}
+	if v := os.Getenv("RESEND_API_KEY"); v != "" {
+		cfg.ResendAPIKey = v
 	}
 
 	// Ensure data directory exists

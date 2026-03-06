@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { createWorkspace, getWorkspaceSlug, login, joinByCode, setToken, setWorkspaceSlug, getCurrentUser } from '$lib/api';
+	import { createWorkspace, getWorkspaceSlug, login, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, getCurrentUser } from '$lib/api';
 	import { onMount } from 'svelte';
 
 	let mode = $state<'create' | 'login' | 'join'>('create');
@@ -11,13 +11,24 @@
 	let inviteCode = $state('');
 	let loading = $state(false);
 	let error = $state('');
+	let requireAccount = $state(false);
 
-	onMount(() => {
+	onMount(async () => {
 		const slug = getWorkspaceSlug();
-		if (slug) goto(`/w/${slug}`);
+		if (slug) { goto(`/w/${slug}`); return; }
+		try {
+			const cfg = await getAuthConfig();
+			requireAccount = cfg.require_account;
+		} catch {}
 	});
 
+	function switchMode(newMode: 'create' | 'login' | 'join') {
+		mode = newMode;
+		error = '';
+	}
+
 	async function handleCreate() {
+		if (requireAccount && (!email.trim() || !password)) { error = 'Email and password required'; return; }
 		if (!workspaceName.trim()) { error = 'Give your workspace a name'; return; }
 		if (!displayName.trim()) { error = 'Enter your name'; return; }
 		loading = true;
@@ -55,11 +66,12 @@
 
 	async function handleJoin() {
 		if (!inviteCode.trim()) { error = 'Enter your invite code'; return; }
+		if (requireAccount && (!email.trim() || !password)) { error = 'Email and password required'; return; }
 		if (!displayName.trim()) { error = 'Enter your name'; return; }
 		loading = true;
 		error = '';
 		try {
-			const data = await joinByCode(inviteCode.trim(), displayName.trim());
+			const data = await joinByCode(inviteCode.trim(), displayName.trim(), email.trim() || undefined, password || undefined);
 			goto(`/w/${data.slug}`);
 		} catch (e: any) {
 			error = e.message;
@@ -102,40 +114,20 @@
 		<div class="form-card">
 			{#if mode === 'create'}
 			<div class="form-inner">
-				<input
-					type="text"
-					placeholder="Workspace name"
-					bind:value={workspaceName}
-					onkeydown={handleKeydown}
-					maxlength="50"
-					class="name-input"
-				/>
-				<input
-					type="text"
-					placeholder="Your name"
-					bind:value={displayName}
-					onkeydown={handleKeydown}
-					maxlength="50"
-					class="name-input secondary-input"
-				/>
+				{#if requireAccount}
+					<input type="email" placeholder="Email" bind:value={email} onkeydown={handleKeydown} class="name-input" />
+					<input type="password" placeholder="Password" bind:value={password} onkeydown={handleKeydown} class="name-input secondary-input" />
+				{/if}
+				<input type="text" placeholder="Your name" bind:value={displayName} onkeydown={handleKeydown} maxlength="50" class="name-input{requireAccount ? ' secondary-input' : ''}" />
+				<input type="text" placeholder="Workspace name" bind:value={workspaceName} onkeydown={handleKeydown} maxlength="50" class="name-input secondary-input" />
 
-				<div class="optional-auth">
-					<p class="optional-label">Add email to access from other devices</p>
-					<input
-						type="email"
-						placeholder="Email"
-						bind:value={email}
-						onkeydown={handleKeydown}
-						class="auth-input"
-					/>
-					<input
-						type="password"
-						placeholder="Password"
-						bind:value={password}
-						onkeydown={handleKeydown}
-						class="auth-input"
-					/>
-				</div>
+				{#if !requireAccount}
+					<div class="optional-auth">
+						<p class="optional-label">Add email to access from other devices</p>
+						<input type="email" placeholder="Email" bind:value={email} onkeydown={handleKeydown} class="auth-input" />
+						<input type="password" placeholder="Password" bind:value={password} onkeydown={handleKeydown} class="auth-input" />
+					</div>
+				{/if}
 
 				<button onclick={handleCreate} disabled={loading} class="btn btn-primary btn-launch">
 					{#if loading}
@@ -151,20 +143,8 @@
 			</div>
 			{:else if mode === 'login'}
 			<div class="form-inner">
-				<input
-					type="email"
-					placeholder="Email"
-					bind:value={email}
-					onkeydown={handleKeydown}
-					class="name-input"
-				/>
-				<input
-					type="password"
-					placeholder="Password"
-					bind:value={password}
-					onkeydown={handleKeydown}
-					class="name-input"
-				/>
+				<input type="email" placeholder="Email" bind:value={email} onkeydown={handleKeydown} class="name-input" />
+				<input type="password" placeholder="Password" bind:value={password} onkeydown={handleKeydown} class="name-input" />
 				<button onclick={handleLogin} disabled={loading} class="btn btn-primary btn-launch">
 					{#if loading}
 						<span class="spinner"></span>
@@ -179,22 +159,12 @@
 			</div>
 			{:else}
 			<div class="form-inner">
-				<input
-					type="text"
-					placeholder="NX-XXXX"
-					bind:value={inviteCode}
-					onkeydown={handleKeydown}
-					maxlength="7"
-					class="name-input invite-code-input"
-				/>
-				<input
-					type="text"
-					placeholder="Your name"
-					bind:value={displayName}
-					onkeydown={handleKeydown}
-					maxlength="50"
-					class="name-input secondary-input"
-				/>
+				{#if requireAccount}
+					<input type="email" placeholder="Email" bind:value={email} onkeydown={handleKeydown} class="name-input" />
+					<input type="password" placeholder="Password" bind:value={password} onkeydown={handleKeydown} class="name-input secondary-input" />
+				{/if}
+				<input type="text" placeholder="NX-XXXX" bind:value={inviteCode} onkeydown={handleKeydown} maxlength="7" class="name-input invite-code-input" />
+				<input type="text" placeholder="Your name" bind:value={displayName} onkeydown={handleKeydown} maxlength="50" class="name-input secondary-input" />
 				<button onclick={handleJoin} disabled={loading} class="btn btn-primary btn-launch">
 					{#if loading}
 						<span class="spinner"></span>
@@ -216,17 +186,17 @@
 
 		<p class="mode-toggle">
 			{#if mode === 'create'}
-				Have an invite code? <button class="link-btn" onclick={() => { mode = 'join'; error = ''; }}>Join workspace</button>
+				Have an invite code? <button class="link-btn" onclick={() => switchMode('join')}>Join workspace</button>
 				&nbsp;·&nbsp;
-				<button class="link-btn" onclick={() => { mode = 'login'; error = ''; }}>Log in</button>
+				<button class="link-btn" onclick={() => switchMode('login')}>Log in</button>
 			{:else if mode === 'login'}
-				New here? <button class="link-btn" onclick={() => { mode = 'create'; error = ''; }}>Create a workspace</button>
+				New here? <button class="link-btn" onclick={() => switchMode('create')}>Create a workspace</button>
 				&nbsp;·&nbsp;
-				Have a code? <button class="link-btn" onclick={() => { mode = 'join'; error = ''; }}>Join</button>
+				Have a code? <button class="link-btn" onclick={() => switchMode('join')}>Join</button>
 			{:else}
-				New here? <button class="link-btn" onclick={() => { mode = 'create'; error = ''; }}>Create a workspace</button>
+				New here? <button class="link-btn" onclick={() => switchMode('create')}>Create a workspace</button>
 				&nbsp;·&nbsp;
-				<button class="link-btn" onclick={() => { mode = 'login'; error = ''; }}>Log in</button>
+				<button class="link-btn" onclick={() => switchMode('login')}>Log in</button>
 			{/if}
 		</p>
 

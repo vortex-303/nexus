@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { getWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, createWebhook, listWebhooks, deleteWebhook, listWebhookEvents, listEmailThreads, deleteEmailThread, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, inviteByEmail, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI } from '$lib/api';
+	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, createWebhook, listWebhooks, deleteWebhook, listWebhookEvents, listEmailThreads, deleteEmailThread, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI } from '$lib/api';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { connect, disconnect, onMessage, sendMessage, sendTyping, sendReaction, removeReaction, clearChannel, markChannelRead, connectionStatus, generateClientId } from '$lib/ws';
 	import { channels, members, messages, activeChannel, typingUsers, onlineUsers } from '$lib/stores/workspace';
@@ -36,6 +36,16 @@
 	let showInviteModal = $state(false);
 	let inviteCopied = $state('');
 	let lastTypingSent = 0;
+
+	// Invite join state
+	let inviteToken = $state('');
+	let inviteJoinName = $state('');
+	let inviteJoinEmail = $state('');
+	let inviteJoinPassword = $state('');
+	let inviteJoining = $state(false);
+	let inviteError = $state('');
+	let requireAccount = $state(false);
+
 	let currentUser = $state(getCurrentUser());
 	let isAdmin = $derived(currentUser?.role === 'admin');
 	let selectedMember = $state<any>(null);
@@ -436,6 +446,17 @@
 	});
 
 	onMount(async () => {
+		// Check for invite token in URL
+		const urlParams = new URLSearchParams(window.location.search);
+		const inv = urlParams.get('invite');
+		if (inv && !getWorkspaceSlug()) {
+			inviteToken = inv;
+			try {
+				const cfg = await getAuthConfig();
+				requireAccount = cfg.require_account;
+			} catch {}
+			return;
+		}
 		if (!getWorkspaceSlug()) { goto('/'); return; }
 
 		// Fetch announcement
@@ -931,6 +952,21 @@
 		showNewChannel = false;
 	}
 
+	async function handleInviteJoin() {
+		if (requireAccount && (!inviteJoinEmail.trim() || !inviteJoinPassword)) { inviteError = 'Email and password required'; return; }
+		if (!inviteJoinName.trim()) { inviteError = 'Enter your name'; return; }
+		inviteJoining = true;
+		inviteError = '';
+		try {
+			const data = await joinByCode(inviteToken, inviteJoinName.trim(), inviteJoinEmail.trim() || undefined, inviteJoinPassword || undefined);
+			window.location.href = `/w/${data.slug}`;
+		} catch (e: any) {
+			inviteError = e.message;
+		} finally {
+			inviteJoining = false;
+		}
+	}
+
 	async function handleInvite() {
 		showInviteModal = true;
 		inviteUrl = '';
@@ -938,7 +974,7 @@
 		inviteCopied = '';
 		try {
 			const data = await createInvite(slug);
-			inviteUrl = location.origin + data.invite_url;
+			inviteUrl = data.invite_url.startsWith('http') ? data.invite_url : location.origin + data.invite_url;
 			inviteCode = data.invite_code;
 		} catch (e: any) {
 			alert(e.message);
@@ -2478,6 +2514,45 @@ autonomy: reactive
 </script>
 
 <svelte:window onkeydown={handleGlobalKeydown} />
+
+{#if inviteToken}
+<!-- Invite join form -->
+<div class="invite-join-page">
+	<div class="invite-join-card">
+		<div class="invite-join-logo">
+			<svg width="32" height="32" viewBox="0 0 40 40" fill="none">
+				<path d="M8 12L20 4L32 12V28L20 36L8 28V12Z" stroke="var(--accent)" stroke-width="2" fill="none"/>
+				<circle cx="20" cy="20" r="4" fill="var(--accent)"/>
+			</svg>
+			<span>nexus</span>
+		</div>
+		<h2>Join Workspace</h2>
+		<p class="invite-join-subtitle">You've been invited to join <strong>{slug}</strong></p>
+
+		<div class="invite-join-form">
+			{#if requireAccount}
+				<input type="email" placeholder="Email" bind:value={inviteJoinEmail} onkeydown={(e) => { if (e.key === 'Enter') handleInviteJoin(); }} class="invite-join-input" />
+				<input type="password" placeholder="Password" bind:value={inviteJoinPassword} onkeydown={(e) => { if (e.key === 'Enter') handleInviteJoin(); }} class="invite-join-input" />
+			{/if}
+			<input type="text" placeholder="Your name" bind:value={inviteJoinName} onkeydown={(e) => { if (e.key === 'Enter') handleInviteJoin(); }} maxlength="50" class="invite-join-input" />
+			<button onclick={handleInviteJoin} disabled={inviteJoining} class="btn btn-primary invite-join-btn">
+				{#if inviteJoining}
+					Joining...
+				{:else}
+					Join Workspace
+				{/if}
+			</button>
+			{#if inviteError}
+				<p class="invite-join-error">{inviteError}</p>
+			{/if}
+		</div>
+
+		<p class="invite-join-login">
+			Already have an account? <a href="/">Log in</a>
+		</p>
+	</div>
+</div>
+{:else}
 
 {#if showSearch}
 <SearchModal {slug} onclose={() => showSearch = false} onnavigate={handleSearchNavigate} />
@@ -5152,6 +5227,8 @@ autonomy: reactive
 		{/if}
 	</div>
 </div>
+{/if}
+
 {/if}
 
 <style>
@@ -8125,5 +8202,79 @@ autonomy: reactive
 	@media (max-width: 640px) {
 		.sidebar { width: 220px; min-width: 220px; }
 		.thread-panel { width: 100%; min-width: 100%; position: absolute; right: 0; z-index: 50; }
+	}
+
+	/* Invite join page */
+	.invite-join-page {
+		min-height: 100vh;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: var(--bg-root);
+	}
+	.invite-join-card {
+		text-align: center;
+		max-width: 400px;
+		width: 100%;
+		padding: 2.5rem;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xl);
+		box-shadow: var(--shadow-lg);
+	}
+	.invite-join-logo {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		margin-bottom: 1.5rem;
+		font-size: 1.5rem;
+		font-weight: 800;
+		letter-spacing: -0.04em;
+		color: var(--text-primary);
+	}
+	.invite-join-card h2 {
+		font-size: 1.25rem;
+		font-weight: 700;
+		color: var(--text-primary);
+		margin: 0 0 0.25rem;
+	}
+	.invite-join-subtitle {
+		color: var(--text-secondary);
+		font-size: 0.9rem;
+		margin: 0 0 1.5rem;
+	}
+	.invite-join-form {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+	}
+	.invite-join-input {
+		text-align: center;
+		font-size: 1rem !important;
+		padding: 0.75rem 1rem !important;
+		background: var(--bg-root) !important;
+		border: 1px solid var(--border-default) !important;
+		border-radius: var(--radius-md);
+	}
+	.invite-join-btn {
+		padding: 0.75rem 1.5rem;
+		font-size: 1.05rem;
+		font-weight: 700;
+		border-radius: var(--radius-lg);
+	}
+	.invite-join-error {
+		color: var(--red);
+		font-size: 0.85rem;
+		margin: 0;
+	}
+	.invite-join-login {
+		margin-top: 1.25rem;
+		font-size: 0.85rem;
+		color: var(--text-tertiary);
+	}
+	.invite-join-login a {
+		color: var(--accent);
+		text-decoration: underline;
 	}
 </style>

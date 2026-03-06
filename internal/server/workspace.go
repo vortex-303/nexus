@@ -83,6 +83,14 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		req.DisplayName = "Anonymous"
 	}
 
+	// Cloud mode: email + password required
+	if s.accountRequired() {
+		if req.Email == "" || req.Password == "" {
+			writeError(w, http.StatusBadRequest, "email and password required")
+			return
+		}
+	}
+
 	slug := id.Slug()
 	userID := id.New()
 
@@ -300,18 +308,33 @@ func (s *Server) handleJoinByCode(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Code        string `json:"code"`
 		DisplayName string `json:"display_name"`
+		Email       string `json:"email"`
+		Password    string `json:"password"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
-	code := strings.TrimSpace(strings.ToUpper(req.Code))
+	code := strings.TrimSpace(req.Code)
+	// Only uppercase short invite codes (NX-XXXX), not long hex tokens
+	if len(code) <= 7 {
+		code = strings.ToUpper(code)
+	}
 	if code == "" {
 		writeError(w, http.StatusBadRequest, "code is required")
 		return
 	}
 	if req.DisplayName == "" {
 		req.DisplayName = "Anonymous"
+	}
+
+	// Cloud mode: email + password required
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if s.accountRequired() {
+		if email == "" || req.Password == "" {
+			writeError(w, http.StatusBadRequest, "email and password required")
+			return
+		}
 	}
 
 	// Look up the code
@@ -332,20 +355,70 @@ func (s *Server) handleJoinByCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Find or create account by email
+	var accountID string
+	if email != "" {
+		err := s.global.DB.QueryRow("SELECT id FROM accounts WHERE email = ?", email).Scan(&accountID)
+		if err != nil {
+			// Create new account
+			hash, hashErr := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+			if hashErr != nil {
+				writeError(w, http.StatusInternalServerError, "failed to hash password")
+				return
+			}
+			accountID = id.New()
+			_, err = s.global.DB.Exec(
+				"INSERT INTO accounts (id, email, password_hash, display_name) VALUES (?, ?, ?, ?)",
+				accountID, email, string(hash), req.DisplayName,
+			)
+			if err != nil {
+				writeError(w, http.StatusConflict, "email already registered — try logging in")
+				return
+			}
+		}
+
+		// Check if already a member of this workspace
+		var existingMemberID, existingRole string
+		err = wdb.DB.QueryRow(
+			"SELECT id, role FROM members WHERE account_id = ?", accountID,
+		).Scan(&existingMemberID, &existingRole)
+		if err == nil {
+			// Re-issue token for existing member
+			token, err := s.jwt.Issue(existingMemberID, req.DisplayName, wsSlug, existingRole, accountID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to create session")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"token":     token,
+				"member_id": existingMemberID,
+				"slug":      wsSlug,
+			})
+			return
+		}
+	}
+
 	// Add as member
 	userID := id.New()
 	joinColor := assignMemberColor(wdb)
-	_, err = wdb.DB.Exec(
-		"INSERT INTO members (id, display_name, role, color) VALUES (?, ?, ?, ?)",
-		userID, req.DisplayName, "member", joinColor,
-	)
+	if accountID != "" {
+		_, err = wdb.DB.Exec(
+			"INSERT INTO members (id, display_name, role, account_id, color) VALUES (?, ?, ?, ?, ?)",
+			userID, req.DisplayName, "member", accountID, joinColor,
+		)
+	} else {
+		_, err = wdb.DB.Exec(
+			"INSERT INTO members (id, display_name, role, color) VALUES (?, ?, ?, ?)",
+			userID, req.DisplayName, "member", joinColor,
+		)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to add member")
 		return
 	}
 
 	// Issue JWT
-	token, err := s.jwt.Issue(userID, req.DisplayName, wsSlug, "member", "")
+	token, err := s.jwt.Issue(userID, req.DisplayName, wsSlug, "member", accountID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create session")
 		return
@@ -375,15 +448,9 @@ func (s *Server) handleInviteByEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check SMTP is configured
-	host := s.getBrainSetting(slug, "email_outbound_host")
-	if host == "" {
-		writeError(w, http.StatusBadRequest, "SMTP not configured. Set up outbound email in Brain → Integrations.")
-		return
-	}
-
-	// Create invite token
+	// Create invite token + code
 	inviteToken := id.Short()
+	inviteCodeVal := id.InviteCode()
 	_, err := s.global.DB.Exec(
 		"INSERT INTO invite_tokens (token, workspace_slug, created_by) VALUES (?, ?, ?)",
 		inviteToken, slug, claims.UserID,
@@ -392,6 +459,11 @@ func (s *Server) handleInviteByEmail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create invite")
 		return
 	}
+	// Also store the short code
+	_, _ = s.global.DB.Exec(
+		"INSERT INTO invite_tokens (token, workspace_slug, created_by) VALUES (?, ?, ?)",
+		inviteCodeVal, slug, claims.UserID,
+	)
 
 	inviteURL := "/w/" + slug + "?invite=" + inviteToken
 	if s.cfg.Domain != "" {
@@ -400,10 +472,10 @@ func (s *Server) handleInviteByEmail(w http.ResponseWriter, r *http.Request) {
 
 	// Get workspace name for email
 	wsName := slug
-	var displayName string
-	row := s.global.DB.QueryRow("SELECT display_name FROM workspaces WHERE slug = ?", slug)
-	if row.Scan(&displayName) == nil && displayName != "" {
-		wsName = displayName
+	var wsDisplayName string
+	row := s.global.DB.QueryRow("SELECT name FROM workspaces WHERE slug = ?", slug)
+	if row.Scan(&wsDisplayName) == nil && wsDisplayName != "" {
+		wsName = wsDisplayName
 	}
 
 	inviterName := claims.DisplayName
@@ -412,9 +484,36 @@ func (s *Server) handleInviteByEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	subject := fmt.Sprintf("You're invited to join %s", wsName)
-	body := fmt.Sprintf("%s has invited you to join the %s workspace.\n\nClick the link below to join:\n%s\n\nSee you there!", inviterName, wsName, inviteURL)
 
-	s.sendOutboundEmail(slug, req.Email, subject, body, "")
+	// Try Brevo first, then SMTP
+	if s.cfg.ResendAPIKey != "" {
+		html := fmt.Sprintf(
+			`<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:40px 20px;">
+			<h2 style="color:#f97316;margin-bottom:8px;">Nexus</h2>
+			<p>%s has invited you to join <strong>%s</strong>.</p>
+			<p>Your invite code:</p>
+			<div style="font-size:28px;font-weight:bold;letter-spacing:6px;padding:16px;background:#1a1a1a;border-radius:8px;text-align:center;color:#fff;margin:16px 0;">%s</div>
+			<p style="font-size:14px;">Or click the link below to join directly:</p>
+			<p><a href="%s" style="color:#f97316;">%s</a></p>
+			<p style="color:#888;font-size:13px;">This invite expires in 24 hours.</p>
+			</div>`, inviterName, wsName, inviteCodeVal, inviteURL, inviteURL)
+
+		if err := s.sendEmail(req.Email, subject, html); err != nil {
+			logger.WithCategory(logger.CatSystem).Error().Err(err).Str("email", req.Email).Msg("invite email failed")
+			writeError(w, http.StatusInternalServerError, "failed to send invite email")
+			return
+		}
+	} else {
+		// Fallback to SMTP
+		host := s.getBrainSetting(slug, "email_outbound_host")
+		if host == "" {
+			writeError(w, http.StatusBadRequest, "email not configured")
+			return
+		}
+		body := fmt.Sprintf("%s has invited you to join the %s workspace.\n\nYour invite code: %s\n\nOr click the link below to join:\n%s\n\nSee you there!", inviterName, wsName, inviteCodeVal, inviteURL)
+		s.sendOutboundEmail(slug, req.Email, subject, body, "")
+	}
+
 	logger.WithCategory(logger.CatSystem).Info().Str("slug", slug).Str("email", req.Email).Str("inviter", claims.UserID).Msg("invite email sent")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
