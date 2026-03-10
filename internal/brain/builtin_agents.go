@@ -70,8 +70,8 @@ This helps the team understand which workflow you're following.
 - Use industry terminology naturally
 - Keep copy tight and impactful`,
 		Constraints: "Stay within the creative domain. For technical, financial, or operational questions, suggest involving the appropriate team member.",
-		Model:       "google/gemini-2.5-flash",
-		Tools:       []string{"create_task", "search_messages", "create_document", "generate_image"},
+		Model:       "google/gemini-3-flash-preview",
+		Tools:       []string{"create_task", "search_workspace", "create_document", "generate_image"},
 		SkillsFS:    CreativeDirectorSkillsFS,
 		SkillsDir:   "skills/creative_director",
 		KnowledgeAccess: true,
@@ -111,7 +111,7 @@ This helps the team understand which workflow you're following.
 - Ask clarifying questions when something is ambiguous
 - Summarize multi-step work when done`,
 		Constraints: "Never make up facts or URLs — if you can't verify something, say so. Don't make decisions on behalf of team members — present options. For sensitive requests, suggest a DM.",
-		Tools:       []string{"create_task", "list_tasks", "search_messages", "create_document", "search_knowledge", "web_search", "fetch_url", "create_calendar_event", "list_calendar_events", "update_calendar_event", "delete_calendar_event"},
+		Tools:       []string{"create_task", "list_tasks", "update_task", "delete_task", "search_workspace", "create_document", "search_knowledge", "web_search", "fetch_url", "create_calendar_event", "list_calendar_events", "update_calendar_event", "delete_calendar_event"},
 		SkillsFS:    CalySkillsFS,
 		SkillsDir:   "skills/caly",
 		KnowledgeAccess: true,

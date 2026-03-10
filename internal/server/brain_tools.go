@@ -8,16 +8,17 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
 	"golang.org/x/net/html"
 
 	"github.com/nexus-chat/nexus/internal/brain"
-	"github.com/nexus-chat/nexus/internal/logger"
 	"github.com/nexus-chat/nexus/internal/db"
 	"github.com/nexus-chat/nexus/internal/hub"
 	"github.com/nexus-chat/nexus/internal/id"
+	"github.com/nexus-chat/nexus/internal/logger"
 	"github.com/nexus-chat/nexus/internal/metrics"
 )
 
@@ -41,7 +42,11 @@ func (s *Server) executeToolInner(slug, channelID, senderMemberID string, call b
 		return s.toolCreateTask(slug, channelID, call.Function.Arguments)
 	case "list_tasks":
 		return s.toolListTasks(slug, call.Function.Arguments)
-	case "search_messages":
+	case "update_task":
+		return s.toolUpdateTask(slug, call.Function.Arguments)
+	case "delete_task":
+		return s.toolDeleteTask(slug, call.Function.Arguments)
+	case "search_workspace", "search_messages":
 		return s.toolSearchMessages(slug, channelID, call.Function.Arguments)
 	case "create_document":
 		return s.toolCreateDocument(slug, call.Function.Arguments)
@@ -49,6 +54,12 @@ func (s *Server) executeToolInner(slug, channelID, senderMemberID string, call b
 		return s.toolSearchKnowledge(slug, call.Function.Arguments)
 	case "delegate_to_agent":
 		return s.handleDelegateToAgent(slug, channelID, call.Function.Arguments)
+	case "ask_agent":
+		return s.handleAskAgent(slug, channelID, call.Function.Arguments)
+	case "recall_memory":
+		return s.toolRecallMemory(slug, call.Function.Arguments)
+	case "save_memory":
+		return s.toolSaveMemory(slug, call.Function.Arguments)
 	case "generate_image":
 		return s.toolGenerateImage(slug, channelID, call.Function.Arguments)
 	case "create_calendar_event":
@@ -64,7 +75,7 @@ func (s *Server) executeToolInner(slug, channelID, senderMemberID string, call b
 	case "send_telegram":
 		return s.toolSendTelegram(slug, channelID, call.Function.Arguments)
 	case "web_search":
-		return toolWebSearch(call.Function.Arguments)
+		return s.toolWebSearch(slug, call.Function.Arguments)
 	case "fetch_url":
 		return toolFetchURL(call.Function.Arguments)
 	default:
@@ -84,11 +95,12 @@ func (s *Server) executeToolInner(slug, channelID, senderMemberID string, call b
 
 func (s *Server) toolCreateTask(slug, channelID, argsJSON string) string {
 	var args struct {
-		Title        string `json:"title"`
-		Description  string `json:"description"`
-		Status       string `json:"status"`
-		Priority     string `json:"priority"`
-		AssigneeName string `json:"assignee_name"`
+		Title          string `json:"title"`
+		Description    string `json:"description"`
+		ExpectedOutput string `json:"expected_output"`
+		Status         string `json:"status"`
+		Priority       string `json:"priority"`
+		AssigneeName   string `json:"assignee_name"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "Error parsing arguments: " + err.Error()
@@ -119,9 +131,9 @@ func (s *Server) toolCreateTask(slug, channelID, argsJSON string) string {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	_, err = wdb.DB.Exec(
-		`INSERT INTO tasks (id, title, description, status, priority, assignee_id, created_by, channel_id, tags, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)`,
-		taskID, args.Title, args.Description, args.Status, args.Priority,
+		`INSERT INTO tasks (id, title, description, expected_output, status, priority, assignee_id, created_by, channel_id, tags, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)`,
+		taskID, args.Title, args.Description, args.ExpectedOutput, args.Status, args.Priority,
 		assigneeID, brain.BrainMemberID, channelID, now, now,
 	)
 	if err != nil {
@@ -132,6 +144,7 @@ func (s *Server) toolCreateTask(slug, channelID, argsJSON string) string {
 	h := s.hubs.Get(slug)
 	h.BroadcastAll(hub.MakeEnvelope(hub.TypeTaskCreated, map[string]any{
 		"id": taskID, "title": args.Title, "description": args.Description,
+		"expected_output": args.ExpectedOutput,
 		"status": args.Status, "priority": args.Priority,
 		"assignee_id": assigneeID, "created_by": brain.BrainMemberID,
 		"tags": json.RawMessage("[]"), "created_at": now, "updated_at": now,
@@ -183,7 +196,7 @@ func (s *Server) toolListTasks(slug, argsJSON string) string {
 	for rows.Next() {
 		var tid, title, status, priority, assignee, dueDate string
 		rows.Scan(&tid, &title, &status, &priority, &assignee, &dueDate)
-		line := fmt.Sprintf("- [%s] %s (%s)", status, title, priority)
+		line := fmt.Sprintf("- [%s] %s (%s) (id: %s)", status, title, priority, tid)
 		if assignee != "" {
 			line += " → " + assignee
 		}
@@ -198,6 +211,150 @@ func (s *Server) toolListTasks(slug, argsJSON string) string {
 		return "No tasks found matching the criteria."
 	}
 	return fmt.Sprintf("%d tasks found:\n%s", count, strings.Join(lines, "\n"))
+}
+
+func (s *Server) toolUpdateTask(slug, argsJSON string) string {
+	var args struct {
+		TaskID       string `json:"task_id"`
+		Title        string `json:"title"`
+		Status       string `json:"status"`
+		Priority     string `json:"priority"`
+		AssigneeName string `json:"assignee_name"`
+		DueDate      string `json:"due_date"`
+		Description  string `json:"description"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "Error parsing arguments: " + err.Error()
+	}
+	if args.TaskID == "" {
+		return "Error: task_id is required"
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return "Error opening workspace"
+	}
+
+	var sets []string
+	var qargs []any
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	if args.Title != "" {
+		sets = append(sets, "title = ?")
+		qargs = append(qargs, args.Title)
+	}
+	if args.Description != "" {
+		sets = append(sets, "description = ?")
+		qargs = append(qargs, args.Description)
+	}
+	if args.Status != "" {
+		sets = append(sets, "status = ?")
+		qargs = append(qargs, args.Status)
+	}
+	if args.Priority != "" {
+		sets = append(sets, "priority = ?")
+		qargs = append(qargs, args.Priority)
+	}
+	if args.DueDate != "" {
+		sets = append(sets, "due_date = ?")
+		qargs = append(qargs, args.DueDate)
+	} else {
+		// Check if due_date was explicitly set to empty string (clear it)
+		var raw map[string]json.RawMessage
+		if json.Unmarshal([]byte(argsJSON), &raw) == nil {
+			if v, ok := raw["due_date"]; ok && string(v) == `""` {
+				sets = append(sets, "due_date = NULL")
+			}
+		}
+	}
+	if args.AssigneeName != "" {
+		var assigneeID string
+		_ = wdb.DB.QueryRow(
+			"SELECT id FROM members WHERE LOWER(display_name) = LOWER(?)",
+			args.AssigneeName,
+		).Scan(&assigneeID)
+		if assigneeID != "" {
+			sets = append(sets, "assignee_id = ?")
+			qargs = append(qargs, assigneeID)
+		}
+	} else {
+		// Check if assignee_name was explicitly set to empty string (unassign)
+		var raw map[string]json.RawMessage
+		if json.Unmarshal([]byte(argsJSON), &raw) == nil {
+			if v, ok := raw["assignee_name"]; ok && string(v) == `""` {
+				sets = append(sets, "assignee_id = NULL")
+			}
+		}
+	}
+
+	if len(sets) == 0 {
+		return "Error: no fields to update"
+	}
+
+	sets = append(sets, "updated_at = ?")
+	qargs = append(qargs, now)
+	qargs = append(qargs, args.TaskID)
+
+	query := "UPDATE tasks SET " + strings.Join(sets, ", ") + " WHERE id = ?"
+	res, err := wdb.DB.Exec(query, qargs...)
+	if err != nil {
+		return "Error updating task: " + err.Error()
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return "Task not found"
+	}
+
+	// Read back updated task
+	var t hub.TaskPayload
+	var tagsStr string
+	_ = wdb.DB.QueryRow(
+		"SELECT id, title, description, expected_output, status, priority, COALESCE(assignee_id,''), created_by, COALESCE(due_date,''), tags, COALESCE(channel_id,''), COALESCE(message_id,''), position, created_at, updated_at FROM tasks WHERE id = ?",
+		args.TaskID,
+	).Scan(&t.ID, &t.Title, &t.Description, &t.ExpectedOutput, &t.Status, &t.Priority,
+		&t.AssigneeID, &t.CreatedBy, &t.DueDate, &tagsStr,
+		&t.ChannelID, &t.MessageID, &t.Position, &t.CreatedAt, &t.UpdatedAt)
+	t.Tags = json.RawMessage(tagsStr)
+
+	h := s.hubs.Get(slug)
+	h.BroadcastAll(hub.MakeEnvelope(hub.TypeTaskUpdated, t), "")
+
+	return fmt.Sprintf("Task updated: \"%s\" → %s", t.Title, t.Status)
+}
+
+func (s *Server) toolDeleteTask(slug, argsJSON string) string {
+	var args struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "Error parsing arguments: " + err.Error()
+	}
+	if args.TaskID == "" {
+		return "Error: task_id is required"
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return "Error opening workspace"
+	}
+
+	// Get title before deleting
+	var title string
+	_ = wdb.DB.QueryRow("SELECT title FROM tasks WHERE id = ?", args.TaskID).Scan(&title)
+
+	res, err := wdb.DB.Exec("DELETE FROM tasks WHERE id = ?", args.TaskID)
+	if err != nil {
+		return "Error deleting task: " + err.Error()
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return "Task not found"
+	}
+
+	s.search.Delete(slug, args.TaskID)
+
+	h := s.hubs.Get(slug)
+	h.BroadcastAll(hub.MakeEnvelope(hub.TypeTaskDeleted, hub.TaskDeletedPayload{ID: args.TaskID}), "")
+
+	return fmt.Sprintf("Task deleted: \"%s\"", title)
 }
 
 func (s *Server) toolSearchMessages(slug, channelID, argsJSON string) string {
@@ -301,13 +458,150 @@ func (s *Server) resolveMemberIDByName(slug, name string) string {
 	return memberID
 }
 
+// toolRecallMemory searches workspace memory for specific facts, decisions, or commitments.
+func (s *Server) toolRecallMemory(slug, argsJSON string) string {
+	var args struct {
+		Query string `json:"query"`
+		Type  string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "Error parsing arguments"
+	}
+	if args.Query == "" {
+		return "Error: query is required"
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return "Error opening workspace"
+	}
+
+	memories, err := brain.SearchMemoriesTyped(wdb.DB, args.Query, args.Type, 10)
+	if err != nil || len(memories) == 0 {
+		return "No memories found matching: " + args.Query
+	}
+
+	var lines []string
+	lines = append(lines, fmt.Sprintf("Found %d memories:", len(memories)))
+	for _, m := range memories {
+		lines = append(lines, fmt.Sprintf("- [%s] %s (importance: %.1f)", m.Type, m.Content, m.Importance))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// toolSaveMemory saves an important fact, decision, or commitment to workspace memory.
+func (s *Server) toolSaveMemory(slug, argsJSON string) string {
+	var args struct {
+		Content    string  `json:"content"`
+		Type       string  `json:"type"`
+		Importance float64 `json:"importance"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "Error parsing arguments"
+	}
+	if args.Content == "" {
+		return "Error: content is required"
+	}
+	if args.Type == "" {
+		args.Type = brain.MemoryTypeFact
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return "Error opening workspace"
+	}
+
+	if brain.MemoryExists(wdb.DB, args.Content) {
+		return "Memory already exists: " + args.Content
+	}
+
+	if err := brain.SaveMemory(wdb.DB, id.New(), args.Type, args.Content, "agent", "", "", args.Importance); err != nil {
+		return "Error saving memory: " + err.Error()
+	}
+
+	return fmt.Sprintf("Memory saved: [%s] %s", args.Type, args.Content)
+}
+
+// findToolDef looks up a tool definition by name.
+func findToolDef(tools []brain.ToolDef, name string) *brain.ToolDef {
+	for i := range tools {
+		if tools[i].Function.Name == name {
+			return &tools[i]
+		}
+	}
+	return nil
+}
+
 // handleBrainMentionWithTools processes a @Brain mention with tool support.
 func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderName, content string) {
 	go func() {
+		// Acquire semaphore to limit concurrent brain goroutines
+		select {
+		case s.agentSem <- struct{}{}:
+			defer func() { <-s.agentSem }()
+		default:
+			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Msg("too many concurrent agents, queuing")
+			s.agentSem <- struct{}{} // block until slot available
+			defer func() { <-s.agentSem }()
+		}
 		metrics.AgentExecutionsTotal.WithLabelValues("Brain", "started").Inc()
+
+		// Handle /search, /localsearch, and natural language web search directly (bypass LLM tool selection)
+		trimmed := strings.TrimSpace(content)
+		if webQuery := extractWebSearchQuery(trimmed); webQuery != "" {
+			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "thinking", "")
+			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", "web_search")
+			argsJSON := fmt.Sprintf(`{"query":%q}`, webQuery)
+			result := s.toolWebSearch(slug, argsJSON)
+			s.sendBrainMessage(slug, channelID, parentID, result, "web_search")
+			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "")
+			return
+		}
+		if strings.HasPrefix(trimmed, "/localsearch ") {
+			query := strings.TrimSpace(strings.TrimPrefix(trimmed, "/localsearch"))
+			if query != "" {
+				s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "thinking", "")
+				s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", "search_workspace")
+				argsJSON := fmt.Sprintf(`{"query":%q}`, query)
+				result := s.toolSearchMessages(slug, channelID, argsJSON)
+				s.sendBrainMessage(slug, channelID, parentID, result, "search_workspace")
+				s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "")
+				return
+			}
+		}
+
+		// Try zero-LLM response first (works without API key)
+		if s.getBrainSetting(slug, "standard_chat_enabled", "true") != "false" {
+			if wdb, err := s.ws.Open(slug); err == nil {
+				if response, handled := s.tryZeroLLMResponse(slug, content, wdb.DB, senderName); handled {
+					s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "thinking", "")
+					s.sendBrainMessage(slug, channelID, parentID, response)
+					s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "")
+					brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
+						truncate(content, 200), truncate(response, 500), "zero-llm", nil)
+					return
+				}
+			}
+		}
+
+		// Check if LLM is disabled
+		if s.getBrainSetting(slug, "llm_enabled", "true") == "false" {
+			s.sendBrainMessage(slug, channelID, parentID,
+				"LLM is disabled — I can only handle standard chat right now. Try things like:\n"+
+					"- **list tasks** / **list documents** / **list events**\n"+
+					"- **my tasks** / **overdue tasks** / **urgent tasks**\n"+
+					"- **upcoming events** / **tasks due today**\n"+
+					"- **search for** *something*\n"+
+					"- **how many** tasks/messages/members\n"+
+					"- **workspace stats**\n\n"+
+					"Enable LLM in Brain Settings for full AI responses.")
+			return
+		}
+
 		apiKey, model := s.getBrainSettings(slug)
 		if apiKey == "" {
-			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Msg("no API key configured, ignoring mention")
+			s.sendBrainMessage(slug, channelID, parentID,
+				"I can answer search and stats queries without an API key. Try: \"search for X\", \"how many messages\", \"who is online\", \"list channels\". For general questions, configure an API key in Settings.")
 			return
 		}
 
@@ -329,8 +623,15 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 			return
 		}
 
+		// Append workspace snapshot
+		wsContext := brain.BuildWorkspaceContext(wdb.DB)
+		if wsContext != "" {
+			systemPrompt += "\n\n---\n\n" + wsContext
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(wsContext)).Int("total", len(systemPrompt)).Msg("+workspace_context")
+		}
+
 		// Append memories to system prompt
-		memoryContext := brain.BuildMemoryContext(wdb.DB)
+		memoryContext := brain.BuildMemoryContext(wdb.DB, content)
 		if memoryContext != "" {
 			systemPrompt += "\n\n---\n\n" + memoryContext
 			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(memoryContext)).Int("total", len(systemPrompt)).Msg("+memories")
@@ -380,7 +681,7 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 		logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("count", len(messages)).Msg("messages")
 
 		// Resolve free-auto virtual model
-		resolvedModel, fallbacks := s.resolveFreeAuto(model)
+		resolvedModel, fallbacks := s.resolveFreeAuto(model, slug)
 
 		client := brain.NewClient(apiKey, resolvedModel)
 		client.FreeModelFallbacks = fallbacks
@@ -414,6 +715,7 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 		followUp := append(messages, assistantMsg)
 
 		var imageRefs []string
+		var toolResults []string
 		for _, call := range toolCalls {
 			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", call.Function.Name)
 			senderID := s.resolveMemberIDByName(slug, senderName)
@@ -422,6 +724,7 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 
 			// Extract image markdown from tool results so the follow-up LLM can't drop it
 			imageRefs = append(imageRefs, extractImageMarkdown(result)...)
+			toolResults = append(toolResults, result)
 
 			// Add tool result with tool_call_id
 			followUp = append(followUp, brain.Message{
@@ -429,6 +732,23 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 				Content:    result,
 				ToolCallID: call.ID,
 			})
+		}
+
+		// Check if a single tool with ResultAsAnswer was called — skip second LLM round
+		if len(toolCalls) == 1 {
+			if td := findToolDef(allTools, toolCalls[0].Function.Name); td != nil && td.Function.ResultAsAnswer {
+				finalResponse := appendMissingImages(toolResults[0], imageRefs)
+				var toolNames []string
+				for _, call := range toolCalls {
+					toolNames = append(toolNames, call.Function.Name)
+				}
+				if finalResponse != "" {
+					s.sendBrainMessage(slug, channelID, parentID, finalResponse, toolNames...)
+				}
+				brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
+					truncate(content, 200), truncate(finalResponse, 500), model, toolNames)
+				return
+			}
 		}
 
 		// Second call: get final response incorporating tool results
@@ -459,6 +779,28 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 		brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 			truncate(content, 200), truncate(finalResponse, 500), model, toolNames)
 	}()
+}
+
+// extractWebSearchQuery detects web search intent and returns the query, or "" if not a web search.
+// Matches: /search <query>, "search the web for <query>", "web search <query>", "look up <query> online", etc.
+var webSearchRe = regexp.MustCompile(`(?i)^(?:/search\s+(.+)|(?:search|look\s+up|find)\s+(?:the\s+)?(?:web|internet|online)\s+(?:for\s+)?(.+)|(?:web\s+search|google)\s+(?:for\s+)?(.+)|(?:search|look\s+up|find)\s+(?:for\s+)?(.+?)(?:\s+(?:on\s+(?:the\s+)?(?:web|internet|google)|online))$)`)
+
+func extractWebSearchQuery(s string) string {
+	// /search command
+	if strings.HasPrefix(s, "/search ") {
+		return strings.TrimSpace(strings.TrimPrefix(s, "/search"))
+	}
+
+	m := webSearchRe.FindStringSubmatch(s)
+	if m == nil {
+		return ""
+	}
+	for i := 1; i < len(m); i++ {
+		if m[i] != "" {
+			return strings.TrimSpace(m[i])
+		}
+	}
+	return ""
 }
 
 // filterEnabledSkills returns only skills where Enabled is true.
@@ -669,7 +1011,10 @@ func (s *Server) toolGenerateImageForAgent(slug, channelID string, agent *Agent,
 		}
 	}
 
-	imageModel := s.getImageModel(slug)
+	imageModel := agent.ImageModel
+	if imageModel == "" {
+		imageModel = s.getImageModel(slug)
+	}
 	logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("model", imageModel).Msg("using Gemini model")
 
 	text, imageData, mimeType, err := brain.GenerateImageGemini(geminiKey, imageModel, enrichedPrompt)
@@ -801,8 +1146,9 @@ func (s *Server) toolSendTelegram(slug, channelID, argsJSON string) string {
 	return fmt.Sprintf("Message sent to Telegram chat %s", chatIDStr)
 }
 
-// toolWebSearch searches DuckDuckGo HTML and returns formatted results.
-func toolWebSearch(argsJSON string) string {
+// toolWebSearch searches the web using Brave Search API (preferred) or DuckDuckGo fallback.
+func (s *Server) toolWebSearch(slug, argsJSON string) string {
+	log := logger.WithCategory(logger.CatBrain)
 	var args struct {
 		Query      string `json:"query"`
 		NumResults int    `json:"num_results"`
@@ -819,34 +1165,146 @@ func toolWebSearch(argsJSON string) string {
 	if args.NumResults > 10 {
 		args.NumResults = 10
 	}
+	log.Info().Str("query", args.Query).Int("num", args.NumResults).Msg("web_search starting")
 
+	// Try Brave Search API first (works reliably from cloud servers)
+	var braveKey string
+	if wdb, err := s.ws.Open(slug); err == nil {
+		_ = wdb.DB.QueryRow("SELECT value FROM brain_settings WHERE key = 'brave_api_key'").Scan(&braveKey)
+	}
+	if braveKey != "" {
+		log.Info().Msg("web_search: trying Brave API")
+		if result := searchBrave(braveKey, args.Query, args.NumResults); result != "" {
+			return result
+		}
+		log.Warn().Msg("web_search: Brave API returned no results")
+	}
+
+	// Try MCP web search tools (ddg__duckduckgo_web_search, brave__search, etc.)
+	mgr := s.getMCPManager(slug)
+	if mgr != nil {
+		for _, t := range mgr.AllTools() {
+			name := strings.ToLower(t.QualName)
+			// Only match actual web search tools, not memory/knowledge/workspace search
+			isWebSearch := (strings.Contains(name, "web_search") || strings.Contains(name, "web-search") ||
+				(strings.HasPrefix(name, "ddg__") && strings.Contains(name, "search")) ||
+				(strings.HasPrefix(name, "brave__") && strings.Contains(name, "search")) ||
+				(strings.HasPrefix(name, "searx") && strings.Contains(name, "search")))
+			if !isWebSearch {
+				continue
+			}
+			log.Info().Str("tool", t.QualName).Msg("web_search: trying MCP tool")
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			mcpArgs := map[string]any{"query": args.Query}
+			result, err := mgr.CallTool(ctx, t.QualName, mcpArgs)
+			cancel()
+			if err == nil && result != "" && len(result) > 50 && !strings.Contains(result, "error") {
+				return fmt.Sprintf("Web search results for \"%s\":\n\n%s", args.Query, result)
+			}
+			if err != nil {
+				log.Warn().Err(err).Str("tool", t.QualName).Msg("web_search: MCP tool failed")
+			}
+		}
+	}
+
+	// Fallback: DuckDuckGo HTML scraping
+	log.Info().Msg("web_search: trying DuckDuckGo HTML")
+	result := searchDDG(args.Query, args.NumResults)
+	if strings.Contains(result, "No results found") {
+		log.Warn().Str("result", result).Msg("web_search: DDG returned no results")
+		// Try DuckDuckGo Lite as last resort
+		log.Info().Msg("web_search: trying DuckDuckGo Lite")
+		liteResult := searchDDGLite(args.Query, args.NumResults)
+		if !strings.Contains(liteResult, "No results found") {
+			return liteResult
+		}
+		log.Warn().Msg("web_search: all providers failed")
+	}
+	return result
+}
+
+// searchBrave uses the Brave Search API. Free tier: 2000 queries/month.
+func searchBrave(apiKey, query string, numResults int) string {
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.PostForm("https://html.duckduckgo.com/html/", url.Values{
-		"q": {args.Query},
-	})
+	req, _ := http.NewRequest("GET", "https://api.search.brave.com/res/v1/web/search", nil)
+	q := req.URL.Query()
+	q.Set("q", query)
+	q.Set("count", fmt.Sprintf("%d", numResults))
+	req.URL.RawQuery = q.Encode()
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set("X-Subscription-Token", apiKey)
+
+	log := logger.WithCategory(logger.CatBrain)
+	resp, err := client.Do(req)
 	if err != nil {
-		return "Error searching: " + err.Error()
+		log.Warn().Err(err).Msg("Brave API request failed")
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		log.Warn().Int("status", resp.StatusCode).Msg("Brave API non-200 response")
+		return ""
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
+	if err != nil {
+		return ""
+	}
+
+	var result struct {
+		Web struct {
+			Results []struct {
+				Title       string `json:"title"`
+				Description string `json:"description"`
+				URL         string `json:"url"`
+			} `json:"results"`
+		} `json:"web"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil || len(result.Web.Results) == 0 {
+		return ""
+	}
+
+	var lines []string
+	for i, r := range result.Web.Results {
+		if i >= numResults {
+			break
+		}
+		lines = append(lines, fmt.Sprintf("%d. **%s**\n   %s\n   %s", i+1, r.Title, r.Description, r.URL))
+	}
+	return fmt.Sprintf("Search results for \"%s\":\n\n%s", query, strings.Join(lines, "\n\n"))
+}
+
+// searchDDG scrapes DuckDuckGo HTML results (may be blocked from cloud IPs).
+func searchDDG(query string, numResults int) string {
+	client := &http.Client{Timeout: 10 * time.Second}
+	formData := url.Values{"q": {query}}
+	req, _ := http.NewRequest("POST", "https://html.duckduckgo.com/html/", strings.NewReader(formData.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Referer", "https://duckduckgo.com/")
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Sprintf("No results found for \"%s\"", query)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
-		return "Error reading search results: " + err.Error()
+		return fmt.Sprintf("No results found for \"%s\"", query)
 	}
 
 	doc, err := html.Parse(strings.NewReader(string(body)))
 	if err != nil {
-		return "Error parsing search results"
+		return fmt.Sprintf("No results found for \"%s\"", query)
 	}
 
 	type searchResult struct {
-		Title   string
-		Snippet string
-		URL     string
+		Title, Snippet, URL string
 	}
 	var results []searchResult
-
-	// Walk the DOM to find result elements
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
 		if n.Type == html.ElementNode && n.Data == "div" {
@@ -866,17 +1324,92 @@ func toolWebSearch(argsJSON string) string {
 	walk(doc)
 
 	if len(results) == 0 {
-		return fmt.Sprintf("No results found for \"%s\"", args.Query)
+		return fmt.Sprintf("No results found for \"%s\" (search provider may be unavailable from this server)", query)
 	}
-	if len(results) > args.NumResults {
-		results = results[:args.NumResults]
+	if len(results) > numResults {
+		results = results[:numResults]
 	}
 
 	var lines []string
 	for i, r := range results {
 		lines = append(lines, fmt.Sprintf("%d. **%s**\n   %s\n   %s", i+1, r.Title, r.Snippet, r.URL))
 	}
-	return fmt.Sprintf("Search results for \"%s\":\n\n%s", args.Query, strings.Join(lines, "\n\n"))
+	return fmt.Sprintf("Search results for \"%s\":\n\n%s", query, strings.Join(lines, "\n\n"))
+}
+
+// searchDDGLite uses DuckDuckGo Lite (lighter page, less likely to be blocked).
+func searchDDGLite(query string, numResults int) string {
+	client := &http.Client{Timeout: 10 * time.Second}
+	formData := url.Values{"q": {query}}
+	req, _ := http.NewRequest("POST", "https://lite.duckduckgo.com/lite/", strings.NewReader(formData.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Sprintf("No results found for \"%s\"", query)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return fmt.Sprintf("No results found for \"%s\"", query)
+	}
+
+	doc, err := html.Parse(strings.NewReader(string(body)))
+	if err != nil {
+		return fmt.Sprintf("No results found for \"%s\"", query)
+	}
+
+	// DDG Lite uses a table layout with result links and snippets
+	type searchResult struct {
+		Title, Snippet, URL string
+	}
+	var results []searchResult
+	var currentResult searchResult
+
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "a" {
+			for _, a := range n.Attr {
+				if a.Key == "class" && a.Val == "result-link" {
+					currentResult.Title = textContent(n)
+					for _, attr := range n.Attr {
+						if attr.Key == "href" {
+							currentResult.URL = attr.Val
+						}
+					}
+				}
+			}
+		}
+		if n.Type == html.ElementNode && n.Data == "td" {
+			for _, a := range n.Attr {
+				if a.Key == "class" && strings.Contains(a.Val, "result-snippet") {
+					currentResult.Snippet = textContent(n)
+					if currentResult.Title != "" && currentResult.URL != "" {
+						results = append(results, currentResult)
+						currentResult = searchResult{}
+					}
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+
+	if len(results) == 0 {
+		return fmt.Sprintf("No results found for \"%s\" (search provider may be unavailable from this server)", query)
+	}
+	if len(results) > numResults {
+		results = results[:numResults]
+	}
+
+	var lines []string
+	for i, r := range results {
+		lines = append(lines, fmt.Sprintf("%d. **%s**\n   %s\n   %s", i+1, r.Title, r.Snippet, r.URL))
+	}
+	return fmt.Sprintf("Search results for \"%s\":\n\n%s", query, strings.Join(lines, "\n\n"))
 }
 
 // extractDDGResult extracts title, URL, and snippet from a DuckDuckGo result__body div.
@@ -976,7 +1509,7 @@ func toolFetchURL(argsJSON string) string {
 	if err != nil {
 		return "Error creating request: " + err.Error()
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; NexusBot/1.0)")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -1031,4 +1564,32 @@ func isPrivateIP(ip net.IP) bool {
 func parseCIDR(s string) *net.IPNet {
 	_, n, _ := net.ParseCIDR(s)
 	return n
+}
+
+// handleExecuteTool executes a single tool call from a client-side LLM.
+// POST /api/workspaces/{slug}/brain/execute-tool
+func (s *Server) handleExecuteTool(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+
+	var req struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+		ChannelID string `json:"channel_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name required")
+		return
+	}
+
+	call := brain.ToolCall{
+		ID:   "webllm_" + fmt.Sprintf("%d", time.Now().UnixMilli()),
+		Type: "function",
+	}
+	call.Function.Name = req.Name
+	call.Function.Arguments = req.Arguments
+
+	channelID := req.ChannelID
+	result := s.executeTool(slug, channelID, "", call)
+
+	writeJSON(w, http.StatusOK, map[string]string{"result": result})
 }

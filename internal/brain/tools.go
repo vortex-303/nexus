@@ -10,9 +10,10 @@ type ToolDef struct {
 }
 
 type ToolFuncDef struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Parameters  json.RawMessage `json:"parameters"`
+	Name           string          `json:"name"`
+	Description    string          `json:"description"`
+	Parameters     json.RawMessage `json:"parameters"`
+	ResultAsAnswer bool            `json:"-"` // Not sent to LLM, internal only
 }
 
 type ToolCall struct {
@@ -22,6 +23,7 @@ type ToolCall struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
 	} `json:"function"`
+	ThoughtSignature string `json:"-"` // Gemini thought_signature, not sent via OpenRouter
 }
 
 // ToolMessage represents a tool result message in the conversation.
@@ -61,6 +63,7 @@ var Tools = []ToolDef{
 				"properties": {
 					"title": {"type": "string", "description": "Task title"},
 					"description": {"type": "string", "description": "Task description (optional)"},
+					"expected_output": {"type": "string", "description": "What 'done' looks like — the acceptance criteria"},
 					"status": {"type": "string", "enum": ["backlog", "todo", "in_progress", "done"], "description": "Initial status (default: todo)"},
 					"priority": {"type": "string", "enum": ["low", "medium", "high", "urgent"], "description": "Priority level (default: medium)"},
 					"assignee_name": {"type": "string", "description": "Display name of person to assign to (optional)"}
@@ -86,8 +89,42 @@ var Tools = []ToolDef{
 	{
 		Type: "function",
 		Function: ToolFuncDef{
-			Name:        "search_messages",
-			Description: "Search for messages in the current channel or workspace. Use this when someone asks about past conversations or what was said about a topic.",
+			Name:        "update_task",
+			Description: "Update an existing task. Use when someone asks to mark a task done, change its status, priority, assignee, or due date.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"task_id": {"type": "string", "description": "The task ID to update"},
+					"title": {"type": "string", "description": "New title"},
+					"status": {"type": "string", "enum": ["backlog", "todo", "in_progress", "done", "cancelled"], "description": "New status"},
+					"priority": {"type": "string", "enum": ["low", "medium", "high", "urgent"], "description": "New priority"},
+					"assignee_name": {"type": "string", "description": "Display name of new assignee (empty string to unassign)"},
+					"due_date": {"type": "string", "description": "Due date in ISO 8601 (empty string to clear)"},
+					"description": {"type": "string", "description": "New description"}
+				},
+				"required": ["task_id"]
+			}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: ToolFuncDef{
+			Name:        "delete_task",
+			Description: "Delete a task. Use when someone asks to remove or delete a task.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"task_id": {"type": "string", "description": "The task ID to delete"}
+				},
+				"required": ["task_id"]
+			}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: ToolFuncDef{
+			Name:        "search_workspace",
+			Description: "Search past messages, tasks, and documents WITHIN this workspace only. This is NOT web search. Use when someone asks about past conversations, what was discussed, or workspace history.",
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
@@ -102,8 +139,9 @@ var Tools = []ToolDef{
 	{
 		Type: "function",
 		Function: ToolFuncDef{
-			Name:        "create_document",
-			Description: "Create a new document/note. Use when someone asks you to write up, document, or create a note about something.",
+			Name:           "create_document",
+			Description:    "Create a new document/note. Use when someone asks you to write up, document, or create a note about something.",
+			ResultAsAnswer: true,
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
@@ -132,12 +170,14 @@ var Tools = []ToolDef{
 		Type: "function",
 		Function: ToolFuncDef{
 			Name:        "delegate_to_agent",
-			Description: "Delegate a task to a specialized AI agent in the workspace. Use when a request matches another agent's expertise.",
+			Description: "Delegate a task to a specialized agent. The agent will use its tools and skills to complete the work.",
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
 					"agent_name": {"type": "string", "description": "The name of the agent to delegate to"},
-					"task": {"type": "string", "description": "The task or question to delegate"}
+					"task": {"type": "string", "description": "What to do"},
+					"context": {"type": "string", "description": "Background info, prior findings, relevant data"},
+					"expected_output": {"type": "string", "description": "What the result should look like"}
 				},
 				"required": ["agent_name", "task"]
 			}`),
@@ -146,8 +186,55 @@ var Tools = []ToolDef{
 	{
 		Type: "function",
 		Function: ToolFuncDef{
-			Name:        "generate_image",
-			Description: "Generate an image from a text prompt. Use when the user asks you to create, generate, draw, or design an image, illustration, logo, ad visual, or any graphic.",
+			Name:        "ask_agent",
+			Description: "Ask a specific agent a question and get a direct answer. Use for quick queries, not full tasks.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"agent_name": {"type": "string", "description": "The name of the agent to ask"},
+					"question": {"type": "string", "description": "The question to ask"}
+				},
+				"required": ["agent_name", "question"]
+			}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: ToolFuncDef{
+			Name:        "recall_memory",
+			Description: "Search workspace memory for specific facts, decisions, or commitments. Use when you need to remember something discussed before.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"query": {"type": "string", "description": "What to search for"},
+					"type": {"type": "string", "enum": ["fact", "decision", "commitment", "person"], "description": "Filter by memory type (optional)"}
+				},
+				"required": ["query"]
+			}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: ToolFuncDef{
+			Name:        "save_memory",
+			Description: "Save an important fact, decision, or commitment to workspace memory for future reference.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"content": {"type": "string", "description": "The memory to save"},
+					"type": {"type": "string", "enum": ["fact", "decision", "commitment", "person"], "description": "Memory type (default: fact)"},
+					"importance": {"type": "number", "description": "0.0 to 1.0 (default: 0.5)"}
+				},
+				"required": ["content"]
+			}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: ToolFuncDef{
+			Name:           "generate_image",
+			Description:    "Generate an image from a text prompt. Use when the user asks you to create, generate, draw, or design an image, illustration, logo, ad visual, or any graphic.",
+			ResultAsAnswer: true,
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
@@ -261,8 +348,9 @@ var Tools = []ToolDef{
 	{
 		Type: "function",
 		Function: ToolFuncDef{
-			Name:        "web_search",
-			Description: "Search the web using DuckDuckGo. Returns titles, snippets, and URLs for the top results.",
+			Name:           "web_search",
+			Description:    "Search the INTERNET/WEB for real-time information. Use this whenever someone asks to search the web, look something up online, find current prices, news, or any information not in the workspace. This searches the public internet, NOT workspace messages.",
+			ResultAsAnswer: true,
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
@@ -276,8 +364,9 @@ var Tools = []ToolDef{
 	{
 		Type: "function",
 		Function: ToolFuncDef{
-			Name:        "fetch_url",
-			Description: "Fetch a web page and extract its text content. Use this to read articles, documentation, or any public URL.",
+			Name:           "fetch_url",
+			Description:    "Fetch a web page and extract its text content. Use this to read articles, documentation, or any public URL.",
+			ResultAsAnswer: true,
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
