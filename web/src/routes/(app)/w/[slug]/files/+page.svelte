@@ -48,6 +48,10 @@
 	// Drag-to-folder state
 	let dragTargetFolderId = $state<string | null>(null);
 
+	// Resizable editor panel
+	let editorWidth = $state(520);
+	let resizing = $state(false);
+
 	// "Move to" dropdown
 	let showMoveDropdown = $state(false);
 	let allRootFolders = $state<any[]>([]);
@@ -59,6 +63,8 @@
 		if (saved === 'list' || saved === 'grid') viewMode = saved;
 		const savedMode = localStorage.getItem('nexus_editor_mode');
 		if (savedMode === 'markdown') markdownMode = true;
+		const savedWidth = localStorage.getItem('nexus_editor_width');
+		if (savedWidth) editorWidth = Math.max(320, Math.min(900, parseInt(savedWidth)));
 		await loadFolder('');
 	});
 
@@ -202,6 +208,28 @@
 				if (editorRef) editorRef.setContent(html);
 			});
 		}
+	}
+
+	function startResize(e: MouseEvent) {
+		e.preventDefault();
+		resizing = true;
+		const startX = e.clientX;
+		const startWidth = editorWidth;
+
+		function onMove(e: MouseEvent) {
+			const delta = startX - e.clientX;
+			editorWidth = Math.max(320, Math.min(900, startWidth + delta));
+		}
+
+		function onUp() {
+			resizing = false;
+			localStorage.setItem('nexus_editor_width', String(editorWidth));
+			window.removeEventListener('mousemove', onMove);
+			window.removeEventListener('mouseup', onUp);
+		}
+
+		window.addEventListener('mousemove', onMove);
+		window.addEventListener('mouseup', onUp);
 	}
 
 	async function handleUpload(fileList: FileList) {
@@ -401,6 +429,11 @@
 	function handleItemDragStart(e: DragEvent, type: 'file' | 'doc', id: string) {
 		e.dataTransfer!.setData('application/json', JSON.stringify({ type, id }));
 		e.dataTransfer!.effectAllowed = 'move';
+	}
+
+	function handleItemDragEnd() {
+		dragTargetFolderId = null;
+		dragOver = false;
 	}
 
 	// Drag-to-folder: folder drop target handlers
@@ -622,7 +655,7 @@
 							class="grid-item doc-item"
 							class:selected={selectedIds.has(doc.id) || editingDoc?.id === doc.id}
 							draggable="true"
-							ondragstart={(e) => handleItemDragStart(e, 'doc', doc.id)}
+							ondragstart={(e) => handleItemDragStart(e, 'doc', doc.id)} ondragend={handleItemDragEnd}
 							onclick={() => openNoteEditor(doc)}
 							oncontextmenu={(e) => showContext(e, 'doc', doc)}
 						>
@@ -658,7 +691,7 @@
 							class="grid-item file-item"
 							class:selected={selectedIds.has(file.id) || selectedFile?.id === file.id}
 							draggable="true"
-							ondragstart={(e) => handleItemDragStart(e, 'file', file.id)}
+							ondragstart={(e) => handleItemDragStart(e, 'file', file.id)} ondragend={handleItemDragEnd}
 							onclick={() => { selectedFile = file; editingDoc = null; }}
 							oncontextmenu={(e) => showContext(e, 'file', file)}
 						>
@@ -740,7 +773,7 @@
 					{/each}
 					{#each docs as doc}
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
-						<div class="list-row" class:selected={selectedIds.has(doc.id) || editingDoc?.id === doc.id} draggable="true" ondragstart={(e) => handleItemDragStart(e, 'doc', doc.id)} onclick={() => openNoteEditor(doc)} oncontextmenu={(e) => showContext(e, 'doc', doc)}>
+						<div class="list-row" class:selected={selectedIds.has(doc.id) || editingDoc?.id === doc.id} draggable="true" ondragstart={(e) => handleItemDragStart(e, 'doc', doc.id)} ondragend={handleItemDragEnd} onclick={() => openNoteEditor(doc)} oncontextmenu={(e) => showContext(e, 'doc', doc)}>
 							<!-- svelte-ignore a11y_no_static_element_interactions -->
 							<span class="list-check-col" onclick={(e) => toggleSelect(doc.id, e)}>
 								<input type="checkbox" checked={selectedIds.has(doc.id)} tabindex={-1} />
@@ -769,7 +802,7 @@
 					{/each}
 					{#each files as file}
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
-						<div class="list-row" class:selected={selectedIds.has(file.id) || selectedFile?.id === file.id} draggable="true" ondragstart={(e) => handleItemDragStart(e, 'file', file.id)} onclick={() => { selectedFile = file; editingDoc = null; }} oncontextmenu={(e) => showContext(e, 'file', file)}>
+						<div class="list-row" class:selected={selectedIds.has(file.id) || selectedFile?.id === file.id} draggable="true" ondragstart={(e) => handleItemDragStart(e, 'file', file.id)} ondragend={handleItemDragEnd} onclick={() => { selectedFile = file; editingDoc = null; }} oncontextmenu={(e) => showContext(e, 'file', file)}>
 							<!-- svelte-ignore a11y_no_static_element_interactions -->
 							<span class="list-check-col" onclick={(e) => toggleSelect(file.id, e)}>
 								<input type="checkbox" checked={selectedIds.has(file.id)} tabindex={-1} />
@@ -810,7 +843,9 @@
 		{/if}
 
 		{#if editingDoc}
-			<div class="note-editor-panel">
+			<div class="note-editor-panel" class:resizing style="width: {editorWidth}px">
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div class="resize-handle" onmousedown={startResize}></div>
 				<div class="note-editor-header">
 					<input
 						type="text"
@@ -1305,13 +1340,28 @@
 
 	/* Note editor panel */
 	.note-editor-panel {
-		width: 520px;
 		flex-shrink: 0;
 		display: flex;
 		flex-direction: column;
 		border-left: 1px solid var(--border-subtle);
 		background: var(--bg-surface);
 		overflow: hidden;
+		position: relative;
+	}
+	.note-editor-panel.resizing { user-select: none; }
+	.resize-handle {
+		position: absolute;
+		left: 0;
+		top: 0;
+		bottom: 0;
+		width: 4px;
+		cursor: col-resize;
+		z-index: 10;
+	}
+	.resize-handle:hover,
+	.note-editor-panel.resizing .resize-handle {
+		background: var(--accent);
+		opacity: 0.4;
 	}
 	.note-editor-header {
 		display: flex;

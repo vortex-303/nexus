@@ -48,6 +48,8 @@
 	];
 
 	let unsubWS: (() => void) | null = null;
+	let now = $state(new Date());
+	let nowTimer: ReturnType<typeof setInterval> | null = null;
 
 	// Derived date ranges
 	let viewStart = $derived.by(() => {
@@ -119,11 +121,23 @@
 		return grouped;
 	});
 
+	// Now-marker for week view: which day column (0-6, or -1 if not visible) and vertical %
+	let nowDayCol = $derived.by(() => {
+		if (viewMode !== 'week') return -1;
+		const todayStr = dateToISO(now);
+		const idx = weekDays.findIndex(d => dateToISO(d) === todayStr);
+		return idx;
+	});
+	// 48px = min-height of each week-row
+	let nowTopPx = $derived.by(() => {
+		return (now.getHours() + now.getMinutes() / 60) * 48;
+	});
+
 	function eventsForDay(date: Date): any[] {
 		const dayStr = dateToISO(date);
 		return events.filter(e => {
-			const eStart = e.start_time.slice(0, 10);
-			const eEnd = e.end_time.slice(0, 10);
+			const eStart = dateToISO(new Date(e.start_time));
+			const eEnd = dateToISO(new Date(e.end_time));
 			return dayStr >= eStart && dayStr <= eEnd;
 		});
 	}
@@ -141,7 +155,10 @@
 	}
 
 	function dateToISO(d: Date): string {
-		return d.toISOString().slice(0, 10);
+		const y = d.getFullYear();
+		const m = String(d.getMonth() + 1).padStart(2, '0');
+		const day = String(d.getDate()).padStart(2, '0');
+		return `${y}-${m}-${day}`;
 	}
 
 	function isToday(d: Date): boolean {
@@ -188,14 +205,10 @@
 		loadEvents();
 	});
 
-	// WebSocket handler
+	// WebSocket handler — reload from API to ensure consistency (timezone, recurring expansion, etc.)
 	function handleWS(type: string, payload: any) {
-		if (type === 'event.created') {
-			events = [...events, payload];
-		} else if (type === 'event.updated') {
-			events = events.map(e => e.id === payload.id ? payload : e);
-		} else if (type === 'event.deleted') {
-			events = events.filter(e => e.id !== payload.id && e.recurrence_parent_id !== payload.id);
+		if (type === 'event.created' || type === 'event.updated' || type === 'event.deleted') {
+			loadEvents();
 		}
 	}
 
@@ -204,10 +217,12 @@
 		if (saved === 'month' || saved === 'week' || saved === 'agenda') viewMode = saved;
 		connect();
 		unsubWS = onMessage(handleWS);
+		nowTimer = setInterval(() => { now = new Date(); }, 30000);
 	});
 
 	onDestroy(() => {
 		if (unsubWS) unsubWS();
+		if (nowTimer) clearInterval(nowTimer);
 		disconnect();
 	});
 
@@ -255,14 +270,19 @@
 		return n.toString().padStart(2, '0');
 	}
 
+	function localToISO(date: string, time: string): string {
+		const d = new Date(`${date}T${time}:00`);
+		return d.toISOString();
+	}
+
 	async function saveEvent() {
 		if (!formTitle.trim()) return;
 		const startTime = formAllDay
-			? `${formStartDate}T00:00:00Z`
-			: `${formStartDate}T${formStartTime}:00Z`;
+			? localToISO(formStartDate, '00:00')
+			: localToISO(formStartDate, formStartTime);
 		const endTime = formAllDay
-			? `${formEndDate}T23:59:59Z`
-			: `${formEndDate}T${formEndTime}:00Z`;
+			? localToISO(formEndDate, '23:59')
+			: localToISO(formEndDate, formEndTime);
 
 		try {
 			if (editingEvent) {
@@ -405,7 +425,13 @@
 					</div>
 				{/each}
 			</div>
-			<div class="week-body">
+			<div class="week-body" style="position: relative;">
+				{#if nowDayCol >= 0}
+					<div class="now-marker" style="top: {nowTopPx}px; left: calc(60px + {nowDayCol} * (100% - 60px) / 7); width: calc((100% - 60px) / 7);">
+						<div class="now-dot"></div>
+						<div class="now-line"></div>
+					</div>
+				{/if}
 				{#each Array(24) as _, hour}
 					<div class="week-row">
 						<div class="time-gutter">{hour === 0 ? '12 AM' : hour < 12 ? `${hour} AM` : hour === 12 ? '12 PM' : `${hour - 12} PM`}</div>
@@ -835,6 +861,28 @@
 		text-align: left;
 	}
 	.week-event:hover { filter: brightness(1.2); }
+
+	/* Current time marker */
+	.now-marker {
+		position: absolute;
+		z-index: 5;
+		pointer-events: none;
+		display: flex;
+		align-items: center;
+	}
+	.now-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--accent);
+		flex-shrink: 0;
+		margin-left: -4px;
+	}
+	.now-line {
+		flex: 1;
+		height: 2px;
+		background: var(--accent);
+	}
 
 	/* Agenda View */
 	.agenda-view {

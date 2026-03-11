@@ -2,8 +2,9 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount, onDestroy } from 'svelte';
-	import { createSocialPulse, listSocialPulses, getSocialPulse, deleteSocialPulse } from '$lib/api';
+	import { createSocialPulse, listSocialPulses, getSocialPulse, deleteSocialPulse, createDoc } from '$lib/api';
 	import { connect, disconnect, onMessage } from '$lib/ws';
+	import { markdownToHtml } from '$lib/editor/markdown-utils';
 
 	let slug = $derived(page.params.slug);
 	let pulses = $state<any[]>([]);
@@ -13,6 +14,7 @@
 	let selectedPulse = $state<any>(null);
 	let showSearch = $state(false);
 	let mobileShowMain = $state(false);
+	let saving = $state(false);
 	let unsubWS: (() => void) | null = null;
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -95,6 +97,60 @@
 		} catch (e) { console.error(e); }
 	}
 
+	async function saveReport() {
+		if (!selectedPulse || selectedPulse.status !== 'ready' || saving) return;
+		saving = true;
+		try {
+			const p = selectedPulse;
+			const date = new Date(p.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+			const themes = parseJSON(p.themes);
+			const posts = parseJSON(p.key_posts);
+			const sources = parseJSON(p.citations);
+
+			let md = `# Social Pulse: ${p.topic}\n\n`;
+			md += `**Date:** ${date}  \n`;
+			md += `**Sentiment:** ${p.sentiment_score}/100 — ${sentimentLabel(p.sentiment_score)}\n\n`;
+			md += `---\n\n`;
+			md += `## Summary\n\n${p.summary}\n\n`;
+
+			if (themes.length > 0) {
+				md += `## Themes\n\n`;
+				md += `| Theme | Mentions | Sentiment |\n|-------|----------|-----------|\n`;
+				for (const t of themes) {
+					md += `| ${t.name} | ${t.count} | ${t.sentiment} |\n`;
+				}
+				md += `\n`;
+			}
+
+			if (posts.length > 0) {
+				md += `## Key Posts\n\n`;
+				for (const post of posts) {
+					const dot = post.sentiment === 'positive' ? '🟢' : post.sentiment === 'negative' ? '🔴' : '🟡';
+					md += `${dot} ${post.text}`;
+					if (post.author) md += ` — *${post.author}*`;
+					md += `\n\n`;
+				}
+			}
+
+			if (p.recommendations) {
+				md += `## Recommendations\n\n${p.recommendations}\n\n`;
+			}
+
+			if (sources.length > 0) {
+				md += `## Sources\n\n`;
+				for (const url of sources) {
+					md += `- ${url}\n`;
+				}
+			}
+
+			await createDoc(slug, { title: `Pulse: ${p.topic} (${date})`, content: markdownToHtml(md.trim()) });
+			alert('Saved to Documents');
+		} catch (e: any) {
+			alert(e.message || 'Failed to save');
+		}
+		saving = false;
+	}
+
 	function sentimentColor(score: number): string {
 		if (score >= 65) return 'var(--green, #22c55e)';
 		if (score >= 40) return 'var(--yellow, #eab308)';
@@ -136,14 +192,7 @@
 		try { return JSON.parse(raw); } catch { return []; }
 	}
 
-	function gaugeArc(score: number): string {
-		const angle = (score / 100) * 180;
-		const rad = (angle - 180) * Math.PI / 180;
-		const x = 100 + 70 * Math.cos(rad);
-		const y = 90 + 70 * Math.sin(rad);
-		const large = angle > 90 ? 1 : 0;
-		return `M 30 90 A 70 70 0 ${large} 1 ${x.toFixed(1)} ${y.toFixed(1)}`;
-	}
+
 </script>
 
 <div class="pulse-page" class:mobile-show-main={mobileShowMain}>
@@ -199,9 +248,9 @@
 						</div>
 						<div class="pulse-item-right">
 							{#if pulse.status === 'ready'}
-								<span class="score-badge" style="background: {sentimentColor(pulse.sentiment_score)}">{pulse.sentiment_score}</span>
+								<span class="status-dot" style="background: {sentimentColor(pulse.sentiment_score)}"></span>
 							{:else if pulse.status === 'failed'}
-								<span class="score-badge failed">!</span>
+								<span class="status-dot failed"></span>
 							{:else}
 								<span class="spinner small"></span>
 							{/if}
@@ -229,7 +278,16 @@
 					{/if}
 					{statusLabel(selectedPulse.status)}
 				</span>
-				<button class="header-delete" onclick={(e) => handleDelete(selectedPulse.id, e)} title="Delete report">
+				{#if selectedPulse.status === 'ready'}
+					<button class="header-action save-btn" onclick={saveReport} disabled={saving} title="Save to Documents">
+						{#if saving}
+							<span class="spinner small"></span>
+						{:else}
+							<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 14V2h8l2 2v10H3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M5 2v4h4V2" stroke="currentColor" stroke-width="1.3"/><path d="M5 10h6M5 12h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+						{/if}
+					</button>
+				{/if}
+				<button class="header-action delete-btn" onclick={(e) => handleDelete(selectedPulse.id, e)} title="Delete report">
 					<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
 				</button>
 			</div>
@@ -246,21 +304,23 @@
 						<p>{selectedPulse.summary || 'Analysis failed'}</p>
 					</div>
 				{:else}
-					<!-- Sentiment + Summary row -->
-					<div class="sentiment-summary-row">
-						<div class="pulse-card gauge-card">
-							<h3>Sentiment</h3>
-							<svg viewBox="0 0 200 110" class="gauge">
-								<path d="M 30 90 A 70 70 0 0 1 170 90" fill="none" stroke="var(--border-subtle, #333)" stroke-width="12" stroke-linecap="round"/>
-								<path d={gaugeArc(selectedPulse.sentiment_score)} fill="none" stroke={sentimentColor(selectedPulse.sentiment_score)} stroke-width="12" stroke-linecap="round"/>
-								<text x="100" y="80" text-anchor="middle" fill="currentColor" font-size="28" font-weight="bold">{selectedPulse.sentiment_score}</text>
-								<text x="100" y="100" text-anchor="middle" fill="var(--text-secondary, #888)" font-size="12">{sentimentLabel(selectedPulse.sentiment_score)}</text>
-							</svg>
+					<!-- Sentiment score bar -->
+					<div class="pulse-card sentiment-bar-card">
+						<div class="sentiment-score-row">
+							<span class="sentiment-number" style="color: {sentimentColor(selectedPulse.sentiment_score)}">{selectedPulse.sentiment_score}</span>
+							<div class="sentiment-info">
+								<span class="sentiment-label" style="color: {sentimentColor(selectedPulse.sentiment_score)}">{sentimentLabel(selectedPulse.sentiment_score)}</span>
+								<div class="sentiment-track">
+									<div class="sentiment-fill" style="width: {selectedPulse.sentiment_score}%; background: {sentimentColor(selectedPulse.sentiment_score)}"></div>
+								</div>
+							</div>
 						</div>
-						<div class="pulse-card summary-card">
-							<h3>Summary</h3>
-							<p>{selectedPulse.summary}</p>
-						</div>
+					</div>
+
+					<!-- Summary -->
+					<div class="pulse-card">
+						<h3>Summary</h3>
+						<p>{selectedPulse.summary}</p>
 					</div>
 
 					<!-- Themes -->
@@ -493,18 +553,13 @@
 		flex-shrink: 0;
 	}
 
-	.score-badge {
-		font-size: 11px;
-		font-weight: 700;
-		color: #fff;
-		min-width: 18px;
-		height: 18px;
-		line-height: 18px;
-		text-align: center;
-		border-radius: 9px;
-		padding: 0 5px;
+	.status-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		flex-shrink: 0;
 	}
-	.score-badge.failed { background: var(--red, #ef4444); }
+	.status-dot.failed { background: var(--red, #ef4444); }
 
 	.delete-x {
 		background: none;
@@ -572,7 +627,7 @@
 	.header-status.ready { color: var(--green, #22c55e); }
 	.header-status.failed { color: var(--red, #ef4444); }
 
-	.header-delete {
+	.header-action {
 		background: none;
 		border: none;
 		color: var(--text-tertiary);
@@ -583,7 +638,9 @@
 		align-items: center;
 		flex-shrink: 0;
 	}
-	.header-delete:hover { color: var(--red, #ef4444); }
+	.header-action:disabled { opacity: 0.5; cursor: not-allowed; }
+	.save-btn:hover { color: var(--accent); }
+	.delete-btn:hover { color: var(--red, #ef4444); }
 
 	/* Content area */
 	.pulse-content {
@@ -632,23 +689,45 @@
 	}
 	.error-card p { color: var(--red, #ef4444); }
 
-	/* Sentiment + Summary side-by-side */
-	.sentiment-summary-row {
-		display: grid;
-		grid-template-columns: auto 1fr;
+	/* Sentiment bar */
+	.sentiment-bar-card { padding: var(--space-md) var(--space-lg); }
+
+	.sentiment-score-row {
+		display: flex;
+		align-items: center;
 		gap: var(--space-md);
 	}
 
-	.gauge-card {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
+	.sentiment-number {
+		font-size: 32px;
+		font-weight: 700;
+		line-height: 1;
+		flex-shrink: 0;
 	}
-	.gauge { width: 160px; height: auto; }
 
-	.summary-card {
+	.sentiment-info {
+		flex: 1;
 		display: flex;
 		flex-direction: column;
+		gap: var(--space-xs);
+	}
+
+	.sentiment-label {
+		font-size: var(--text-sm);
+		font-weight: 600;
+	}
+
+	.sentiment-track {
+		height: 6px;
+		background: var(--bg-root);
+		border-radius: 3px;
+		overflow: hidden;
+	}
+
+	.sentiment-fill {
+		height: 100%;
+		border-radius: 3px;
+		transition: width 0.4s ease;
 	}
 
 	/* Themes */
@@ -745,10 +824,6 @@
 
 		.mobile-back {
 			display: flex;
-		}
-
-		.sentiment-summary-row {
-			grid-template-columns: 1fr;
 		}
 	}
 </style>
