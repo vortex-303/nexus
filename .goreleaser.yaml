@@ -14,6 +14,8 @@ builds:
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
+    tags:
+      - sqlite_fts5
     goos:
       - linux
     goarch:
@@ -23,14 +25,11 @@ builds:
       - goos: linux
         goarch: amd64
         env:
-          - CC=x86_64-linux-musl-gcc
-          - CXX=x86_64-linux-musl-g++
-        goamd64: v1
+          - CC=zig-cc-x86_64
       - goos: linux
         goarch: arm64
         env:
-          - CC=aarch64-linux-musl-gcc
-          - CXX=aarch64-linux-musl-g++
+          - CC=zig-cc-aarch64
 
 archives:
   - id: nexus
