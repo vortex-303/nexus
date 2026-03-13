@@ -13,6 +13,7 @@ import (
 	"github.com/nexus-chat/nexus/internal/db"
 	"github.com/nexus-chat/nexus/internal/id"
 	"github.com/nexus-chat/nexus/internal/logger"
+	"github.com/nexus-chat/nexus/internal/search"
 )
 
 // memberColorPalette is a 12-color palette for auto-assigning member colors.
@@ -241,6 +242,11 @@ func (s *Server) handleJoinWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to add member")
 		return
 	}
+
+	// Index member for search
+	s.search.Index(slug, search.SearchDoc{
+		ID: userID, Type: "member", Title: req.DisplayName, Content: "member",
+	})
 
 	// Issue JWT
 	token, err := s.jwt.Issue(userID, req.DisplayName, slug, "member", "")

@@ -1,7 +1,11 @@
 package server
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/nexus-chat/nexus/internal/auth"
 	"github.com/nexus-chat/nexus/internal/roles"
@@ -130,13 +134,38 @@ func (s *Server) handleUpdatePermission(w http.ResponseWriter, r *http.Request) 
 }
 
 type memberDetailResp struct {
-	ID          string            `json:"id"`
-	DisplayName string            `json:"display_name"`
-	Role        string            `json:"role"`
-	Permissions map[string]bool   `json:"permissions"`
+	ID           string          `json:"id"`
+	DisplayName  string          `json:"display_name"`
+	Role         string          `json:"role"`
+	Title        string          `json:"title"`
+	Bio          string          `json:"bio"`
+	Goals        string          `json:"goals"`
+	Color        string          `json:"color"`
+	JoinedAt     string          `json:"joined_at"`
+	Permissions  map[string]bool `json:"permissions"`
+	MessageCount int             `json:"message_count"`
+	TaskCount    int             `json:"task_count"`
+	LastActive   string          `json:"last_active"`
+	IsOnline     bool            `json:"is_online"`
+	// Agent-specific fields (only populated when role == "agent")
+	Agent *agentProfileResp `json:"agent,omitempty"`
 }
 
-// handleGetMember returns a member's details including effective permissions.
+type agentProfileResp struct {
+	Avatar          string `json:"avatar"`
+	Description     string `json:"description"`
+	Backstory       string `json:"backstory"`
+	Model           string `json:"model"`
+	TriggerType     string `json:"trigger_type"`
+	IsActive        bool   `json:"is_active"`
+	KnowledgeAccess bool   `json:"knowledge_access"`
+	MemoryAccess    bool   `json:"memory_access"`
+	CanDelegate     bool   `json:"can_delegate"`
+	ToolCount       int    `json:"tool_count"`
+	CreatedAt       string `json:"created_at"`
+}
+
+// handleGetMember returns a member's details including profile, stats, and effective permissions.
 func (s *Server) handleGetMember(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	memberID := r.PathValue("memberID")
@@ -152,15 +181,16 @@ func (s *Server) handleGetMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var displayName, role string
+	var displayName, role, title, bio, goals, color, joinedAt string
 	err = wdb.DB.QueryRow(
-		"SELECT display_name, role FROM members WHERE id = ?", memberID,
-	).Scan(&displayName, &role)
+		"SELECT display_name, role, title, bio, goals, color, joined_at FROM members WHERE id = ?", memberID,
+	).Scan(&displayName, &role, &title, &bio, &goals, &color, &joinedAt)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "member not found")
 		return
 	}
 
+	// Permissions
 	checker := roles.NewChecker(wdb.DB)
 	perms := checker.Resolve(memberID)
 	permMap := make(map[string]bool, len(perms))
@@ -168,12 +198,72 @@ func (s *Server) handleGetMember(w http.ResponseWriter, r *http.Request) {
 		permMap[string(k)] = v
 	}
 
-	writeJSON(w, http.StatusOK, memberDetailResp{
-		ID:          memberID,
-		DisplayName: displayName,
-		Role:        role,
-		Permissions: permMap,
-	})
+	// Stats
+	var msgCount, taskCount int
+	var lastActive string
+	_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM messages WHERE sender_id = ? AND deleted = FALSE", memberID).Scan(&msgCount)
+	_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM tasks WHERE assignee_id = ?", memberID).Scan(&taskCount)
+	_ = wdb.DB.QueryRow("SELECT COALESCE(MAX(created_at), '') FROM messages WHERE sender_id = ?", memberID).Scan(&lastActive)
+
+	// Online status
+	isOnline := false
+	if h := s.hubs.Get(slug); h != nil {
+		for _, m := range h.OnlineMembers() {
+			if m["user_id"] == memberID {
+				isOnline = true
+				break
+			}
+		}
+	}
+
+	resp := memberDetailResp{
+		ID:           memberID,
+		DisplayName:  displayName,
+		Role:         role,
+		Title:        title,
+		Bio:          bio,
+		Goals:        goals,
+		Color:        color,
+		JoinedAt:     joinedAt,
+		Permissions:  permMap,
+		MessageCount: msgCount,
+		TaskCount:    taskCount,
+		LastActive:   lastActive,
+		IsOnline:     isOnline,
+	}
+
+	// If agent, include agent-specific fields
+	if role == "agent" {
+		var avatar, desc, backstory, model, triggerType, toolsJSON string
+		var isActive, knowledgeAccess, memoryAccess, canDelegate bool
+		var createdAt string
+		err = wdb.DB.QueryRow(
+			`SELECT COALESCE(avatar,''), COALESCE(description,''), COALESCE(backstory,''),
+			 COALESCE(model,''), COALESCE(trigger_type,'mention'), is_active,
+			 knowledge_access, memory_access, can_delegate, tools, created_at
+			 FROM agents WHERE id = ?`, memberID,
+		).Scan(&avatar, &desc, &backstory, &model, &triggerType, &isActive,
+			&knowledgeAccess, &memoryAccess, &canDelegate, &toolsJSON, &createdAt)
+		if err == nil {
+			var tools []any
+			json.Unmarshal([]byte(toolsJSON), &tools)
+			resp.Agent = &agentProfileResp{
+				Avatar:          avatar,
+				Description:     desc,
+				Backstory:       backstory,
+				Model:           model,
+				TriggerType:     triggerType,
+				IsActive:        isActive,
+				KnowledgeAccess: knowledgeAccess,
+				MemoryAccess:    memoryAccess,
+				CanDelegate:     canDelegate,
+				ToolCount:       len(tools),
+				CreatedAt:       createdAt,
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleKickMember removes a member from the workspace. Admin only.
@@ -230,4 +320,96 @@ func (s *Server) handleListRoles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// handleGetWorkspaceInfo returns workspace metadata, storage stats, and entity counts.
+func (s *Server) handleGetWorkspaceInfo(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	claims := auth.GetClaims(r)
+	if claims == nil || claims.WorkspaceSlug != slug {
+		writeError(w, http.StatusForbidden, "not a member")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	// Workspace metadata from global DB
+	var wsName, createdAt, createdBy string
+	_ = s.global.DB.QueryRow("SELECT name, COALESCE(created_at,''), COALESCE(created_by,'') FROM workspaces WHERE slug = ?", slug).Scan(&wsName, &createdAt, &createdBy)
+
+	// Resolve creator name
+	creatorName := ""
+	if createdBy != "" {
+		_ = wdb.DB.QueryRow("SELECT display_name FROM members WHERE id = ?", createdBy).Scan(&creatorName)
+	}
+
+	// Entity counts
+	counts := map[string]int{}
+	countQueries := map[string]string{
+		"members":    "SELECT COUNT(*) FROM members WHERE role NOT IN ('agent','brain')",
+		"agents":     "SELECT COUNT(*) FROM agents WHERE is_system = FALSE",
+		"channels":   "SELECT COUNT(*) FROM channels WHERE archived = FALSE",
+		"messages":   "SELECT COUNT(*) FROM messages WHERE deleted = FALSE",
+		"tasks":      "SELECT COUNT(*) FROM tasks",
+		"documents":  "SELECT COUNT(*) FROM documents",
+		"files":      "SELECT COUNT(*) FROM files",
+		"knowledge":  "SELECT COUNT(*) FROM brain_knowledge",
+		"memories":   "SELECT COUNT(*) FROM brain_memories",
+		"events":     "SELECT COUNT(*) FROM calendar_events",
+	}
+	for key, q := range countQueries {
+		var c int
+		_ = wdb.DB.QueryRow(q).Scan(&c)
+		counts[key] = c
+	}
+
+	// File storage size from DB
+	var filesSize int64
+	_ = wdb.DB.QueryRow("SELECT COALESCE(SUM(size), 0) FROM files").Scan(&filesSize)
+
+	// Disk usage (walk workspace dir)
+	wsDir := filepath.Join(s.cfg.DataDir, "workspaces", slug)
+	var diskBytes int64
+	_ = filepath.Walk(wsDir, func(_ string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			diskBytes += info.Size()
+		}
+		return nil
+	})
+
+	// Online count
+	onlineCount := 0
+	if h := s.hubs.Get(slug); h != nil {
+		onlineCount = len(h.OnlineMembers())
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"slug":         slug,
+		"name":         wsName,
+		"created_at":   createdAt,
+		"created_by":   creatorName,
+		"counts":       counts,
+		"files_bytes":  filesSize,
+		"disk_bytes":   diskBytes,
+		"online_count": onlineCount,
+		"disk_display": formatBytes(diskBytes),
+		"files_display": formatBytes(filesSize),
+	})
+}
+
+func formatBytes(b int64) string {
+	switch {
+	case b >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(b)/float64(1<<30))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(b)/float64(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(b)/float64(1<<10))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
 }

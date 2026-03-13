@@ -27,3 +27,11 @@ export function markdownToHtml(md: string): string {
 	if (!md || !md.trim()) return '';
 	return marked.parse(md, { async: false }) as string;
 }
+
+// Safe version: escapes raw HTML before parsing markdown, preventing XSS.
+// Also enables breaks (newlines → <br>) for chat messages.
+export function safeMarkdownToHtml(md: string): string {
+	if (!md || !md.trim()) return '';
+	const escaped = md.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+	return marked.parse(escaped, { async: false, breaks: true }) as string;
+}

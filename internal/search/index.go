@@ -4,9 +4,12 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
+	"time"
 
 	"github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/mapping"
@@ -16,7 +19,7 @@ import (
 // SearchDoc represents a document to index.
 type SearchDoc struct {
 	ID        string `json:"id"`
-	Type      string `json:"type"` // "message", "document", "task", "knowledge"
+	Type      string `json:"type"` // "message", "document", "task", "knowledge", "member", "channel"
 	Title     string `json:"title,omitempty"`
 	Content   string `json:"content"`
 	Sender    string `json:"sender,omitempty"`
@@ -27,25 +30,29 @@ type SearchDoc struct {
 
 // SearchResult is returned from search queries.
 type SearchResult struct {
-	ID      string  `json:"id"`
-	Type    string  `json:"type"`
-	Title   string  `json:"title,omitempty"`
-	Content string  `json:"content"`
-	Score   float64 `json:"score"`
+	ID        string  `json:"id"`
+	Type      string  `json:"type"`
+	Title     string  `json:"title,omitempty"`
+	Content   string  `json:"content"`
+	Sender    string  `json:"sender,omitempty"`
+	Highlight string  `json:"highlight,omitempty"`
+	Score     float64 `json:"score"`
 }
 
 // IndexManager manages per-workspace bleve indexes.
 type IndexManager struct {
-	dataDir string
-	mu      sync.RWMutex
-	indexes map[string]bleve.Index
+	dataDir    string
+	mu         sync.RWMutex
+	indexes    map[string]bleve.Index
+	newIndexes map[string]bool // tracks newly created indexes
 }
 
 // NewIndexManager creates a new IndexManager.
 func NewIndexManager(dataDir string) *IndexManager {
 	return &IndexManager{
-		dataDir: dataDir,
-		indexes: make(map[string]bleve.Index),
+		dataDir:    dataDir,
+		indexes:    make(map[string]bleve.Index),
+		newIndexes: make(map[string]bool),
 	}
 }
 
@@ -77,6 +84,7 @@ func (m *IndexManager) Open(slug string) (bleve.Index, error) {
 		if err != nil {
 			return nil, fmt.Errorf("creating index: %w", err)
 		}
+		m.newIndexes[slug] = true
 		log.Printf("[search:%s] created new index", slug)
 	} else {
 		idx, err = bleve.Open(indexPath)
@@ -88,12 +96,33 @@ func (m *IndexManager) Open(slug string) (bleve.Index, error) {
 			if err != nil {
 				return nil, fmt.Errorf("recreating index: %w", err)
 			}
+			m.newIndexes[slug] = true
 			log.Printf("[search:%s] recreated corrupted index", slug)
 		}
 	}
 
 	m.indexes[slug] = idx
 	return idx, nil
+}
+
+// NeedsReindex returns true if the workspace index is empty or was just created.
+func (m *IndexManager) NeedsReindex(slug string) bool {
+	m.mu.RLock()
+	if m.newIndexes[slug] {
+		m.mu.RUnlock()
+		return true
+	}
+	m.mu.RUnlock()
+
+	idx, err := m.Open(slug)
+	if err != nil {
+		return true
+	}
+	count, err := idx.DocCount()
+	if err != nil {
+		return true
+	}
+	return count == 0
 }
 
 func buildMapping() *mapping.IndexMappingImpl {
@@ -140,7 +169,12 @@ func (m *IndexManager) Search(slug, query string, types []string, limit int) ([]
 
 	q := bleve.NewQueryStringQuery(query)
 	req := bleve.NewSearchRequestOptions(q, limit, 0, false)
-	req.Fields = []string{"type", "title", "content", "sender"}
+	req.Fields = []string{"type", "title", "content", "sender", "created_at"}
+
+	// Enable highlighting
+	req.Highlight = bleve.NewHighlightWithStyle("html")
+	req.Highlight.AddField("content")
+	req.Highlight.AddField("title")
 
 	// Filter by type if specified
 	if len(types) > 0 {
@@ -153,7 +187,10 @@ func (m *IndexManager) Search(slug, query string, types []string, limit int) ([]
 		typeFilter := bleve.NewDisjunctionQuery(typeQueries...)
 		combined := bleve.NewConjunctionQuery(q, typeFilter)
 		req = bleve.NewSearchRequestOptions(combined, limit, 0, false)
-		req.Fields = []string{"type", "title", "content", "sender"}
+		req.Fields = []string{"type", "title", "content", "sender", "created_at"}
+		req.Highlight = bleve.NewHighlightWithStyle("html")
+		req.Highlight.AddField("content")
+		req.Highlight.AddField("title")
 	}
 
 	res, err := idx.Search(req)
@@ -173,17 +210,52 @@ func (m *IndexManager) Search(slug, query string, types []string, limit int) ([]
 		if v, ok := hit.Fields["title"].(string); ok {
 			r.Title = v
 		}
+		if v, ok := hit.Fields["sender"].(string); ok {
+			r.Sender = v
+		}
+
+		// Use highlighted fragments if available, otherwise truncate content
+		if frags, ok := hit.Fragments["content"]; ok && len(frags) > 0 {
+			r.Highlight = frags[0]
+		}
 		if v, ok := hit.Fields["content"].(string); ok {
-			// Truncate content for results
 			if len(v) > 200 {
 				v = v[:197] + "..."
 			}
 			r.Content = v
 		}
+
+		// Apply recency bias
+		if createdAt, ok := hit.Fields["created_at"].(string); ok && createdAt != "" {
+			r.Score = applyRecencyBias(r.Score, createdAt)
+		}
+
 		results = append(results, r)
 	}
 
+	// Re-sort by adjusted score
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+
 	return results, nil
+}
+
+// applyRecencyBias multiplies score by a decay factor based on age.
+// 1.0 for today, 0.5 at 30 days, asymptotic to 0.3.
+func applyRecencyBias(score float64, createdAt string) float64 {
+	t, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		return score
+	}
+	ageDays := time.Since(t).Hours() / 24
+	if ageDays < 0 {
+		ageDays = 0
+	}
+	// Exponential decay: 0.3 + 0.7 * e^(-ageDays/43.3)
+	// At 0 days: 1.0, at 30 days: ~0.65, at 90 days: ~0.39
+	decay := 0.3 + 0.7*math.Exp(-ageDays/43.3)
+	return score * decay
 }
 
 // Reindex backfills the index from SQLite. Runs synchronously — caller should use `go`.
@@ -254,6 +326,41 @@ func (m *IndexManager) Reindex(slug string, db *sql.DB) {
 			rows.Scan(&id, &title, &content)
 			batch.Index(id, SearchDoc{
 				ID: id, Type: "knowledge", Title: title, Content: content,
+			})
+			count++
+		}
+		rows.Close()
+	}
+
+	// Members
+	rows, err = db.Query(`SELECT id, display_name, role, COALESCE(title,''), COALESCE(bio,'') FROM members`)
+	if err == nil {
+		for rows.Next() {
+			var id, displayName, role, title, bio string
+			rows.Scan(&id, &displayName, &role, &title, &bio)
+			content := role
+			if title != "" {
+				content += " " + title
+			}
+			if bio != "" {
+				content += " " + bio
+			}
+			batch.Index(id, SearchDoc{
+				ID: id, Type: "member", Title: displayName, Content: content,
+			})
+			count++
+		}
+		rows.Close()
+	}
+
+	// Channels
+	rows, err = db.Query(`SELECT id, name, COALESCE(topic,'') FROM channels WHERE archived = FALSE`)
+	if err == nil {
+		for rows.Next() {
+			var id, name, topic string
+			rows.Scan(&id, &name, &topic)
+			batch.Index(id, SearchDoc{
+				ID: id, Type: "channel", Title: name, Content: topic,
 			})
 			count++
 		}

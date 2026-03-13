@@ -2,7 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import './editor.css';
 
-	let { onsave, placeholder = 'Start writing...' }: { onsave?: (html: string) => void; placeholder?: string } = $props();
+	let { onsave, placeholder = 'Start writing...', initialContent = '' }: { onsave?: (html: string) => void; placeholder?: string; initialContent?: string } = $props();
 
 	let editorEl: HTMLElement;
 	let editor: any = null;
@@ -51,7 +51,7 @@
 				// Bubble menu plugin
 				Extension_BubbleMenu(tippy, bubbleEl),
 			],
-			content: '',
+			content: initialContent || '',
 			onUpdate: ({ editor: e }) => {
 				updateMarks(e);
 				if (onsave) {

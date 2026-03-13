@@ -12,7 +12,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /app/web/build web/build
-RUN CGO_ENABLED=1 go build -o nexus ./cmd/nexus/
+RUN CGO_ENABLED=1 go build -tags "sqlite_fts5" -o nexus ./cmd/nexus/
 
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates nodejs npm python3 uv

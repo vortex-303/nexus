@@ -107,6 +107,11 @@ func (s HeartbeatSchedule) ShouldRun(now time.Time) bool {
 }
 
 func parseInt(s string) int {
+	return ParseIntSafe(s)
+}
+
+// ParseIntSafe parses an integer from a string, returning 0 on failure.
+func ParseIntSafe(s string) int {
 	n := 0
 	for _, c := range s {
 		if c >= '0' && c <= '9' {

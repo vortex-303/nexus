@@ -12,15 +12,26 @@
 	let query = $state('');
 	let results = $state<any[]>([]);
 	let loading = $state(false);
+	let activeFilter = $state('');
 	let debounceTimer: ReturnType<typeof setTimeout>;
 	let inputEl: HTMLInputElement;
 	let selectedIndex = $state(0);
+
+	const filters = [
+		{ key: '', label: 'All' },
+		{ key: 'message', label: 'Messages' },
+		{ key: 'task', label: 'Tasks' },
+		{ key: 'document', label: 'Notes' },
+		{ key: 'knowledge', label: 'Knowledge' },
+		{ key: 'member', label: 'Members' },
+		{ key: 'channel', label: 'Channels' },
+	];
 
 	$effect(() => {
 		inputEl?.focus();
 	});
 
-	function handleInput() {
+	function doSearch() {
 		clearTimeout(debounceTimer);
 		if (!query.trim()) {
 			results = [];
@@ -29,7 +40,7 @@
 		debounceTimer = setTimeout(async () => {
 			loading = true;
 			try {
-				const data = await searchWorkspace(slug, query);
+				const data = await searchWorkspace(slug, query, activeFilter || undefined);
 				results = data.results || [];
 				selectedIndex = 0;
 			} catch {
@@ -37,6 +48,17 @@
 			}
 			loading = false;
 		}, 300);
+	}
+
+	function handleInput() {
+		doSearch();
+	}
+
+	function setFilter(key: string) {
+		activeFilter = key;
+		if (query.trim()) {
+			doSearch();
+		}
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
@@ -67,6 +89,8 @@
 			case 'document': return '\u{1F4DD}';
 			case 'task': return '\u{2705}';
 			case 'knowledge': return '\u{1F4DA}';
+			case 'member': return '\u{1F464}';
+			case 'channel': return '#';
 			default: return '\u{1F50D}';
 		}
 	}
@@ -77,6 +101,8 @@
 			case 'document': return 'Note';
 			case 'task': return 'Task';
 			case 'knowledge': return 'Knowledge';
+			case 'member': return 'Member';
+			case 'channel': return 'Channel';
 			default: return type;
 		}
 	}
@@ -99,6 +125,16 @@
 			<kbd class="search-kbd">ESC</kbd>
 		</div>
 
+		<div class="filter-row">
+			{#each filters as f}
+				<button
+					class="filter-pill"
+					class:active={activeFilter === f.key}
+					onclick={() => setFilter(f.key)}
+				>{f.label}</button>
+			{/each}
+		</div>
+
 		{#if loading}
 			<div class="search-status">Searching...</div>
 		{:else if query && results.length === 0}
@@ -117,7 +153,14 @@
 							{#if result.title}
 								<div class="result-title">{result.title}</div>
 							{/if}
-							<div class="result-content">{result.content}</div>
+							{#if result.sender && result.type === 'message'}
+								<div class="result-sender">{result.sender}</div>
+							{/if}
+							{#if result.highlight}
+								<div class="result-content">{@html result.highlight}</div>
+							{:else}
+								<div class="result-content">{result.content}</div>
+							{/if}
 						</div>
 						<span class="result-type">{typeLabel(result.type)}</span>
 					</button>
@@ -189,6 +232,37 @@
 		color: var(--text-tertiary);
 	}
 
+	.filter-row {
+		display: flex;
+		gap: 4px;
+		padding: 8px 16px;
+		border-bottom: 1px solid var(--border-subtle);
+		overflow-x: auto;
+	}
+
+	.filter-pill {
+		padding: 4px 10px;
+		border-radius: 12px;
+		border: 1px solid var(--border-subtle);
+		background: none;
+		color: var(--text-secondary);
+		font-size: 12px;
+		font-family: inherit;
+		cursor: pointer;
+		white-space: nowrap;
+		transition: all 0.15s;
+	}
+
+	.filter-pill:hover {
+		background: var(--bg-overlay);
+	}
+
+	.filter-pill.active {
+		background: var(--accent);
+		color: var(--bg-base);
+		border-color: var(--accent);
+	}
+
 	.search-status {
 		padding: 24px;
 		text-align: center;
@@ -246,6 +320,12 @@
 		text-overflow: ellipsis;
 	}
 
+	.result-sender {
+		font-size: 11px;
+		color: var(--text-tertiary);
+		margin-bottom: 2px;
+	}
+
 	.result-content {
 		color: var(--text-secondary);
 		font-size: 12px;
@@ -253,6 +333,13 @@
 		-webkit-line-clamp: 2;
 		-webkit-box-orient: vertical;
 		overflow: hidden;
+	}
+
+	.result-content :global(mark) {
+		background: rgba(255, 165, 0, 0.3);
+		color: var(--text-primary);
+		border-radius: 2px;
+		padding: 0 1px;
 	}
 
 	.result-type {

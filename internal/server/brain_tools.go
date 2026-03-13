@@ -59,7 +59,7 @@ func (s *Server) executeToolInner(slug, channelID, senderMemberID string, call b
 	case "recall_memory":
 		return s.toolRecallMemory(slug, call.Function.Arguments)
 	case "save_memory":
-		return s.toolSaveMemory(slug, call.Function.Arguments)
+		return s.toolSaveMemory(slug, channelID, call.Function.Arguments)
 	case "generate_image":
 		return s.toolGenerateImage(slug, channelID, call.Function.Arguments)
 	case "create_calendar_event":
@@ -76,6 +76,8 @@ func (s *Server) executeToolInner(slug, channelID, senderMemberID string, call b
 		return s.toolSendTelegram(slug, channelID, call.Function.Arguments)
 	case "web_search":
 		return s.toolWebSearch(slug, call.Function.Arguments)
+	case "search_x":
+		return s.toolSearchX(slug, call.Function.Arguments)
 	case "fetch_url":
 		return toolFetchURL(call.Function.Arguments)
 	default:
@@ -461,8 +463,9 @@ func (s *Server) resolveMemberIDByName(slug, name string) string {
 // toolRecallMemory searches workspace memory for specific facts, decisions, or commitments.
 func (s *Server) toolRecallMemory(slug, argsJSON string) string {
 	var args struct {
-		Query string `json:"query"`
-		Type  string `json:"type"`
+		Query             string `json:"query"`
+		Type              string `json:"type"`
+		IncludeSuperseded bool   `json:"include_superseded"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "Error parsing arguments"
@@ -484,17 +487,36 @@ func (s *Server) toolRecallMemory(slug, argsJSON string) string {
 	var lines []string
 	lines = append(lines, fmt.Sprintf("Found %d memories:", len(memories)))
 	for _, m := range memories {
-		lines = append(lines, fmt.Sprintf("- [%s] %s (importance: %.1f)", m.Type, m.Content, m.Importance))
+		if !args.IncludeSuperseded && (m.SupersededBy != "" || m.ValidUntil != "") {
+			continue
+		}
+		summary := m.Summary
+		if summary == "" {
+			summary = m.Content
+		}
+		line := fmt.Sprintf("- [%s] %s (confidence: %.1f)", m.Type, summary, m.Confidence)
+		if m.Participants != "" {
+			line += fmt.Sprintf(" — %s", m.Participants)
+		}
+		if t, err := time.Parse(time.RFC3339, m.CreatedAt); err == nil {
+			line += fmt.Sprintf(" (%s)", t.Format("Jan 2, 2006"))
+		}
+		if m.SupersededBy != "" {
+			line += " [SUPERSEDED]"
+		}
+		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
 }
 
 // toolSaveMemory saves an important fact, decision, or commitment to workspace memory.
-func (s *Server) toolSaveMemory(slug, argsJSON string) string {
+func (s *Server) toolSaveMemory(slug, channelID, argsJSON string) string {
 	var args struct {
-		Content    string  `json:"content"`
-		Type       string  `json:"type"`
-		Importance float64 `json:"importance"`
+		Content      string  `json:"content"`
+		Type         string  `json:"type"`
+		Importance   float64 `json:"importance"`
+		Participants string  `json:"participants"`
+		Metadata     string  `json:"metadata"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "Error parsing arguments"
@@ -503,7 +525,10 @@ func (s *Server) toolSaveMemory(slug, argsJSON string) string {
 		return "Error: content is required"
 	}
 	if args.Type == "" {
-		args.Type = brain.MemoryTypeFact
+		args.Type = brain.MemoryTypeDecision
+	}
+	if args.Importance <= 0 {
+		args.Importance = 0.8
 	}
 
 	wdb, err := s.ws.Open(slug)
@@ -511,11 +536,11 @@ func (s *Server) toolSaveMemory(slug, argsJSON string) string {
 		return "Error opening workspace"
 	}
 
-	if brain.MemoryExists(wdb.DB, args.Content) {
+	if brain.MemorySimilarExists(wdb.DB, args.Type, args.Content) {
 		return "Memory already exists: " + args.Content
 	}
 
-	if err := brain.SaveMemory(wdb.DB, id.New(), args.Type, args.Content, "agent", "", "", args.Importance); err != nil {
+	if err := brain.SaveMemoryFull(wdb.DB, id.New(), args.Type, args.Content, "agent", channelID, "", args.Importance, "", 0.8, args.Participants); err != nil {
 		return "Error saving memory: " + err.Error()
 	}
 
@@ -533,7 +558,8 @@ func findToolDef(tools []brain.ToolDef, name string) *brain.ToolDef {
 }
 
 // handleBrainMentionWithTools processes a @Brain mention with tool support.
-func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderName, content string) {
+// modelOverride, if non-empty, replaces the workspace default model.
+func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderName, content string, messageTime time.Time, modelOverride ...string) {
 	go func() {
 		// Acquire semaphore to limit concurrent brain goroutines
 		select {
@@ -543,6 +569,11 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Msg("too many concurrent agents, queuing")
 			s.agentSem <- struct{}{} // block until slot available
 			defer func() { <-s.agentSem }()
+		}
+		// Skip stale messages that waited too long on the semaphore
+		if time.Since(messageTime) > maxMessageAge {
+			logger.WithCategory(logger.CatBrain).Info().Dur("age", time.Since(messageTime)).Msg("skipping stale message")
+			return
 		}
 		metrics.AgentExecutionsTotal.WithLabelValues("Brain", "started").Inc()
 
@@ -570,36 +601,29 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 			}
 		}
 
-		// Try zero-LLM response first (works without API key)
-		if s.getBrainSetting(slug, "standard_chat_enabled", "true") != "false" {
-			if wdb, err := s.ws.Open(slug); err == nil {
-				if response, handled := s.tryZeroLLMResponse(slug, content, wdb.DB, senderName); handled {
-					s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "thinking", "")
-					s.sendBrainMessage(slug, channelID, parentID, response)
-					s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "")
-					brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
-						truncate(content, 200), truncate(response, 500), "zero-llm", nil)
-					return
-				}
-			}
-		}
+		// Standard chat pre-filter disabled — all messages go to LLM
+		// TODO: re-enable when standard chat patterns are production-ready
+		// if s.getBrainSetting(slug, "standard_chat_enabled", "true") != "false" {
+		// 	if wdb, err := s.ws.Open(slug); err == nil {
+		// 		if response, handled := s.tryZeroLLMResponse(slug, content, wdb.DB, senderName); handled {
+		// 			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "thinking", "")
+		// 			s.sendBrainMessage(slug, channelID, parentID, response)
+		// 			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "")
+		// 			brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
+		// 				truncate(content, 200), truncate(response, 500), "zero-llm", nil)
+		// 			return
+		// 		}
+		// 	}
+		// }
 
-		// Check if LLM is disabled
-		if s.getBrainSetting(slug, "llm_enabled", "true") == "false" {
-			s.sendBrainMessage(slug, channelID, parentID,
-				"LLM is disabled — I can only handle standard chat right now. Try things like:\n"+
-					"- **list tasks** / **list documents** / **list events**\n"+
-					"- **my tasks** / **overdue tasks** / **urgent tasks**\n"+
-					"- **upcoming events** / **tasks due today**\n"+
-					"- **search for** *something*\n"+
-					"- **how many** tasks/messages/members\n"+
-					"- **workspace stats**\n\n"+
-					"Enable LLM in Brain Settings for full AI responses.")
-			return
-		}
+		// LLM-disabled gate removed — makeBrainClient handles xAI/OpenRouter routing,
+		// and the apiKey+xaiKey check below handles the no-key case.
 
 		apiKey, model := s.getBrainSettings(slug)
-		if apiKey == "" {
+		if len(modelOverride) > 0 && modelOverride[0] != "" {
+			model = modelOverride[0]
+		}
+		if apiKey == "" && s.getXAIKey(slug) == "" {
 			s.sendBrainMessage(slug, channelID, parentID,
 				"I can answer search and stats queries without an API key. Try: \"search for X\", \"how many messages\", \"who is online\", \"list channels\". For general questions, configure an API key in Settings.")
 			return
@@ -621,6 +645,11 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 		if err != nil {
 			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("workspace error")
 			return
+		}
+
+		// Inject North Star context
+		if nsCtx := s.buildNorthStarContext(slug); nsCtx != "" {
+			systemPrompt += "\n\n---\n\n" + nsCtx
 		}
 
 		// Append workspace snapshot
@@ -683,17 +712,17 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 		// Resolve free-auto virtual model
 		resolvedModel, fallbacks := s.resolveFreeAuto(model, slug)
 
-		client := brain.NewClient(apiKey, resolvedModel)
-		client.FreeModelFallbacks = fallbacks
+		client := s.makeBrainClient(slug, apiKey, resolvedModel, fallbacks)
 
 		// First call: with tools (built-in + MCP)
 		allTools := s.getAllTools(slug)
-		responseContent, toolCalls, err := client.CompleteWithTools(systemPrompt, messages, allTools)
+		responseContent, toolCalls, usage, err := client.CompleteWithTools(systemPrompt, messages, allTools)
 		if err != nil {
 			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("LLM error")
 			s.sendBrainMessage(slug, channelID, parentID, "Sorry, I encountered an error. Check that the API key is configured correctly.")
 			return
 		}
+		s.trackUsage(slug, usage, resolvedModel, "tools", channelID, senderName)
 
 		// If no tool calls, just send the text response
 		if len(toolCalls) == 0 {
@@ -752,7 +781,7 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 		}
 
 		// Second call: get final response incorporating tool results
-		finalResponse, err := client.Complete(systemPrompt, followUp)
+		finalResponse, usage2, err := client.Complete(systemPrompt, followUp)
 		if err != nil {
 			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("follow-up LLM error")
 			// Fall back to the initial response if any
@@ -761,6 +790,7 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 			}
 			return
 		}
+		s.trackUsage(slug, usage2, resolvedModel, "tools", channelID, senderName)
 
 		finalResponse = strings.TrimSpace(finalResponse)
 		// Append any image markdown that the LLM may have omitted
@@ -1000,13 +1030,14 @@ func (s *Server) toolGenerateImageForAgent(slug, channelID string, agent *Agent,
 			userMsg += "\n\n## Prompt Engineering Playbook (FOLLOW THIS STRUCTURE)" + skillPlaybook
 		}
 		userMsg += "\n\nCraft the image generation prompt following the structured formula above. MUST include headline text and CTA text to render on the image:"
-		result, err := client.Complete(PromptEnrichmentSystemPrompt, []brain.Message{
+		result, enrichUsage, err := client.Complete(PromptEnrichmentSystemPrompt, []brain.Message{
 			{Role: "user", Content: userMsg},
 		})
 		if err != nil {
 			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("prompt enrichment failed, using raw prompt")
 		} else {
 			enrichedPrompt = strings.TrimSpace(result)
+			s.trackUsage(slug, enrichUsage, enrichModel, "image", channelID, "")
 			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("prompt", truncate(enrichedPrompt, 200)).Msg("enriched prompt")
 		}
 	}
@@ -1221,6 +1252,56 @@ func (s *Server) toolWebSearch(slug, argsJSON string) string {
 		log.Warn().Msg("web_search: all providers failed")
 	}
 	return result
+}
+
+func (s *Server) toolSearchX(slug, argsJSON string) string {
+	log := logger.WithCategory(logger.CatBrain)
+	var args struct {
+		Query    string   `json:"query"`
+		FromDate string   `json:"from_date"`
+		ToDate   string   `json:"to_date"`
+		XHandles []string `json:"x_handles"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "Error parsing arguments: " + err.Error()
+	}
+	if args.Query == "" {
+		return "Error: query is required"
+	}
+
+	xaiKey := s.getXAIKey(slug)
+	if xaiKey == "" {
+		return "Error: xAI API key is not configured. Add it in Brain settings."
+	}
+
+	// x_search requires grok-4 family — override workspace model
+	model := "grok-4"
+
+	tool := brain.XSearchTool{
+		Type:            "x_search",
+		AllowedXHandles: args.XHandles,
+		FromDate:        args.FromDate,
+		ToDate:          args.ToDate,
+	}
+
+	client := brain.NewXAIClient(xaiKey, model)
+	log.Info().Str("query", args.Query).Str("model", model).Msg("search_x starting")
+
+	text, citations, err := client.CompleteXSearch(args.Query, tool)
+	if err != nil {
+		log.Error().Err(err).Msg("search_x failed")
+		return "Error searching X: " + err.Error()
+	}
+
+	var sb strings.Builder
+	sb.WriteString(text)
+	if len(citations) > 0 {
+		sb.WriteString("\n\n---\n**Sources:**\n")
+		for i, url := range citations {
+			fmt.Fprintf(&sb, "%d. %s\n", i+1, url)
+		}
+	}
+	return sb.String()
 }
 
 // searchBrave uses the Brave Search API. Free tier: 2000 queries/month.
@@ -1592,4 +1673,10 @@ func (s *Server) handleExecuteTool(w http.ResponseWriter, r *http.Request) {
 	result := s.executeTool(slug, channelID, "", call)
 
 	writeJSON(w, http.StatusOK, map[string]string{"result": result})
+}
+
+func (s *Server) handleGetBrainTools(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	tools := s.getAllTools(slug)
+	writeJSON(w, http.StatusOK, map[string]any{"tools": tools})
 }

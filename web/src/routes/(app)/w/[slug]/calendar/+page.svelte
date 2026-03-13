@@ -2,19 +2,27 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount, onDestroy } from 'svelte';
-	import { listCalendarEvents, createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, getCurrentUser } from '$lib/api';
+	import { listCalendarEvents, createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, getEventOutcome, clearPastAgentEvents, getCurrentUser, getWorkspaceModels, listChannels } from '$lib/api';
 	import { connect, disconnect, onMessage } from '$lib/ws';
+	import { members } from '$lib/stores/workspace';
 
 	let slug = $derived(page.params.slug);
 	let currentUser = $state(getCurrentUser());
 
 	type ViewMode = 'month' | 'week' | 'agenda';
 	let viewMode = $state<ViewMode>('month');
+	let calScope = $state<'team' | 'my'>('team');
 	let events = $state<any[]>([]);
 	let currentDate = $state(new Date());
 	let showEventModal = $state(false);
 	let editingEvent = $state<any>(null);
 	let selectedSlot = $state<{ start: string; end: string } | null>(null);
+	let showAgentModal = $state(false);
+	let showTray = $state(false);
+	let showOutcome = $state(false);
+	let outcomeData = $state<any>(null);
+	let outcomeLoading = $state(false);
+	let outcomeEvent = $state<any>(null);
 
 	// Modal form state
 	let formTitle = $state('');
@@ -27,6 +35,21 @@
 	let formAllDay = $state(false);
 	let formColor = $state('');
 	let formRecurrence = $state('');
+	let formAgentId = $state('');
+	let formModel = $state('');
+	let formChannelId = $state('');
+	let workspaceModels = $state<any[]>([]);
+	let workspaceChannels = $state<any[]>([]);
+
+	let membersList: any[] = [];
+	const unsubMembers = members.subscribe(v => membersList = v);
+	// Filter to agents only (Brain has role 'agent')
+	let agentMembers = $derived(membersList.filter((m: any) => m.role === 'agent'));
+
+	// Agent event derivations
+	let agentEvents = $derived(events.filter(e => e.agent_id).sort((a, b) => a.start_time.localeCompare(b.start_time)));
+	let upcomingAgentEvents = $derived(agentEvents.filter(e => new Date(e.start_time) > now));
+	let pastAgentEvents = $derived(agentEvents.filter(e => new Date(e.start_time) <= now).reverse().slice(0, 10));
 
 	const COLORS = [
 		{ value: '', label: 'Default', hex: 'var(--accent)' },
@@ -189,14 +212,22 @@
 	// Event loading
 	async function loadEvents() {
 		try {
-			const data = await listCalendarEvents(slug, {
+			const filters: any = {
 				start: viewStart.toISOString(),
 				end: viewEnd.toISOString(),
-			});
+			};
+			if (calScope === 'my') filters.scope = 'my';
+			const data = await listCalendarEvents(slug, filters);
 			events = data.events || [];
 		} catch {
 			events = [];
 		}
+	}
+
+	function setCalScope(s: 'team' | 'my') {
+		calScope = s;
+		localStorage.setItem('nexus_cal_scope', s);
+		loadEvents();
 	}
 
 	$effect(() => {
@@ -212,17 +243,29 @@
 		}
 	}
 
-	onMount(() => {
+	onMount(async () => {
 		const saved = localStorage.getItem('nexus_cal_view');
 		if (saved === 'month' || saved === 'week' || saved === 'agenda') viewMode = saved;
+		const savedScope = localStorage.getItem('nexus_cal_scope');
+		if (savedScope === 'my' || savedScope === 'team') calScope = savedScope;
 		connect();
 		unsubWS = onMessage(handleWS);
 		nowTimer = setInterval(() => { now = new Date(); }, 30000);
+		try {
+			const res = await getWorkspaceModels(slug);
+			workspaceModels = res.models || [];
+		} catch {}
+		try {
+			const res = await listChannels(slug);
+			const allChannels = Array.isArray(res) ? res : res.channels || [];
+			workspaceChannels = allChannels.filter((c: any) => c.type === 'public' || c.type === 'group');
+		} catch {}
 	});
 
 	onDestroy(() => {
 		if (unsubWS) unsubWS();
 		if (nowTimer) clearInterval(nowTimer);
+		unsubMembers();
 		disconnect();
 	});
 
@@ -242,6 +285,9 @@
 		formAllDay = false;
 		formColor = '';
 		formRecurrence = '';
+		formAgentId = '';
+		formModel = '';
+		formChannelId = '';
 		showEventModal = true;
 	}
 
@@ -263,6 +309,9 @@
 		formAllDay = evt.all_day;
 		formColor = evt.color || '';
 		formRecurrence = evt.recurrence_rule || '';
+		formAgentId = evt.agent_id || '';
+		formModel = evt.model || '';
+		formChannelId = evt.channel_id || '';
 		showEventModal = true;
 	}
 
@@ -295,6 +344,9 @@
 					all_day: formAllDay,
 					color: formColor,
 					recurrence_rule: formRecurrence,
+					agent_id: formAgentId,
+					model: formAgentId ? formModel : '',
+					channel_id: formAgentId ? formChannelId : '',
 				});
 			} else {
 				await createCalendarEvent(slug, {
@@ -306,6 +358,9 @@
 					all_day: formAllDay,
 					color: formColor,
 					recurrence_rule: formRecurrence,
+					agent_id: formAgentId || undefined,
+					model: formAgentId ? formModel || undefined : undefined,
+					channel_id: formAgentId ? formChannelId || undefined : undefined,
 				});
 			}
 			showEventModal = false;
@@ -357,6 +412,114 @@
 		viewMode = mode;
 		localStorage.setItem('nexus_cal_view', mode);
 	}
+
+	// Agent tray helpers
+	function formatCountdown(startTime: string, ref: Date): string {
+		const diff = new Date(startTime).getTime() - ref.getTime();
+		if (diff < 60_000) return 'now';
+		const mins = Math.floor(diff / 60_000);
+		if (mins < 60) return `in ${mins}m`;
+		const hrs = Math.floor(mins / 60);
+		const remMins = mins % 60;
+		if (hrs < 24) return remMins > 0 ? `in ${hrs}h ${remMins}m` : `in ${hrs}h`;
+		const d = new Date(startTime);
+		return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+	}
+
+	function formatTimeAgo(startTime: string, ref: Date): string {
+		const diff = ref.getTime() - new Date(startTime).getTime();
+		if (diff < 60_000) return 'just now';
+		const mins = Math.floor(diff / 60_000);
+		if (mins < 60) return `${mins}m ago`;
+		const hrs = Math.floor(mins / 60);
+		if (hrs < 24) return `${hrs}h ago`;
+		const d = new Date(startTime);
+		return d.toLocaleDateString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+	}
+
+	function openAgentModal() {
+		editingEvent = null;
+		const n = new Date();
+		const startDate = new Date(n.getFullYear(), n.getMonth(), n.getDate(), n.getHours() + 1);
+		const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+		formTitle = '';
+		formDescription = '';
+		formLocation = '';
+		formStartDate = dateToISO(startDate);
+		formStartTime = pad(startDate.getHours()) + ':' + pad(startDate.getMinutes());
+		formEndDate = dateToISO(endDate);
+		formEndTime = pad(endDate.getHours()) + ':' + pad(endDate.getMinutes());
+		formAllDay = false;
+		formColor = '';
+		formRecurrence = '';
+		formAgentId = 'brain';
+		formModel = '';
+		formChannelId = workspaceChannels.length > 0 ? workspaceChannels[0].id : '';
+		showAgentModal = true;
+	}
+
+	async function saveAgentEvent() {
+		if (!formAgentId) return;
+		if (!formTitle.trim()) formTitle = 'Agent task';
+		const startTime = localToISO(formStartDate, formStartTime);
+		const endDate = formEndDate || formStartDate;
+		const endTime = localToISO(endDate, formEndTime);
+		try {
+			await createCalendarEvent(slug, {
+				title: formTitle,
+				description: formDescription,
+				start_time: startTime,
+				end_time: endTime,
+				agent_id: formAgentId,
+				model: formModel || undefined,
+				channel_id: formChannelId || undefined,
+			});
+			showAgentModal = false;
+			showTray = true;
+		} catch (err: any) {
+			alert(err.message || 'Failed to schedule agent');
+		}
+	}
+
+	async function clearAgentEvents(mode: 'past' | 'all' = 'past') {
+		const msg = mode === 'all' ? 'Clear ALL agent events (past + upcoming)?' : 'Clear past agent events?';
+		if (!confirm(msg)) return;
+		try {
+			await clearPastAgentEvents(slug, mode);
+			loadEvents();
+		} catch (err: any) {
+			alert(err.message || 'Failed to clear events');
+		}
+	}
+
+	async function openOutcome(evt: any) {
+		outcomeEvent = evt;
+		outcomeData = null;
+		outcomeLoading = true;
+		showOutcome = true;
+		try {
+			outcomeData = await getEventOutcome(slug, evt.id);
+		} catch {
+			outcomeData = { status: 'error', response: '' };
+		} finally {
+			outcomeLoading = false;
+		}
+	}
+
+	function handleTrayEventClick(evt: any) {
+		const isPast = new Date(evt.start_time) <= now;
+		if (isPast) {
+			openOutcome(evt);
+		} else {
+			openEditEvent(evt);
+		}
+	}
+
+	function agentName(agentId: string): string {
+		if (agentId === 'brain') return 'Brain';
+		const m = membersList.find((a: any) => a.id === agentId);
+		return m?.display_name || agentId;
+	}
 </script>
 
 <div class="calendar-page">
@@ -378,15 +541,30 @@
 			<span class="month-label">{monthLabel}</span>
 		</div>
 		<div class="cal-header-right">
+			<div class="scope-toggle">
+				<button class:active={calScope === 'team'} onclick={() => setCalScope('team')}>Team</button>
+				<button class:active={calScope === 'my'} onclick={() => setCalScope('my')}>My Calendar</button>
+			</div>
 			<div class="view-toggle">
 				<button class:active={viewMode === 'month'} onclick={() => switchView('month')}>Month</button>
 				<button class:active={viewMode === 'week'} onclick={() => switchView('week')}>Week</button>
 				<button class:active={viewMode === 'agenda'} onclick={() => switchView('agenda')}>Agenda</button>
 			</div>
 			<button class="new-event-btn" onclick={() => openNewEvent()}>+ Event</button>
+			<button class="agent-schedule-btn" onclick={openAgentModal}>
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M13 2L3 8.5L7 9.5L9 14L13 2Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+				Schedule Agent
+			</button>
+			<button class="tray-toggle-btn" onclick={() => showTray = !showTray} class:active={showTray}>
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+				{#if upcomingAgentEvents.length > 0}
+					<span class="tray-badge">{upcomingAgentEvents.length}</span>
+				{/if}
+			</button>
 		</div>
 	</header>
 
+	<div class="cal-content" style="position: relative; flex: 1; display: flex; overflow: hidden;">
 	{#if viewMode === 'month'}
 		<div class="month-grid">
 			<div class="month-header">
@@ -461,7 +639,7 @@
 						<button class="agenda-event" onclick={() => openEditEvent(evt)}>
 							<div class="agenda-color" style="background: {eventColor(evt)}"></div>
 							<div class="agenda-info">
-								<div class="agenda-title">{evt.title}</div>
+								<div class="agenda-title">{evt.title}{#if calScope === 'team' && evt.created_by_name}<span class="agenda-creator"> · {evt.created_by_name}</span>{/if}</div>
 								<div class="agenda-time">
 									{#if evt.all_day}
 										All day
@@ -471,6 +649,11 @@
 									{#if evt.location}<span class="agenda-loc"> · {evt.location}</span>{/if}
 								</div>
 							</div>
+							{#if evt.agent_id}
+								<span class="agent-badge" title="Agent: {evt.agent_id === 'brain' ? 'Brain' : evt.agent_id}">
+									<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="6" r="3" stroke="currentColor" stroke-width="1.2"/><path d="M3 14c0-2.8 2.2-5 5-5s5 2.2 5 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+								</span>
+							{/if}
 							{#if evt.recurrence_rule}
 								<svg class="recur-icon" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M11 4H3M11 4L9 2M11 4L9 6M3 10H11M3 10L5 8M3 10L5 12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
 							{/if}
@@ -480,7 +663,144 @@
 			{/each}
 		</div>
 	{/if}
+
+	<!-- Outgoing Tray -->
+	{#if showTray}
+		<div class="outgoing-tray">
+			<div class="tray-header">
+				<span class="tray-title">Outgoing</span>
+				{#if agentEvents.length > 0}
+					<button class="tray-clear-btn" onclick={() => clearAgentEvents('all')}>Clear all</button>
+				{/if}
+				<button class="modal-close" onclick={() => showTray = false}>&times;</button>
+			</div>
+
+			{#if upcomingAgentEvents.length === 0 && pastAgentEvents.length === 0}
+				<div class="tray-empty">
+					<p>No agent events scheduled</p>
+					<button class="agent-schedule-btn" onclick={openAgentModal}>Schedule Agent</button>
+				</div>
+			{/if}
+
+			{#if upcomingAgentEvents.length > 0}
+				<div class="tray-section">
+					<div class="tray-section-title">Upcoming</div>
+					{#each upcomingAgentEvents as evt}
+						<button class="tray-event" onclick={() => openEditEvent(evt)}>
+							<div class="tray-event-top">
+								<span class="tray-agent-badge">{agentName(evt.agent_id)}</span>
+								<span class="tray-countdown" class:urgent={new Date(evt.start_time).getTime() - now.getTime() < 3600_000}>{formatCountdown(evt.start_time, now)}</span>
+							</div>
+							<div class="tray-event-title">{evt.title}</div>
+							{#if evt.description}
+								<div class="tray-prompt">{evt.description.slice(0, 80)}{evt.description.length > 80 ? '...' : ''}</div>
+							{/if}
+							{#if evt.model}
+								<span class="tray-model-badge">{evt.model}</span>
+							{/if}
+						</button>
+					{/each}
+				</div>
+			{/if}
+
+			{#if pastAgentEvents.length > 0}
+				<div class="tray-section">
+					<div class="tray-section-title">Completed</div>
+					{#each pastAgentEvents as evt}
+						<button class="tray-event tray-event-past" onclick={() => handleTrayEventClick(evt)}>
+							<div class="tray-event-top">
+								<span class="tray-agent-badge">{agentName(evt.agent_id)}</span>
+								<span class="tray-time-ago">
+									{#if evt.executed_at}
+										<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M13.5 5.5L6.5 12.5L2.5 8.5" stroke="#10b981" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+									{:else}
+										<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="#ef4444" stroke-width="1.5" stroke-linecap="round"/></svg>
+									{/if}
+									{formatTimeAgo(evt.start_time, now)}
+								</span>
+							</div>
+							<div class="tray-event-title">{evt.title}</div>
+						</button>
+					{/each}
+				</div>
+			{/if}
+		</div>
+	{/if}
+	</div>
 </div>
+
+<!-- Agent Schedule Modal -->
+{#if showAgentModal}
+	<div class="modal-overlay" onclick={() => showAgentModal = false} role="dialog">
+		<div class="modal" onclick={(e) => e.stopPropagation()}>
+			<div class="modal-header">
+				<h2>Schedule Agent</h2>
+				<button class="modal-close" onclick={() => showAgentModal = false}>&times;</button>
+			</div>
+			<div class="modal-body">
+				<div class="form-group">
+					<label>Agent</label>
+					<select class="input" bind:value={formAgentId}>
+						<option value="brain">Brain</option>
+						{#each agentMembers.filter(a => a.id !== 'brain') as agent}
+							<option value={agent.id}>{agent.display_name}</option>
+						{/each}
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label>Prompt</label>
+					<textarea class="input textarea" placeholder="What should the agent do?" bind:value={formDescription} rows="4"></textarea>
+				</div>
+
+				<div class="form-group">
+					<label>Title</label>
+					<input class="input" type="text" placeholder="Short label (optional)" bind:value={formTitle} />
+				</div>
+
+				<div class="form-row">
+					<div class="form-group">
+						<label>Date</label>
+						<input class="input" type="date" bind:value={formStartDate} oninput={() => { formEndDate = formStartDate; }} />
+					</div>
+					<div class="form-group">
+						<label>Time</label>
+						<input class="input time-input" type="time" bind:value={formStartTime} oninput={() => {
+							const [h, m] = formStartTime.split(':').map(Number);
+							const end = new Date(2000, 0, 1, h + 1, m);
+							formEndTime = pad(end.getHours()) + ':' + pad(end.getMinutes());
+						}} />
+					</div>
+				</div>
+
+				<div class="form-group">
+					<label>Post to Channel</label>
+					<select class="input" bind:value={formChannelId}>
+						<option value="">Auto (first available)</option>
+						{#each workspaceChannels as ch}
+							<option value={ch.id}>#{ch.name}</option>
+						{/each}
+					</select>
+				</div>
+
+				<div class="form-group">
+					<label>Model Override</label>
+					<select class="input" bind:value={formModel}>
+						<option value="">Workspace default</option>
+						{#each workspaceModels as m}
+							<option value={m.id}>{m.display_name || m.id}</option>
+						{/each}
+					</select>
+				</div>
+			</div>
+			<div class="modal-footer">
+				<div class="spacer"></div>
+				<button class="btn btn-ghost" onclick={() => showAgentModal = false}>Cancel</button>
+				<button class="btn btn-primary" onclick={saveAgentEvent}>Create</button>
+			</div>
+		</div>
+	</div>
+{/if}
 
 <!-- Event Modal -->
 {#if showEventModal}
@@ -542,6 +862,36 @@
 						</div>
 					</div>
 				</div>
+
+				<div class="form-row">
+					<div class="form-group" style="flex:1">
+						<label>Assign to Agent</label>
+						<select class="input" bind:value={formAgentId}>
+							<option value="">None — regular event</option>
+							<option value="brain">Brain</option>
+							{#each agentMembers.filter(a => a.id !== 'brain') as agent}
+								<option value={agent.id}>{agent.display_name}</option>
+							{/each}
+						</select>
+						{#if formAgentId}
+							<span class="agent-hint">Agent will execute at event start time. Use Description as the prompt.</span>
+							<label style="margin-top:0.5rem">Post to Channel</label>
+							<select class="input" bind:value={formChannelId}>
+								<option value="">Auto (first available)</option>
+								{#each workspaceChannels as ch}
+									<option value={ch.id}>#{ch.name}</option>
+								{/each}
+							</select>
+							<label style="margin-top:0.5rem">Model Override</label>
+							<select class="input" bind:value={formModel}>
+								<option value="">Workspace default</option>
+								{#each workspaceModels as m}
+									<option value={m.id}>{m.display_name || m.id}</option>
+								{/each}
+							</select>
+						{/if}
+					</div>
+				</div>
 			</div>
 			<div class="modal-footer">
 				{#if editingEvent}
@@ -552,6 +902,93 @@
 				<button class="btn btn-primary" onclick={saveEvent} disabled={!formTitle.trim()}>
 					{editingEvent ? 'Save' : 'Create'}
 				</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+<!-- Outcome Modal -->
+{#if showOutcome}
+	<div class="modal-overlay" onclick={() => showOutcome = false} role="dialog">
+		<div class="modal outcome-modal" onclick={(e) => e.stopPropagation()}>
+			<div class="modal-header">
+				<div>
+					<h2>Agent task</h2>
+					{#if outcomeEvent}
+						<span class="outcome-subtitle">
+							{agentName(outcomeEvent.agent_id)}
+							{#if outcomeData?.channel_name} &middot; #{outcomeData.channel_name}{/if}
+							&middot; {formatTimeAgo(outcomeEvent.start_time, now)}
+						</span>
+					{/if}
+				</div>
+				<button class="modal-close" onclick={() => showOutcome = false}>&times;</button>
+			</div>
+			<div class="modal-body outcome-body">
+				{#if outcomeLoading}
+					<div class="outcome-loading">Loading...</div>
+				{:else if outcomeData}
+					<div class="outcome-section">
+						<div class="outcome-label">STATUS</div>
+						{#if outcomeData.status === 'executed'}
+							<div class="outcome-status outcome-status-ok">
+								<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13.5 5.5L6.5 12.5L2.5 8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+								Executed
+							</div>
+						{:else if outcomeData.status === 'missed'}
+							<div class="outcome-status outcome-status-missed">
+								<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+								Missed
+							</div>
+						{:else}
+							<div class="outcome-status outcome-status-pending">
+								<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.3"/><path d="M8 4.5V8L10.5 9.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+								Pending
+							</div>
+						{/if}
+					</div>
+
+					{#if outcomeData.prompt || outcomeEvent?.description}
+						<div class="outcome-section">
+							<div class="outcome-label">PROMPT</div>
+							<div class="outcome-text outcome-prompt-text">{outcomeData.prompt || outcomeEvent?.description}</div>
+						</div>
+					{/if}
+
+					{#if outcomeData.response}
+						<div class="outcome-section">
+							<div class="outcome-label">RESPONSE</div>
+							<div class="outcome-text">{outcomeData.response}</div>
+						</div>
+					{/if}
+
+					{#if outcomeData.tools_used?.length > 0}
+						<div class="outcome-section">
+							<div class="outcome-label">TOOLS USED</div>
+							<div class="outcome-tools">
+								{#each outcomeData.tools_used as tool}
+									<span class="outcome-tool-badge">{tool}</span>
+								{/each}
+							</div>
+						</div>
+					{/if}
+
+					{#if outcomeData.model}
+						<div class="outcome-section">
+							<div class="outcome-label">MODEL</div>
+							<div class="outcome-text outcome-model">{outcomeData.model}</div>
+						</div>
+					{/if}
+				{/if}
+			</div>
+			<div class="modal-footer">
+				{#if outcomeData?.channel_id}
+					<button class="btn btn-ghost" onclick={() => { showOutcome = false; goto(`/w/${slug}?channel=${outcomeData.channel_id}`); }}>Open in Channel</button>
+				{/if}
+				<div class="spacer"></div>
+				{#if outcomeEvent}
+					<button class="btn btn-ghost" onclick={() => { showOutcome = false; openEditEvent(outcomeEvent); }}>Edit Event</button>
+				{/if}
 			</div>
 		</div>
 	</div>
@@ -637,6 +1074,25 @@
 		align-items: center;
 		gap: 12px;
 	}
+
+	.scope-toggle {
+		display: flex;
+		border: 1px solid var(--border-default);
+		border-radius: 6px;
+		overflow: hidden;
+	}
+	.scope-toggle button {
+		background: none;
+		border: none;
+		color: var(--text-secondary);
+		padding: 4px 10px;
+		font-size: var(--text-xs);
+		cursor: pointer;
+		border-right: 1px solid var(--border-default);
+	}
+	.scope-toggle button:last-child { border-right: none; }
+	.scope-toggle button:hover { background: var(--bg-raised); }
+	.scope-toggle button.active { background: var(--accent); color: var(--text-inverse); }
 
 	.view-toggle {
 		display: flex;
@@ -945,6 +1401,22 @@
 		font-size: var(--text-base);
 		font-weight: 500;
 	}
+	.agenda-creator {
+		font-weight: 400;
+		color: var(--text-tertiary);
+		font-size: var(--text-sm);
+	}
+	.agent-hint {
+		display: block;
+		font-size: var(--text-xs);
+		color: var(--accent);
+		margin-top: 4px;
+	}
+	.agent-badge {
+		color: var(--accent);
+		display: flex;
+		align-items: center;
+	}
 
 	.agenda-time {
 		font-size: var(--text-sm);
@@ -1112,4 +1584,207 @@
 		background-position: right 8px center;
 		padding-right: 28px;
 	}
+
+	/* Agent Schedule Button */
+	.agent-schedule-btn {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		background: none;
+		border: 1px solid var(--accent);
+		color: var(--accent);
+		padding: 6px 14px;
+		border-radius: 6px;
+		font-size: var(--text-sm);
+		font-weight: 500;
+		cursor: pointer;
+	}
+	.agent-schedule-btn:hover {
+		background: var(--accent);
+		color: var(--text-inverse);
+	}
+
+	/* Tray Toggle */
+	.tray-toggle-btn {
+		position: relative;
+		background: none;
+		border: 1px solid var(--border-default);
+		color: var(--text-secondary);
+		padding: 6px 8px;
+		border-radius: 6px;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+	}
+	.tray-toggle-btn:hover, .tray-toggle-btn.active {
+		background: var(--bg-raised);
+		color: var(--text-primary);
+	}
+	.tray-badge {
+		position: absolute;
+		top: -6px;
+		right: -6px;
+		background: var(--accent);
+		color: var(--text-inverse);
+		font-size: 0.6rem;
+		font-weight: 700;
+		min-width: 16px;
+		height: 16px;
+		border-radius: 8px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0 4px;
+	}
+
+	/* Outgoing Tray */
+	.outgoing-tray {
+		position: absolute;
+		right: 0;
+		top: 0;
+		bottom: 0;
+		width: 360px;
+		max-width: 100%;
+		background: var(--bg-surface);
+		border-left: 1px solid var(--border-default);
+		z-index: 50;
+		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
+		animation: tray-slide-in 0.15s ease-out;
+	}
+	@keyframes tray-slide-in {
+		from { transform: translateX(100%); }
+		to { transform: translateX(0); }
+	}
+	.tray-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		padding: 12px 16px;
+		border-bottom: 1px solid var(--border-subtle);
+		flex-shrink: 0;
+	}
+	.tray-title {
+		font-size: var(--text-base);
+		font-weight: 600;
+	}
+	.tray-section {
+		padding: 8px 0;
+	}
+	.tray-section-title {
+		font-size: var(--text-xs);
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--text-tertiary);
+		padding: 4px 16px 8px;
+		font-weight: 600;
+	}
+	.tray-event {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 10px 16px;
+		border-left: 3px solid var(--accent);
+		margin: 0 12px 6px;
+		border-radius: 0 6px 6px 0;
+		background: none;
+		border-top: none;
+		border-right: none;
+		border-bottom: none;
+		border-left: 3px solid var(--accent);
+		cursor: pointer;
+		text-align: left;
+		width: calc(100% - 24px);
+		color: var(--text-primary);
+	}
+	.tray-event:hover {
+		background: var(--bg-raised);
+	}
+	.tray-event-past {
+		border-left-color: var(--text-tertiary);
+		opacity: 0.75;
+	}
+	.tray-event-top {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 8px;
+	}
+	.tray-event-title {
+		font-size: var(--text-sm);
+		font-weight: 500;
+	}
+	.tray-agent-badge {
+		font-size: var(--text-xs);
+		font-weight: 600;
+		color: var(--accent);
+		background: color-mix(in srgb, var(--accent) 12%, transparent);
+		padding: 2px 8px;
+		border-radius: 10px;
+	}
+	.tray-countdown {
+		font-size: var(--text-xs);
+		font-family: var(--font-mono, monospace);
+		color: var(--text-secondary);
+	}
+	.tray-countdown.urgent {
+		color: var(--accent);
+		font-weight: 600;
+	}
+	.tray-time-ago {
+		font-size: var(--text-xs);
+		color: var(--text-tertiary);
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+	.tray-time-ago svg {
+		color: #10b981;
+	}
+	.tray-prompt {
+		font-size: var(--text-xs);
+		color: var(--text-tertiary);
+		font-style: italic;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.tray-model-badge {
+		font-size: 0.6rem;
+		color: var(--text-tertiary);
+		background: var(--bg-raised);
+		padding: 1px 6px;
+		border-radius: 4px;
+		align-self: flex-start;
+	}
+	.tray-empty {
+		padding: 48px 16px;
+		text-align: center;
+		color: var(--text-tertiary);
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 12px;
+	}
+	.tray-empty p { margin: 0; }
+	.tray-clear-btn { background: none; border: 1px solid var(--border-subtle); color: var(--text-secondary); font-size: 11px; padding: 2px 8px; border-radius: 4px; cursor: pointer; margin-left: auto; }
+	.tray-clear-btn:hover { color: #ef4444; border-color: #ef4444; }
+
+	/* Outcome Modal */
+	.outcome-modal { max-width: 520px; }
+	.outcome-subtitle { font-size: var(--text-xs); color: var(--text-secondary); }
+	.outcome-body { display: flex; flex-direction: column; gap: 16px; }
+	.outcome-loading { text-align: center; color: var(--text-secondary); padding: 2rem 0; }
+	.outcome-section { display: flex; flex-direction: column; gap: 4px; }
+	.outcome-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); }
+	.outcome-status { display: flex; align-items: center; gap: 6px; font-size: var(--text-sm); font-weight: 500; }
+	.outcome-status-ok { color: #10b981; }
+	.outcome-status-missed { color: #ef4444; }
+	.outcome-status-pending { color: #f59e0b; }
+	.outcome-text { font-size: var(--text-sm); color: var(--text-primary); white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+	.outcome-prompt-text { background: var(--bg-raised); padding: 8px 10px; border-radius: 6px; border-left: 3px solid var(--accent); }
+	.outcome-tools { display: flex; flex-wrap: wrap; gap: 4px; }
+	.outcome-tool-badge { font-size: 11px; background: var(--bg-raised); color: var(--text-secondary); padding: 2px 8px; border-radius: 4px; font-family: monospace; }
+	.outcome-model { font-family: monospace; font-size: 12px; color: var(--text-secondary); }
 </style>

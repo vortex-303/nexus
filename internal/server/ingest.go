@@ -50,7 +50,13 @@ func (s *Server) ingestExternalMessage(slug, channelID, senderID, senderName, co
 	}), "")
 
 	// Track for memory extraction
-	s.trackMessageAndMaybeExtract(slug, channelID)
+	s.trackMessageAndMaybeExtract(slug, channelID, msgID, content, senderName)
+
+	s.onPulse(slug, Pulse{
+		Type: "integration.received", ActorID: senderID, ActorName: senderName,
+		ChannelID: channelID, EntityID: msgID, Source: source,
+		Summary: source + " received in channel",
+	})
 
 	// Autonomy check
 	switch autonomy {
@@ -58,29 +64,76 @@ func (s *Server) ingestExternalMessage(slug, channelID, senderID, senderName, co
 		return
 	case "draft":
 		// Brain responds in channel only — no external reply
-		s.handleBrainMentionWithTools(slug, channelID, "", senderName, content)
+		s.handleBrainMentionWithTools(slug, channelID, "", senderName, content, time.Now())
 	case "autonomous":
 		// Brain responds + calls replyFn to send back to external source
 		s.handleBrainMentionWithReply(slug, channelID, senderName, content, replyFn)
 	default:
 		// Default to draft
-		s.handleBrainMentionWithTools(slug, channelID, "", senderName, content)
+		s.handleBrainMentionWithTools(slug, channelID, "", senderName, content, time.Now())
 	}
 }
 
 // handleBrainMentionWithReply is like handleBrainMentionWithTools but captures
 // the final response and calls onReply to send it back to the external source.
 func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, content string, onReply func(string)) {
+	messageTime := time.Now()
 	if onReply == nil {
 		// No reply function — fall back to normal mention
-		s.handleBrainMentionWithTools(slug, channelID, "", senderName, content)
+		s.handleBrainMentionWithTools(slug, channelID, "", senderName, content, messageTime)
 		return
 	}
 
 	go func() {
+		// Acquire semaphore to limit concurrent brain goroutines
+		select {
+		case s.agentSem <- struct{}{}:
+			defer func() { <-s.agentSem }()
+		default:
+			s.agentSem <- struct{}{} // block until slot available
+			defer func() { <-s.agentSem }()
+		}
+
+		// Skip stale messages that waited too long on the semaphore
+		if time.Since(messageTime) > maxMessageAge {
+			logger.WithCategory(logger.CatBrain).Info().Dur("age", time.Since(messageTime)).Msg("skipping stale ingest message")
+			return
+		}
+
+		// When workspace is Local LLM mode, external sources can't use WebLLM.
+		// Try Standard Chat patterns; otherwise return a fallback message.
+		webllmOnly := s.getBrainSetting(slug, "webllm_enabled") == "true" &&
+			s.getBrainSetting(slug, "llm_enabled", "true") == "false"
+
+		if webllmOnly {
+			// Still try zero-LLM patterns (search, stats, lists)
+			if wdb, err := s.ws.Open(slug); err == nil {
+				if response, handled := s.tryZeroLLMResponse(slug, content, wdb.DB, senderName); handled {
+					s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "thinking", "")
+					s.sendBrainMessage(slug, channelID, "", response)
+					s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "")
+					onReply(response)
+					brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
+						truncate(content, 200), truncate(response, 500), "zero-llm", nil)
+					return
+				}
+			}
+			fallback := "This workspace uses Local LLM — AI responses are only available in the browser. " +
+				"Try commands like: **list tasks**, **search for** *something*, **workspace stats**."
+			s.sendBrainMessage(slug, channelID, "", fallback)
+			onReply(fallback)
+			return
+		}
+
+		// Standard chat pre-filter disabled — all messages go to LLM
+		// TODO: re-enable when standard chat patterns are production-ready
+
+		// LLM-disabled gate removed — makeBrainClient handles xAI/OpenRouter routing
+
 		apiKey, model := s.getBrainSettings(slug)
-		if apiKey == "" {
-			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Msg("no API key configured, ignoring mention")
+		if apiKey == "" && s.getXAIKey(slug) == "" {
+			s.sendBrainMessage(slug, channelID, "",
+				"I can answer search and stats queries without an API key. Try: \"search for X\", \"how many messages\", \"who is online\". For general questions, configure an API key in Settings.")
 			return
 		}
 
@@ -101,8 +154,14 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 			return
 		}
 
+		// Append workspace snapshot
+		wsContext := brain.BuildWorkspaceContext(wdb.DB)
+		if wsContext != "" {
+			systemPrompt += "\n\n---\n\n" + wsContext
+		}
+
 		// Append memories
-		memoryContext := brain.BuildMemoryContext(wdb.DB)
+		memoryContext := brain.BuildMemoryContext(wdb.DB, content)
 		if memoryContext != "" {
 			systemPrompt += "\n\n---\n\n" + memoryContext
 		}
@@ -138,16 +197,18 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 		}
 
 		messages := s.getRecentMessages(wdb, channelID, 40)
-		client := brain.NewClient(apiKey, model)
+		resolvedModel, fallbacks := s.resolveFreeAuto(model, slug)
+		client := s.makeBrainClient(slug, apiKey, resolvedModel, fallbacks)
 
 		// First call with tools (built-in + MCP)
 		allTools := s.getAllTools(slug)
-		responseContent, toolCalls, err := client.CompleteWithTools(systemPrompt, messages, allTools)
+		responseContent, toolCalls, ingestUsage, err := client.CompleteWithTools(systemPrompt, messages, allTools)
 		if err != nil {
 			logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("LLM error")
 			s.sendBrainMessage(slug, channelID, "", "Sorry, I encountered an error.")
 			return
 		}
+		s.trackUsage(slug, ingestUsage, resolvedModel, "tools", channelID, "")
 
 		if len(toolCalls) == 0 {
 			responseContent = strings.TrimSpace(responseContent)
@@ -179,7 +240,7 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 		}
 
 		// Second call: final response
-		finalResponse, err := client.Complete(systemPrompt, followUp)
+		finalResponse, ingestUsage2, err := client.Complete(systemPrompt, followUp)
 		if err != nil {
 			logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("follow-up LLM error")
 			if responseContent != "" {
@@ -188,6 +249,7 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 			}
 			return
 		}
+		s.trackUsage(slug, ingestUsage2, resolvedModel, "tools", channelID, "")
 
 		finalResponse = strings.TrimSpace(finalResponse)
 		finalResponse = appendMissingImages(finalResponse, imageRefs)
@@ -207,12 +269,21 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 }
 
 // getBrainSetting reads a single brain_settings value for a workspace.
-func (s *Server) getBrainSetting(slug, key string) string {
+// If defaultVal is provided, it is returned when the key is not found.
+func (s *Server) getBrainSetting(slug, key string, defaultVal ...string) string {
 	wdb, err := s.ws.Open(slug)
 	if err != nil {
+		if len(defaultVal) > 0 {
+			return defaultVal[0]
+		}
 		return ""
 	}
 	var val string
-	_ = wdb.DB.QueryRow("SELECT value FROM brain_settings WHERE key = ?", key).Scan(&val)
+	if wdb.DB.QueryRow("SELECT value FROM brain_settings WHERE key = ?", key).Scan(&val) != nil || val == "" {
+		if len(defaultVal) > 0 {
+			return defaultVal[0]
+		}
+		return ""
+	}
 	return val
 }

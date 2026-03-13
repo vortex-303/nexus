@@ -1,0 +1,3 @@
+{$DOMAIN} {
+    reverse_proxy nexus:8080
+}

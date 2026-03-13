@@ -7,12 +7,14 @@ export interface Channel {
 	classification: string;
 	unread?: number;
 	is_favorite?: boolean;
+	favorited_at?: string;
 }
 
 export interface Member {
 	id: string;
 	display_name: string;
 	role: string;
+	color?: string;
 	online?: boolean;
 }
 

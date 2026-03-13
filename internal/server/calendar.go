@@ -25,6 +25,8 @@ type createEventReq struct {
 	Attendees      json.RawMessage `json:"attendees"`
 	Reminders      json.RawMessage `json:"reminders"`
 	ChannelID      string          `json:"channel_id"`
+	AgentID        string          `json:"agent_id"`
+	Model          string          `json:"model"`
 }
 
 type updateEventReq struct {
@@ -41,6 +43,8 @@ type updateEventReq struct {
 	Reminders      json.RawMessage  `json:"reminders"`
 	ChannelID      *string          `json:"channel_id"`
 	Status         *string          `json:"status"`
+	AgentID        *string          `json:"agent_id"`
+	Model          *string          `json:"model"`
 }
 
 var validEventStatuses = map[string]bool{
@@ -98,13 +102,13 @@ func (s *Server) handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err = wdb.DB.Exec(
-		`INSERT INTO calendar_events (id, title, description, location, start_time, end_time, all_day, recurrence_rule, color, calendar, created_by, attendees, reminders, channel_id, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?)`,
+		`INSERT INTO calendar_events (id, title, description, location, start_time, end_time, all_day, recurrence_rule, color, calendar, created_by, attendees, reminders, channel_id, agent_id, model, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?)`,
 		eventID, req.Title, req.Description, req.Location,
 		req.StartTime, req.EndTime, allDay, req.RecurrenceRule,
 		req.Color, req.Calendar, claims.UserID,
 		string(req.Attendees), string(req.Reminders),
-		channelID, now, now,
+		channelID, req.AgentID, req.Model, now, now,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create event")
@@ -123,6 +127,8 @@ func (s *Server) handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 		Color:          req.Color,
 		Calendar:       req.Calendar,
 		CreatedBy:      claims.UserID,
+		AgentID:        req.AgentID,
+		Model:          req.Model,
 		Attendees:      req.Attendees,
 		Reminders:      req.Reminders,
 		ChannelID:      req.ChannelID,
@@ -133,6 +139,11 @@ func (s *Server) handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 
 	h := s.hubs.Get(slug)
 	h.BroadcastAll(hub.MakeEnvelope(hub.TypeEventCreated, event), "")
+
+	s.onPulse(slug, Pulse{
+		Type: "event.created", ActorID: claims.UserID, ActorName: claims.DisplayName,
+		EntityID: eventID, Summary: pulseSummary(claims.DisplayName, "scheduled", req.Title),
+	})
 
 	writeJSON(w, http.StatusCreated, event)
 }
@@ -154,8 +165,9 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	start := r.URL.Query().Get("start")
 	end := r.URL.Query().Get("end")
 	cal := r.URL.Query().Get("calendar")
+	scope := r.URL.Query().Get("scope")
 
-	query := `SELECT ce.id, ce.title, ce.description, ce.location, ce.start_time, ce.end_time, ce.all_day, ce.recurrence_rule, COALESCE(ce.recurrence_parent_id,''), ce.color, COALESCE(m.color,''), ce.calendar, ce.created_by, ce.attendees, ce.reminders, COALESCE(ce.channel_id,''), ce.status, ce.created_at, ce.updated_at
+	query := `SELECT ce.id, ce.title, ce.description, ce.location, ce.start_time, ce.end_time, ce.all_day, ce.recurrence_rule, COALESCE(ce.recurrence_parent_id,''), ce.color, COALESCE(m.color,''), ce.calendar, ce.created_by, COALESCE(m.display_name,''), ce.agent_id, ce.model, ce.attendees, ce.reminders, COALESCE(ce.channel_id,''), ce.status, ce.executed_at, ce.created_at, ce.updated_at
 		FROM calendar_events ce LEFT JOIN members m ON m.id = ce.created_by WHERE 1=1`
 	var args []any
 
@@ -170,6 +182,10 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	if cal != "" {
 		query += " AND ce.calendar = ?"
 		args = append(args, cal)
+	}
+	if scope == "my" {
+		query += " AND (ce.created_by = ? OR ce.attendees LIKE '%'||?||'%')"
+		args = append(args, claims.UserID, claims.UserID)
 	}
 	query += " ORDER BY ce.start_time ASC"
 
@@ -190,8 +206,8 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&e.ID, &e.Title, &e.Description, &e.Location,
 			&e.StartTime, &e.EndTime, &allDay, &e.RecurrenceRule,
 			&e.RecurrenceParentID, &e.Color, &memberColor, &e.Calendar, &e.CreatedBy,
-			&attendeesStr, &remindersStr, &e.ChannelID, &e.Status,
-			&e.CreatedAt, &e.UpdatedAt); err != nil {
+			&e.CreatedByName, &e.AgentID, &e.Model, &attendeesStr, &remindersStr, &e.ChannelID, &e.Status,
+			&e.ExecutedAt, &e.CreatedAt, &e.UpdatedAt); err != nil {
 			continue
 		}
 		e.AllDay = allDay == 1
@@ -340,6 +356,14 @@ func (s *Server) handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 		sets = append(sets, "status = ?")
 		args = append(args, *req.Status)
 	}
+	if req.AgentID != nil {
+		sets = append(sets, "agent_id = ?")
+		args = append(args, *req.AgentID)
+	}
+	if req.Model != nil {
+		sets = append(sets, "model = ?")
+		args = append(args, *req.Model)
+	}
 
 	if len(sets) == 0 {
 		writeError(w, http.StatusBadRequest, "no fields to update")
@@ -368,6 +392,11 @@ func (s *Server) handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 	h := s.hubs.Get(slug)
 	h.BroadcastAll(hub.MakeEnvelope(hub.TypeEventUpdated, e), "")
 
+	s.onPulse(slug, Pulse{
+		Type: "event.updated", ActorID: claims.UserID, ActorName: claims.DisplayName,
+		EntityID: eventID, Summary: pulseSummary(claims.DisplayName, "updated", e.Title),
+	})
+
 	writeJSON(w, http.StatusOK, e)
 }
 
@@ -385,6 +414,9 @@ func (s *Server) handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "workspace error")
 		return
 	}
+
+	var eventTitle string
+	_ = wdb.DB.QueryRow("SELECT title FROM calendar_events WHERE id = ?", eventID).Scan(&eventTitle)
 
 	// Also delete exception instances if this is a recurring parent
 	_, _ = wdb.DB.Exec("DELETE FROM calendar_events WHERE recurrence_parent_id = ?", eventID)
@@ -404,7 +436,167 @@ func (s *Server) handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
 	h := s.hubs.Get(slug)
 	h.BroadcastAll(hub.MakeEnvelope(hub.TypeEventDeleted, hub.EventDeletedPayload{ID: eventID}), "")
 
+	s.onPulse(slug, Pulse{
+		Type: "event.deleted", ActorID: claims.UserID, ActorName: claims.DisplayName,
+		EntityID: eventID, Summary: pulseSummary(claims.DisplayName, "cancelled", eventTitle),
+	})
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handleClearPastAgentEvents(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	claims := auth.GetClaims(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	// Check mode: "past" (default) or "all"
+	mode := r.URL.Query().Get("mode")
+
+	var res sql.Result
+	if mode == "all" {
+		res, err = wdb.DB.Exec("DELETE FROM calendar_events WHERE agent_id != ''")
+	} else {
+		nowStr := time.Now().UTC().Format(time.RFC3339)
+		res, err = wdb.DB.Exec(
+			"DELETE FROM calendar_events WHERE agent_id != '' AND start_time < ?",
+			nowStr,
+		)
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to clear events")
+		return
+	}
+	deleted, _ := res.RowsAffected()
+
+	// Broadcast reload
+	h := s.hubs.Get(slug)
+	h.BroadcastAll(hub.MakeEnvelope(hub.TypeEventDeleted, hub.EventDeletedPayload{ID: "bulk"}), "")
+
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
+}
+
+func (s *Server) handleEventOutcome(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	eventID := r.PathValue("eventID")
+	claims := auth.GetClaims(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	e, err := scanEvent(wdb.DB, eventID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "event not found")
+		return
+	}
+
+	if e.AgentID == "" {
+		writeError(w, http.StatusBadRequest, "not an agent event")
+		return
+	}
+
+	// Resolve agent name
+	agentName := "Brain"
+	if e.AgentID != "brain" {
+		var name string
+		if err := wdb.DB.QueryRow("SELECT name FROM agents WHERE id = ?", e.AgentID).Scan(&name); err == nil {
+			agentName = name
+		}
+	}
+
+	// Resolve channel name
+	channelName := ""
+	if e.ChannelID != "" {
+		_ = wdb.DB.QueryRow("SELECT name FROM channels WHERE id = ?", e.ChannelID).Scan(&channelName)
+	}
+
+	outcome := map[string]any{
+		"executed":     e.ExecutedAt != "",
+		"executed_at":  e.ExecutedAt,
+		"agent_id":     e.AgentID,
+		"agent_name":   agentName,
+		"channel_id":   e.ChannelID,
+		"channel_name": channelName,
+		"prompt":       e.Description,
+	}
+
+	// Determine event status
+	isPast := false
+	if startTime, err := time.Parse(time.RFC3339, e.StartTime); err == nil {
+		isPast = startTime.Before(time.Now().UTC())
+	}
+	if e.ExecutedAt != "" {
+		outcome["status"] = "executed"
+	} else if isPast {
+		outcome["status"] = "missed"
+	} else {
+		outcome["status"] = "pending"
+	}
+
+	// Search brain_action_log for matching entry via heuristic:
+	// trigger_text contains the event title and created_at is near start_time
+	var logResponse, logToolsJSON, logModel string
+	err = wdb.DB.QueryRow(
+		`SELECT response_text, tools_used, model FROM brain_action_log
+		 WHERE trigger_text LIKE '%' || ? || '%'
+		 AND created_at >= datetime(?, '-2 minutes')
+		 AND created_at <= datetime(?, '+5 minutes')
+		 ORDER BY created_at DESC LIMIT 1`,
+		e.Title, e.StartTime, e.StartTime,
+	).Scan(&logResponse, &logToolsJSON, &logModel)
+	if err == nil {
+		outcome["response"] = logResponse
+		outcome["model"] = logModel
+		var toolsUsed []string
+		json.Unmarshal([]byte(logToolsJSON), &toolsUsed)
+		if toolsUsed == nil {
+			toolsUsed = []string{}
+		}
+		outcome["tools_used"] = toolsUsed
+	} else {
+		outcome["response"] = ""
+		outcome["tools_used"] = []string{}
+		outcome["model"] = e.Model
+	}
+
+	// Search for the Brain/agent message in the channel near execution time
+	searchTime := e.ExecutedAt
+	if searchTime == "" {
+		searchTime = e.StartTime
+	}
+	senderID := e.AgentID
+	var messageID, messageContent string
+	err = wdb.DB.QueryRow(
+		`SELECT id, content FROM messages
+		 WHERE sender_id = ? AND channel_id = ?
+		 AND created_at >= datetime(?, '-1 minutes')
+		 AND created_at <= datetime(?, '+5 minutes')
+		 ORDER BY created_at DESC LIMIT 1`,
+		senderID, e.ChannelID, searchTime, searchTime,
+	).Scan(&messageID, &messageContent)
+	if err == nil {
+		outcome["message_id"] = messageID
+		if outcome["response"] == "" {
+			outcome["response"] = messageContent
+		}
+	}
+
+	writeJSON(w, http.StatusOK, outcome)
 }
 
 // scanEvent reads a single event from the database.
@@ -413,13 +605,13 @@ func scanEvent(db *sql.DB, eventID string) (hub.EventPayload, error) {
 	var attendeesStr, remindersStr string
 	var allDay int
 	err := db.QueryRow(
-		`SELECT id, title, description, location, start_time, end_time, all_day, recurrence_rule, COALESCE(recurrence_parent_id,''), color, calendar, created_by, attendees, reminders, COALESCE(channel_id,''), status, created_at, updated_at
+		`SELECT id, title, description, location, start_time, end_time, all_day, recurrence_rule, COALESCE(recurrence_parent_id,''), color, calendar, created_by, agent_id, model, attendees, reminders, COALESCE(channel_id,''), status, executed_at, created_at, updated_at
 		 FROM calendar_events WHERE id = ?`, eventID,
 	).Scan(&e.ID, &e.Title, &e.Description, &e.Location,
 		&e.StartTime, &e.EndTime, &allDay, &e.RecurrenceRule,
 		&e.RecurrenceParentID, &e.Color, &e.Calendar, &e.CreatedBy,
-		&attendeesStr, &remindersStr, &e.ChannelID, &e.Status,
-		&e.CreatedAt, &e.UpdatedAt)
+		&e.AgentID, &e.Model, &attendeesStr, &remindersStr, &e.ChannelID, &e.Status,
+		&e.ExecutedAt, &e.CreatedAt, &e.UpdatedAt)
 	if err != nil {
 		return e, err
 	}

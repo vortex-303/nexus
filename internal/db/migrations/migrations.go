@@ -583,6 +583,304 @@ var workspaceMigrations = []migration{
 			);
 		`,
 	},
+	{
+		version: 23,
+		name:    "memory_source_and_fts",
+		sql: `
+			ALTER TABLE brain_memories ADD COLUMN source TEXT NOT NULL DEFAULT 'llm';
+
+			CREATE VIRTUAL TABLE IF NOT EXISTS brain_memories_fts USING fts5(content, content='brain_memories', content_rowid='rowid');
+
+			INSERT INTO brain_memories_fts(rowid, content) SELECT rowid, content FROM brain_memories;
+
+			CREATE TRIGGER IF NOT EXISTS brain_memories_ai AFTER INSERT ON brain_memories BEGIN
+				INSERT INTO brain_memories_fts(rowid, content) VALUES (new.rowid, new.content);
+			END;
+
+			CREATE TRIGGER IF NOT EXISTS brain_memories_ad AFTER DELETE ON brain_memories BEGIN
+				INSERT INTO brain_memories_fts(brain_memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+			END;
+
+			CREATE TRIGGER IF NOT EXISTS brain_memories_au AFTER UPDATE ON brain_memories BEGIN
+				INSERT INTO brain_memories_fts(brain_memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+				INSERT INTO brain_memories_fts(rowid, content) VALUES (new.rowid, new.content);
+			END;
+		`,
+	},
+	{
+		version: 24,
+		name:    "brain_settings_log",
+		sql: `
+			CREATE TABLE IF NOT EXISTS brain_settings_log (
+				id TEXT PRIMARY KEY,
+				key TEXT NOT NULL,
+				old_value TEXT NOT NULL DEFAULT '',
+				new_value TEXT NOT NULL DEFAULT '',
+				changed_by TEXT NOT NULL DEFAULT '',
+				created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+			);
+			CREATE INDEX IF NOT EXISTS idx_brain_settings_log_created ON brain_settings_log(created_at);
+		`,
+	},
+	{
+		version: 25,
+		name:    "agent_image_model_and_channel_members",
+		sql: `
+			ALTER TABLE agents ADD COLUMN image_model TEXT NOT NULL DEFAULT '';
+
+			CREATE TABLE IF NOT EXISTS channel_members (
+				channel_id TEXT NOT NULL REFERENCES channels(id),
+				member_id TEXT NOT NULL,
+				added_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+				PRIMARY KEY (channel_id, member_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_channel_members_member ON channel_members(member_id);
+		`,
+	},
+	{
+		version: 26,
+		name:    "favorited_at",
+		sql: `
+			ALTER TABLE channel_reads ADD COLUMN favorited_at TEXT NOT NULL DEFAULT '';
+		`,
+	},
+	{
+		version: 27,
+		name:    "brain_web_search_tool",
+		sql: `
+			UPDATE agents SET tools = REPLACE(tools, '"search_messages"', '"search_workspace"')
+				WHERE tools LIKE '%search_messages%';
+			UPDATE agents SET tools = REPLACE(tools, '"delegate_to_agent"]', '"delegate_to_agent","web_search","fetch_url"]')
+				WHERE is_system = 1 AND tools NOT LIKE '%web_search%';
+		`,
+	},
+	{
+		version: 28,
+		name:    "activity_stream",
+		sql: `
+			CREATE TABLE IF NOT EXISTS activity_stream (
+				id TEXT PRIMARY KEY,
+				pulse_type TEXT NOT NULL,
+				actor_id TEXT NOT NULL,
+				actor_name TEXT NOT NULL,
+				channel_id TEXT DEFAULT '',
+				entity_id TEXT DEFAULT '',
+				summary TEXT NOT NULL,
+				detail TEXT DEFAULT '',
+				source TEXT NOT NULL DEFAULT 'user',
+				created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+			);
+			CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_stream(created_at DESC);
+			CREATE INDEX IF NOT EXISTS idx_activity_type ON activity_stream(pulse_type, created_at DESC);
+		`,
+	},
+	{
+		version: 29,
+		name:    "brain_web_search_tool",
+		sql: `
+			UPDATE agents SET tools = REPLACE(tools, '"search_messages"', '"search_workspace"')
+				WHERE tools LIKE '%search_messages%';
+			UPDATE agents SET tools = REPLACE(tools, '"delegate_to_agent"]', '"delegate_to_agent","web_search","fetch_url"]')
+				WHERE is_system = 1 AND tools NOT LIKE '%web_search%';
+		`,
+	},
+	{
+		version: 30,
+		name:    "consolidate_message_activity",
+		sql: `
+			-- Delete all individual "sent a message" entries except the newest per actor+channel per 10-min window.
+			-- First, keep the most recent entry per group and delete the rest.
+			DELETE FROM activity_stream WHERE pulse_type = 'message.sent' AND id NOT IN (
+				SELECT id FROM (
+					SELECT id, ROW_NUMBER() OVER (
+						PARTITION BY actor_id, channel_id,
+						CAST(strftime('%s', created_at) AS INTEGER) / 600
+						ORDER BY created_at DESC
+					) AS rn
+					FROM activity_stream
+					WHERE pulse_type = 'message.sent'
+				) WHERE rn = 1
+			);
+			-- Update remaining message entries to show count
+			UPDATE activity_stream SET detail = '1' WHERE pulse_type = 'message.sent' AND (detail IS NULL OR detail = '');
+		`,
+	},
+	{
+		version: 31,
+		name:    "expected_output_and_memory_importance",
+		sql: `
+			ALTER TABLE tasks ADD COLUMN expected_output TEXT NOT NULL DEFAULT '';
+			ALTER TABLE brain_memories ADD COLUMN importance REAL NOT NULL DEFAULT 0.5;
+		`,
+	},
+	{
+		version: 32,
+		name:    "whatsapp_conversations",
+		sql: `
+			CREATE TABLE IF NOT EXISTS whatsapp_conversations (
+				id TEXT PRIMARY KEY,
+				channel_id TEXT NOT NULL,
+				wa_id TEXT NOT NULL UNIQUE,
+				phone TEXT NOT NULL DEFAULT '',
+				profile_name TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'open',
+				assigned_to TEXT NOT NULL DEFAULT '',
+				window_expires_at TEXT,
+				last_message_at TEXT,
+				metadata TEXT NOT NULL DEFAULT '{}',
+				created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+				updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+			);
+			CREATE INDEX IF NOT EXISTS idx_wa_conv_waid ON whatsapp_conversations(wa_id);
+			CREATE INDEX IF NOT EXISTS idx_wa_conv_status ON whatsapp_conversations(status);
+			CREATE INDEX IF NOT EXISTS idx_wa_conv_channel ON whatsapp_conversations(channel_id);
+		`,
+	},
+	{
+		version: 33,
+		name:    "social_pulses",
+		sql: `
+			CREATE TABLE IF NOT EXISTS social_pulses (
+				id TEXT PRIMARY KEY,
+				topic TEXT NOT NULL,
+				query TEXT NOT NULL,
+				raw_text TEXT NOT NULL DEFAULT '',
+				citations TEXT NOT NULL DEFAULT '[]',
+				summary TEXT NOT NULL DEFAULT '',
+				sentiment_score INTEGER NOT NULL DEFAULT 50,
+				themes TEXT NOT NULL DEFAULT '[]',
+				key_posts TEXT NOT NULL DEFAULT '[]',
+				recommendations TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'pending',
+				created_by TEXT NOT NULL DEFAULT '',
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_social_pulses_created ON social_pulses(created_at);
+		`,
+	},
+	{
+		version: 34,
+		name:    "simplify_roles",
+		sql:     `UPDATE members SET role = 'member' WHERE role NOT IN ('admin', 'member', 'guest', 'agent');`,
+	},
+	{
+		version: 35,
+		name:    "drop_whatsapp_conversations",
+		sql:     `DROP TABLE IF EXISTS whatsapp_conversations;`,
+	},
+	{
+		version: 36,
+		name:    "memory_organizational_upgrade",
+		sql: `
+			ALTER TABLE brain_memories ADD COLUMN confidence REAL NOT NULL DEFAULT 0.5;
+			ALTER TABLE brain_memories ADD COLUMN valid_until TEXT;
+			ALTER TABLE brain_memories ADD COLUMN superseded_by TEXT;
+			ALTER TABLE brain_memories ADD COLUMN participants TEXT NOT NULL DEFAULT '';
+			ALTER TABLE brain_memories ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
+			ALTER TABLE brain_memories ADD COLUMN summary TEXT NOT NULL DEFAULT '';
+
+			-- Backfill: set confidence = importance for existing rows
+			UPDATE brain_memories SET confidence = importance;
+		`,
+	},
+	{
+		version: 37,
+		name:    "task_scheduling",
+		sql: `
+			ALTER TABLE tasks ADD COLUMN scheduled_at TEXT;
+			ALTER TABLE tasks ADD COLUMN agent_id TEXT;
+			ALTER TABLE tasks ADD COLUMN recurrence_rule TEXT NOT NULL DEFAULT '';
+		`,
+	},
+	{
+		version: 38,
+		name:    "calendar_event_agent",
+		sql: `
+			ALTER TABLE calendar_events ADD COLUMN agent_id TEXT NOT NULL DEFAULT '';
+		`,
+	},
+	{
+		version: 39,
+		name:    "calendar_event_model",
+		sql: `
+			ALTER TABLE calendar_events ADD COLUMN model TEXT NOT NULL DEFAULT '';
+		`,
+	},
+	{
+		version: 40,
+		name:    "calendar_execution_tracking",
+		sql: `
+			ALTER TABLE calendar_events ADD COLUMN executed_at TEXT NOT NULL DEFAULT '';
+			ALTER TABLE calendar_events ADD COLUMN execution_message_id TEXT NOT NULL DEFAULT '';
+			ALTER TABLE brain_action_log ADD COLUMN calendar_event_id TEXT NOT NULL DEFAULT '';
+		`,
+	},
+	{
+		version: 41,
+		name:    "fix_agent_event_end_times",
+		sql: `
+			UPDATE calendar_events
+			SET end_time = datetime(start_time, '+1 hour')
+			WHERE agent_id != '' AND end_time < start_time;
+		`,
+	},
+	{
+		version: 42,
+		name:    "social_pulse_enriched_fields",
+		sql: `
+			ALTER TABLE social_pulses ADD COLUMN predictions TEXT NOT NULL DEFAULT '[]';
+			ALTER TABLE social_pulses ADD COLUMN risks TEXT NOT NULL DEFAULT '[]';
+			ALTER TABLE social_pulses ADD COLUMN competitive_mentions TEXT NOT NULL DEFAULT '[]';
+			ALTER TABLE social_pulses ADD COLUMN audience_breakdown TEXT NOT NULL DEFAULT '{}';
+			ALTER TABLE social_pulses ADD COLUMN source_breakdown TEXT NOT NULL DEFAULT '{}';
+		`,
+	},
+	{
+		version: 43,
+		name:    "living_briefs",
+		sql: `
+			CREATE TABLE IF NOT EXISTS living_briefs (
+				id TEXT PRIMARY KEY,
+				title TEXT NOT NULL,
+				template TEXT NOT NULL DEFAULT 'custom',
+				topic TEXT NOT NULL DEFAULT '',
+				content TEXT NOT NULL DEFAULT '',
+				generated_at DATETIME,
+				schedule TEXT NOT NULL DEFAULT 'manual',
+				schedule_time TEXT NOT NULL DEFAULT '',
+				created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+				updated_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+			);
+		`,
+	},
+	{
+		version: 44,
+		name:    "brief_sharing",
+		sql: `
+			ALTER TABLE living_briefs ADD COLUMN share_token TEXT;
+			ALTER TABLE living_briefs ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0;
+		`,
+	},
+	{
+		version: 45,
+		name:    "llm_usage_tracking",
+		sql: `
+			CREATE TABLE IF NOT EXISTS llm_usage (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				model TEXT NOT NULL,
+				input_tokens INTEGER NOT NULL DEFAULT 0,
+				output_tokens INTEGER NOT NULL DEFAULT 0,
+				cost_usd REAL NOT NULL DEFAULT 0,
+				action_type TEXT NOT NULL,
+				channel_id TEXT,
+				member_name TEXT,
+				created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+			);
+			CREATE INDEX idx_llm_usage_created ON llm_usage(created_at);
+			CREATE INDEX idx_llm_usage_action ON llm_usage(action_type);
+		`,
+	},
 }
 
 func RunGlobal(db *sql.DB) error {

@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nexus Brief</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #0a0a0f;
+  color: #d4d4d8;
+  font-family: 'Inter', system-ui, sans-serif;
+  min-height: 100vh;
+  overflow-x: hidden;
+  position: relative;
+}
+
+/* Grid background */
+.grid-bg {
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+  background-size: 60px 60px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Floating code fragments */
+.code-fragment {
+  position: fixed;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  color: #fff;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 0;
+  animation: floatUp linear infinite;
+}
+
+@keyframes floatUp {
+  0% { transform: translateY(100vh) translateX(0); opacity: 0; }
+  5% { opacity: var(--frag-opacity); }
+  90% { opacity: var(--frag-opacity); }
+  100% { transform: translateY(-120px) translateX(20px); opacity: 0; }
+}
+
+/* Spark particles */
+.spark {
+  position: fixed;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: #f97316;
+  box-shadow: 0 0 6px 2px rgba(249,115,22,0.4), 0 0 12px 4px rgba(249,115,22,0.15);
+  pointer-events: none;
+  z-index: 0;
+  animation: sparkPulse ease-in-out infinite;
+}
+
+@keyframes sparkPulse {
+  0%, 100% { opacity: 0; transform: scale(0.5); }
+  50% { opacity: 0.8; transform: scale(1.2); }
+}
+
+/* Layout */
+.page {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  min-height: 100vh;
+  padding: 64px 24px;
+}
+
+/* Card */
+.card {
+  width: 100%;
+  max-width: 720px;
+  background: rgba(15, 15, 20, 0.85);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(249, 115, 22, 0.15);
+  border-radius: 16px;
+  padding: 48px;
+  position: relative;
+}
+
+.card::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: 17px;
+  background: linear-gradient(135deg, rgba(249,115,22,0.08), transparent 50%, rgba(249,115,22,0.04));
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* Loading state */
+.loading {
+  text-align: center;
+  padding: 80px 0;
+  font-size: 1.1rem;
+  color: #71717a;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+/* Error state */
+.error {
+  text-align: center;
+  padding: 80px 0;
+}
+
+.error h2 {
+  font-family: 'Playfair Display', serif;
+  font-size: 1.8rem;
+  color: #fff;
+  margin-bottom: 12px;
+}
+
+.error p {
+  color: #71717a;
+  font-size: 1rem;
+}
+
+/* Header */
+.brief-header {
+  margin-bottom: 36px;
+  padding-bottom: 28px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.template-badge {
+  display: inline-block;
+  background: rgba(249, 115, 22, 0.12);
+  color: #f97316;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 5px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(249, 115, 22, 0.2);
+  margin-bottom: 16px;
+}
+
+.brief-title {
+  font-family: 'Playfair Display', serif;
+  font-size: 2.2rem;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1.3;
+  margin-bottom: 12px;
+}
+
+.brief-date {
+  font-size: 0.85rem;
+  color: #52525b;
+}
+
+/* Content body */
+.brief-body {
+  line-height: 1.8;
+  font-size: 1rem;
+  color: #d4d4d8;
+}
+
+.brief-body h2 {
+  font-family: 'Playfair Display', serif;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #fff;
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+}
+
+.brief-body h3 {
+  font-family: 'Playfair Display', serif;
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: #fff;
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+}
+
+.brief-body p {
+  margin-bottom: 1rem;
+}
+
+.brief-body strong {
+  color: #fff;
+  font-weight: 600;
+}
+
+.brief-body em {
+  font-style: italic;
+  color: #a1a1aa;
+}
+
+.brief-body ul, .brief-body ol {
+  margin-bottom: 1rem;
+  padding-left: 1.5rem;
+}
+
+.brief-body li {
+  margin-bottom: 0.4rem;
+  position: relative;
+}
+
+.brief-body ul li::marker {
+  color: #f97316;
+}
+
+.brief-body ol li::marker {
+  color: #f97316;
+  font-weight: 600;
+}
+
+.brief-body hr {
+  border: none;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  margin: 2rem 0;
+}
+
+/* Footer */
+.brief-footer {
+  margin-top: 36px;
+  padding-top: 24px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.8rem;
+  color: #3f3f46;
+}
+
+.brief-footer a {
+  color: #f97316;
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+.brief-footer a:hover {
+  color: #fb923c;
+}
+
+.workspace-name {
+  font-weight: 500;
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .page { padding: 24px 12px; }
+  .card { padding: 28px 20px; border-radius: 12px; }
+  .brief-title { font-size: 1.6rem; }
+  .brief-body h2 { font-size: 1.3rem; }
+  .brief-body h3 { font-size: 1.15rem; }
+  .brief-footer { flex-direction: column; gap: 8px; text-align: center; }
+}
+</style>
+</head>
+<body>
+
+<div class="grid-bg"></div>
+<div id="sparks"></div>
+<div id="fragments"></div>
+
+<div class="page">
+  <div class="card">
+    <div id="content">
+      <div class="loading">Loading...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// --- Spark particles ---
+(function() {
+  var container = document.getElementById('sparks');
+  for (var i = 0; i < 30; i++) {
+    var spark = document.createElement('div');
+    spark.className = 'spark';
+    spark.style.left = Math.random() * 100 + 'vw';
+    spark.style.top = Math.random() * 100 + 'vh';
+    spark.style.width = (2 + Math.random() * 3) + 'px';
+    spark.style.height = spark.style.width;
+    spark.style.animationDuration = (3 + Math.random() * 5) + 's';
+    spark.style.animationDelay = (Math.random() * 6) + 's';
+    container.appendChild(spark);
+  }
+})();
+
+// --- Floating code fragments ---
+(function() {
+  var snippets = [
+    'const data = await fetch()',
+    'if (aligned) return true;',
+    'export default brain;',
+    'async function summarize()',
+    'import { insight } from "nexus"',
+    'yield* generateBrief()',
+    'const signal = new AbortController()',
+    'return { ...context, brief }',
+    'for (const item of feed)',
+    'await pool.sync(peers)',
+  ];
+  var container = document.getElementById('fragments');
+  for (var i = 0; i < snippets.length; i++) {
+    var el = document.createElement('div');
+    el.className = 'code-fragment';
+    el.textContent = snippets[i];
+    var opacity = 0.03 + Math.random() * 0.03;
+    el.style.setProperty('--frag-opacity', opacity);
+    el.style.left = Math.random() * 90 + 'vw';
+    el.style.animationDuration = (25 + Math.random() * 35) + 's';
+    el.style.animationDelay = (-Math.random() * 40) + 's';
+    container.appendChild(el);
+  }
+})();
+
+// --- Simple markdown parser ---
+function parseMd(text) {
+  var lines = text.split('\n');
+  var html = '';
+  var inUl = false, inOl = false;
+
+  function closeList() {
+    if (inUl) { html += '</ul>'; inUl = false; }
+    if (inOl) { html += '</ol>'; inOl = false; }
+  }
+
+  function inline(s) {
+    s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    return s;
+  }
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+
+    if (/^### (.+)/.test(line)) {
+      closeList();
+      html += '<h3>' + inline(line.replace(/^### /, '')) + '</h3>';
+    } else if (/^## (.+)/.test(line)) {
+      closeList();
+      html += '<h2>' + inline(line.replace(/^## /, '')) + '</h2>';
+    } else if (/^---\s*$/.test(line)) {
+      closeList();
+      html += '<hr>';
+    } else if (/^[-*] (.+)/.test(line)) {
+      if (!inUl) { closeList(); html += '<ul>'; inUl = true; }
+      html += '<li>' + inline(line.replace(/^[-*] /, '')) + '</li>';
+    } else if (/^\d+\. (.+)/.test(line)) {
+      if (!inOl) { closeList(); html += '<ol>'; inOl = true; }
+      html += '<li>' + inline(line.replace(/^\d+\. /, '')) + '</li>';
+    } else if (line.trim() === '') {
+      closeList();
+    } else {
+      closeList();
+      html += '<p>' + inline(line) + '</p>';
+    }
+  }
+  closeList();
+  return html;
+}
+
+// --- Fetch and render ---
+(function() {
+  var path = window.location.pathname;
+  var match = path.match(/\/brief\/([a-zA-Z0-9_-]+)/);
+  if (!match) {
+    showError();
+    return;
+  }
+  var token = match[1];
+
+  fetch('/api/briefs/public/' + token)
+    .then(function(res) {
+      if (!res.ok) throw new Error('not found');
+      return res.json();
+    })
+    .then(function(brief) {
+      document.title = (brief.title || 'Untitled Brief') + ' \u2014 Nexus Brief';
+
+      var dateStr = '';
+      if (brief.generated_at) {
+        var d = new Date(brief.generated_at);
+        dateStr = d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+        var t = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        dateStr += ' at ' + t;
+      }
+
+      var templateNames = { workspace_pulse: 'Workspace Pulse', north_star_status: 'North Star', team_health: 'Team Health', custom: 'Custom Brief' };
+      var templateName = templateNames[brief.template] || brief.template || '';
+      var workspace = brief.workspace || '';
+
+      var h = '<div class="brief-header">';
+      if (templateName) h += '<div class="template-badge">' + templateName + '</div>';
+      h += '<h1 class="brief-title">' + (brief.title || 'Untitled Brief') + '</h1>';
+      if (dateStr) h += '<div class="brief-date">' + dateStr + '</div>';
+      h += '</div>';
+
+      h += '<div class="brief-body">' + parseMd(brief.content || '') + '</div>';
+
+      h += '<div class="brief-footer">';
+      h += '<span class="workspace-name">' + (workspace ? workspace : '') + '</span>';
+      h += '<span>Powered by <a href="/landing">Nexus</a></span>';
+      h += '</div>';
+
+      document.getElementById('content').innerHTML = h;
+    })
+    .catch(function() {
+      showError();
+    });
+
+  function showError() {
+    document.title = 'Not Found \u2014 Nexus Brief';
+    document.getElementById('content').innerHTML =
+      '<div class="error">' +
+      '<h2>Brief not found</h2>' +
+      '<p>This brief may have expired or the link is invalid.</p>' +
+      '</div>';
+  }
+})();
+</script>
+</body>
+</html>

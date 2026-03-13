@@ -28,7 +28,8 @@ const (
 	TypeTyping         = "typing"
 	TypePresence       = "presence"
 	TypeChannelJoined  = "channel.joined"
-	TypeChannelCleared = "channel.cleared"
+	TypeChannelCleared  = "channel.cleared"
+	TypeChannelArchived = "channel.archived"
 	TypeError          = "error"
 	TypeTaskCreated    = "task.created"
 	TypeTaskUpdated    = "task.updated"
@@ -37,8 +38,13 @@ const (
 	TypeEventUpdated   = "event.updated"
 	TypeEventDeleted   = "event.deleted"
 	TypeEventReminder  = "event.reminder"
-	TypeAgentState     = "agent.state"
-	TypeUnreadUpdate   = "unread.update"
+	TypeAgentState          = "agent.state"
+	TypeUnreadUpdate       = "unread.update"
+	TypeChannelMemberRemoved = "channel.member_removed"
+	TypeActivityNew          = "activity.new"
+	TypeSocialPulseCreated = "social_pulse.created"
+	TypeSocialPulseUpdated = "social_pulse.updated"
+	TypeSocialPulseDeleted = "social_pulse.deleted"
 )
 
 // Payload types for messages
@@ -47,6 +53,7 @@ type MessageSendPayload struct {
 	Content   string `json:"content"`
 	ClientID  string `json:"client_id,omitempty"`
 	ParentID  string `json:"parent_id,omitempty"`
+	WebLLM    bool   `json:"webllm,omitempty"`
 }
 
 type MessageEditPayload struct {
@@ -134,20 +141,24 @@ type ErrorPayload struct {
 
 // Task payloads (server → client broadcasts)
 type TaskPayload struct {
-	ID          string          `json:"id"`
-	Title       string          `json:"title"`
-	Description string          `json:"description,omitempty"`
-	Status      string          `json:"status"`
-	Priority    string          `json:"priority"`
-	AssigneeID  string          `json:"assignee_id,omitempty"`
-	CreatedBy   string          `json:"created_by"`
-	DueDate     string          `json:"due_date,omitempty"`
-	Tags        json.RawMessage `json:"tags"`
-	ChannelID   string          `json:"channel_id,omitempty"`
-	MessageID   string          `json:"message_id,omitempty"`
-	Position    int             `json:"position"`
-	CreatedAt   string          `json:"created_at"`
-	UpdatedAt   string          `json:"updated_at"`
+	ID             string          `json:"id"`
+	Title          string          `json:"title"`
+	Description    string          `json:"description,omitempty"`
+	ExpectedOutput string          `json:"expected_output,omitempty"`
+	Status         string          `json:"status"`
+	Priority       string          `json:"priority"`
+	AssigneeID     string          `json:"assignee_id,omitempty"`
+	CreatedBy      string          `json:"created_by"`
+	DueDate        string          `json:"due_date,omitempty"`
+	Tags           json.RawMessage `json:"tags"`
+	ChannelID      string          `json:"channel_id,omitempty"`
+	MessageID      string          `json:"message_id,omitempty"`
+	Position       int             `json:"position"`
+	ScheduledAt    string          `json:"scheduled_at,omitempty"`
+	AgentID        string          `json:"agent_id,omitempty"`
+	RecurrenceRule string          `json:"recurrence_rule,omitempty"`
+	CreatedAt      string          `json:"created_at"`
+	UpdatedAt      string          `json:"updated_at"`
 }
 
 type TaskDeletedPayload struct {
@@ -178,10 +189,14 @@ type EventPayload struct {
 	DisplayColor      string          `json:"display_color,omitempty"`
 	Calendar          string          `json:"calendar"`
 	CreatedBy         string          `json:"created_by"`
+	CreatedByName     string          `json:"created_by_name,omitempty"`
+	AgentID           string          `json:"agent_id,omitempty"`
+	Model             string          `json:"model,omitempty"`
 	Attendees         json.RawMessage `json:"attendees"`
 	Reminders         json.RawMessage `json:"reminders"`
 	ChannelID         string          `json:"channel_id,omitempty"`
 	Status            string          `json:"status"`
+	ExecutedAt        string          `json:"executed_at,omitempty"`
 	CreatedAt         string          `json:"created_at"`
 	UpdatedAt         string          `json:"updated_at"`
 }
@@ -195,6 +210,11 @@ type EventReminderPayload struct {
 	Title     string `json:"title"`
 	StartTime string `json:"start_time"`
 	Minutes   int    `json:"minutes_before"`
+}
+
+type ChannelMemberRemovedPayload struct {
+	ChannelID string `json:"channel_id"`
+	MemberID  string `json:"member_id"`
 }
 
 // MakeEnvelope creates a JSON-encoded envelope.

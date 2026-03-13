@@ -105,5 +105,9 @@ func FromRequest(r *http.Request) string {
 	if c, err := r.Cookie("nexus_token"); err == nil {
 		return c.Value
 	}
+	// Try query parameter (for download links)
+	if t := r.URL.Query().Get("token"); t != "" {
+		return t
+	}
 	return ""
 }

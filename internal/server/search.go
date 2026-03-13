@@ -34,5 +34,19 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve sender display names for messages
+	wdb, _ := s.ws.Open(slug)
+	if wdb != nil {
+		for i, r := range results {
+			if r.Type == "message" && r.Sender != "" {
+				var name string
+				_ = wdb.DB.QueryRow("SELECT display_name FROM members WHERE id = ?", r.Sender).Scan(&name)
+				if name != "" {
+					results[i].Sender = name
+				}
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
 }

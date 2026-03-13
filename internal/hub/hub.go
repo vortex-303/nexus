@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,9 +22,37 @@ type Conn struct {
 	WorkspaceSlug string
 	Role          string
 	Send          chan []byte
-	LastMessageAt time.Time
+	lastMessageAt atomic.Int64 // unix nanoseconds, atomic for race-free rate limiting
+	closed        atomic.Bool  // set on Unregister to prevent send-on-closed-channel
 	channels      map[string]bool // subscribed channel IDs
 	mu            sync.Mutex
+}
+
+// SetLastMessageAt records the time of the last message (for rate limiting).
+func (c *Conn) SetLastMessageAt(t time.Time) {
+	c.lastMessageAt.Store(t.UnixNano())
+}
+
+// LastMessageAt returns the time of the last message.
+func (c *Conn) LastMessageAt() time.Time {
+	ns := c.lastMessageAt.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+// trySend attempts to send a message, returning false if the connection is closed or buffer full.
+func (c *Conn) trySend(msg []byte) bool {
+	if c.closed.Load() {
+		return false
+	}
+	select {
+	case c.Send <- msg:
+		return true
+	default:
+		return false
+	}
 }
 
 // NewConn creates a properly initialized Conn.
@@ -34,7 +63,7 @@ func NewConn(id, userID, displayName, workspaceSlug, role string) *Conn {
 		DisplayName:   displayName,
 		WorkspaceSlug: workspaceSlug,
 		Role:          role,
-		Send:          make(chan []byte, 64),
+		Send:          make(chan []byte, 256),
 		channels:      make(map[string]bool),
 	}
 }
@@ -89,6 +118,7 @@ func (h *Hub) Register(c *Conn) {
 }
 
 func (h *Hub) Unregister(c *Conn) {
+	c.closed.Store(true) // prevent further sends before removing from map
 	h.mu.Lock()
 	delete(h.conns, c.ID)
 	h.mu.Unlock()
@@ -105,10 +135,8 @@ func (h *Hub) Broadcast(channelID string, msg []byte, exceptConnID string) {
 			continue
 		}
 		if c.IsSubscribed(channelID) {
-			select {
-			case c.Send <- msg:
-			default:
-				// Drop if buffer full
+			if !c.trySend(msg) {
+				log.Printf("[hub:%s] dropped message for conn %s (buffer full %d/%d)", h.slug, c.ID, len(c.Send), cap(c.Send))
 			}
 		}
 	}
@@ -122,9 +150,8 @@ func (h *Hub) BroadcastAll(msg []byte, exceptConnID string) {
 		if c.ID == exceptConnID {
 			continue
 		}
-		select {
-		case c.Send <- msg:
-		default:
+		if !c.trySend(msg) {
+			log.Printf("[hub:%s] dropped broadcast for conn %s (buffer full %d/%d)", h.slug, c.ID, len(c.Send), cap(c.Send))
 		}
 	}
 }
@@ -134,9 +161,8 @@ func (h *Hub) SendTo(connID string, msg []byte) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	if c, ok := h.conns[connID]; ok {
-		select {
-		case c.Send <- msg:
-		default:
+		if !c.trySend(msg) {
+			log.Printf("[hub:%s] dropped direct message for conn %s (buffer full)", h.slug, connID)
 		}
 	}
 }
@@ -147,9 +173,8 @@ func (h *Hub) SendToUser(userID string, msg []byte) {
 	defer h.mu.RUnlock()
 	for _, c := range h.conns {
 		if c.UserID == userID {
-			select {
-			case c.Send <- msg:
-			default:
+			if !c.trySend(msg) {
+				log.Printf("[hub:%s] dropped message for user %s conn %s (buffer full)", h.slug, userID, c.ID)
 			}
 		}
 	}
@@ -199,6 +224,21 @@ func (h *Hub) SubscribeUsersByID(channelID string, userIDs []string) {
 	}
 }
 
+// UnsubscribeUsersByID unsubscribes connections belonging to specific user IDs from a channel.
+func (h *Hub) UnsubscribeUsersByID(channelID string, userIDs []string) {
+	remove := make(map[string]bool, len(userIDs))
+	for _, uid := range userIDs {
+		remove[uid] = true
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, c := range h.conns {
+		if remove[c.UserID] {
+			c.Unsubscribe(channelID)
+		}
+	}
+}
+
 // BroadcastLowPriority sends a message but drops it for connections whose buffer is > 50% full.
 func (h *Hub) BroadcastLowPriority(channelID string, msg []byte, exceptConnID string) {
 	h.mu.RLock()
@@ -209,14 +249,9 @@ func (h *Hub) BroadcastLowPriority(channelID string, msg []byte, exceptConnID st
 		}
 		if c.IsSubscribed(channelID) {
 			if len(c.Send)*2 > cap(c.Send) {
-				log.Printf("[hub:%s] dropping low-priority message for conn %s (buffer %d/%d)", h.slug, c.ID, len(c.Send), cap(c.Send))
-				continue
+				continue // silently drop low-priority when buffer half full
 			}
-			select {
-			case c.Send <- msg:
-			default:
-				log.Printf("[hub:%s] dropped message for conn %s (buffer full)", h.slug, c.ID)
-			}
+			c.trySend(msg)
 		}
 	}
 }
@@ -230,14 +265,9 @@ func (h *Hub) BroadcastAllLowPriority(msg []byte, exceptConnID string) {
 			continue
 		}
 		if len(c.Send)*2 > cap(c.Send) {
-			log.Printf("[hub:%s] dropping low-priority message for conn %s (buffer %d/%d)", h.slug, c.ID, len(c.Send), cap(c.Send))
 			continue
 		}
-		select {
-		case c.Send <- msg:
-		default:
-			log.Printf("[hub:%s] dropped message for conn %s (buffer full)", h.slug, c.ID)
-		}
+		c.trySend(msg)
 	}
 }
 

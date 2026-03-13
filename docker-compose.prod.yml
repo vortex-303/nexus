@@ -1,0 +1,23 @@
+services:
+  nexus:
+    image: ghcr.io/vortex-303/nexus:latest
+    build: .
+    volumes:
+      - nexus_data:/data
+    environment:
+      DATA_DIR: /data
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - ./Caddyfile:/etc/caddy/Caddyfile
+    restart: unless-stopped
+
+volumes:
+  nexus_data:
+  caddy_data:

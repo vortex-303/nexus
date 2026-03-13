@@ -20,6 +20,11 @@ import (
 	"github.com/nexus-chat/nexus/internal/metrics"
 )
 
+// maxMessageAge is the maximum age of a message before an agent skips responding.
+// If a goroutine is blocked on agentSem and the message becomes older than this,
+// the response is dropped to avoid replying to stale conversations.
+const maxMessageAge = 2 * time.Minute
+
 // generatedImagesFolderCache caches the folder ID per workspace slug.
 var generatedImagesFolderCache sync.Map
 
@@ -72,9 +77,22 @@ func (s *Server) broadcastAgentState(slug, channelID, agentID, agentName, state,
 
 // handleAgentMention is called when a message mentions an agent.
 // It runs asynchronously in a goroutine. fromAgent indicates this was triggered by another agent.
-func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, content string, agent *Agent, fromAgent ...bool) {
+func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, content string, agent *Agent, messageTime time.Time, fromAgent ...bool) {
 	isFromAgent := len(fromAgent) > 0 && fromAgent[0]
 	go func() {
+		// Acquire semaphore to limit concurrent agent goroutines
+		select {
+		case s.agentSem <- struct{}{}:
+			defer func() { <-s.agentSem }()
+		default:
+			logger.WithCategory(logger.CatAgent).Warn().Str("workspace", slug).Str("agent", agent.Name).Msg("too many concurrent agents, dropping")
+			return
+		}
+		// Skip stale messages that waited too long on the semaphore
+		if time.Since(messageTime) > maxMessageAge {
+			logger.WithCategory(logger.CatAgent).Info().Str("agent", agent.Name).Dur("age", time.Since(messageTime)).Msg("skipping stale message")
+			return
+		}
 		metrics.AgentExecutionsTotal.WithLabelValues(agent.Name, "started").Inc()
 		logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Bool("active", agent.IsActive).Msg("handleAgentMention triggered")
 		if !agent.IsActive {
@@ -92,19 +110,36 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 		s.broadcastAgentState(slug, channelID, agent.ID, agent.Name, "thinking", "")
 		defer s.broadcastAgentState(slug, channelID, agent.ID, agent.Name, "idle", "")
 
-		apiKey, _ := s.getBrainSettings(slug)
-		if apiKey == "" {
-			logger.WithCategory(logger.CatAgent).Warn().Str("workspace", slug).Str("agent", agent.Name).Msg("no API key configured")
-			return
-		}
-
 		// Use agent's model or fall back to workspace default
 		model := agent.Model
 		if model == "" {
 			_, model = s.getBrainSettings(slug)
 		}
 
+		// Gemini agents only need Gemini API key, skip OpenRouter checks
+		if !isGeminiModel(model) {
+			// Respect Brain's LLM enabled setting — OpenRouter/xAI agents require LLM
+			xaiOn := s.getBrainSetting(slug, "xai_enabled") == "true"
+			if s.getBrainSetting(slug, "llm_enabled", "true") == "false" && !xaiOn {
+				logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Msg("LLM disabled, skipping agent")
+				return
+			}
+		}
+
+		apiKey, _ := s.getBrainSettings(slug)
+		if !isGeminiModel(model) && apiKey == "" {
+			logger.WithCategory(logger.CatAgent).Warn().Str("workspace", slug).Str("agent", agent.Name).Msg("no API key configured")
+			return
+		}
+
 		systemPrompt := buildAgentSystemPrompt(agent)
+
+		// Inject North Star context
+		if nsCtx := s.buildNorthStarContext(slug); nsCtx != "" {
+			systemPrompt += "\n\n---\n\n" + nsCtx
+		}
+
+		systemPrompt += fmt.Sprintf("\n\n## Current Conversation\nYou are talking to: **%s**. Address them by this name.", senderName)
 		logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Int("chars", len(systemPrompt)).Msg("base prompt")
 
 		// Append agent-specific skills
@@ -134,7 +169,7 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 
 		// Optionally append memory context
 		if agent.MemoryAccess {
-			memContext := brain.BuildMemoryContext(wdb.DB)
+			memContext := brain.BuildMemoryContext(wdb.DB, content)
 			if memContext != "" {
 				systemPrompt += "\n\n---\n\n" + memContext
 				logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Int("memory_chars", len(memContext)).Int("total_chars", len(systemPrompt)).Msg("+memory")
@@ -160,8 +195,95 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 		allTools := s.getAllTools(slug)
 		agentTools := getAgentTools(agent, allTools)
 
+		// Route to Gemini API natively if model is a Gemini model
+		if isGeminiModel(model) {
+			geminiKey := s.getGeminiAPIKey(slug)
+			if geminiKey == "" {
+				logger.WithCategory(logger.CatAgent).Warn().Str("workspace", slug).Str("agent", agent.Name).Msg("no Gemini API key for Gemini model")
+				return
+			}
+			geminiModel := strings.TrimPrefix(model, "google/")
+
+			if len(agentTools) == 0 {
+				response, gemUsage, err := brain.GenerateTextGemini(geminiKey, geminiModel, systemPrompt, messages)
+				if err != nil {
+					logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("Gemini text error")
+					return
+				}
+				s.trackUsage(slug, gemUsage, model, "agent", channelID, senderName)
+				response = strings.TrimSpace(response)
+				if response != "" {
+					s.sendAgentMessage(slug, channelID, parentID, agent, response, isFromAgent)
+				}
+				brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
+					truncate(content, 200), truncate(response, 500), model, nil)
+				return
+			}
+
+			// With tools — Gemini function calling
+			responseContent, toolCalls, gemToolUsage, err := brain.CompleteWithToolsGemini(geminiKey, geminiModel, systemPrompt, messages, agentTools)
+			if err != nil {
+				logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("Gemini tools error")
+				return
+			}
+			s.trackUsage(slug, gemToolUsage, model, "agent", channelID, senderName)
+
+			if len(toolCalls) == 0 {
+				responseContent = strings.TrimSpace(responseContent)
+				if responseContent != "" {
+					s.sendAgentMessage(slug, channelID, parentID, agent, responseContent, isFromAgent)
+				}
+				brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
+					truncate(content, 200), truncate(responseContent, 500), model, nil)
+				return
+			}
+
+			// Execute tools
+			var toolNames []string
+			var imageRefs []string
+			var imagePromptTag string
+			assistantMsg := brain.Message{Role: "assistant", Content: responseContent, ToolCalls: toolCalls}
+			followUp := append(messages, assistantMsg)
+
+			for _, call := range toolCalls {
+				s.broadcastAgentState(slug, channelID, agent.ID, agent.Name, "tool_executing", call.Function.Name)
+				senderID := s.resolveMemberIDByName(slug, senderName)
+				result := s.executeAgentTool(slug, channelID, senderID, agent, call)
+				toolNames = append(toolNames, call.Function.Name)
+				imageRefs = append(imageRefs, extractImageMarkdown(result)...)
+				result, promptTag := extractImagePromptTag(result)
+				if promptTag != "" {
+					imagePromptTag = promptTag
+				}
+				followUp = append(followUp, brain.Message{
+					Role:       "tool",
+					Content:    result,
+					ToolCallID: call.ID,
+				})
+			}
+
+			finalResponse, gemFollowUsage, err := brain.GenerateTextGemini(geminiKey, geminiModel, systemPrompt, followUp)
+			if err != nil {
+				logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("Gemini follow-up error")
+				if responseContent != "" {
+					s.sendAgentMessage(slug, channelID, parentID, agent, appendMissingImages(responseContent, imageRefs)+imagePromptTag, isFromAgent)
+				}
+				return
+			}
+			s.trackUsage(slug, gemFollowUsage, model, "agent", channelID, senderName)
+			finalResponse = strings.TrimSpace(finalResponse)
+			finalResponse = appendMissingImages(finalResponse, imageRefs)
+			finalResponse += imagePromptTag
+			if finalResponse != "" {
+				s.sendAgentMessage(slug, channelID, parentID, agent, finalResponse, isFromAgent, toolNames...)
+			}
+			brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
+				truncate(content, 200), truncate(finalResponse, 500), model, toolNames)
+			return
+		}
+
 		// Resolve free-auto virtual model
-		resolvedModel, fallbacks := s.resolveFreeAuto(model)
+		resolvedModel, fallbacks := s.resolveFreeAuto(model, slug)
 
 		client := &brain.Client{
 			APIKey:             apiKey,
@@ -177,11 +299,12 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 		if len(agentTools) == 0 {
 			// No tools — simple completion (or multimodal for image-capable models)
 			if isMultimodalModel(model) {
-				responseText, images, err := client.CompleteMultimodal(systemPrompt, messages)
+				responseText, images, mmUsage, err := client.CompleteMultimodal(systemPrompt, messages)
 				if err != nil {
 					logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("multimodal LLM error")
 					return
 				}
+				s.trackUsage(slug, mmUsage, resolvedModel, "agent", channelID, senderName)
 				responseText = strings.TrimSpace(responseText)
 				// Save images and append markdown references
 				imagesMd := s.saveAgentImages(slug, channelID, agent, images)
@@ -191,22 +314,21 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 				}
 				brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 					truncate(content, 200), truncate(responseText, 500), model, nil)
-				s.maybeStartFollowing(slug, channelID, agent)
-				return
+					return
 			}
 
-			response, err := client.Complete(systemPrompt, messages)
+			response, agRtUsage, err := client.Complete(systemPrompt, messages)
 			if err != nil {
 				logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("LLM error")
 				return
 			}
+			s.trackUsage(slug, agRtUsage, resolvedModel, "agent", channelID, senderName)
 			response = strings.TrimSpace(response)
 			if response != "" {
 				s.sendAgentMessage(slug, channelID, parentID, agent, response, isFromAgent)
 			}
 			brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 				truncate(content, 200), truncate(response, 500), model, nil)
-			s.maybeStartFollowing(slug, channelID, agent)
 			return
 		}
 
@@ -215,11 +337,12 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 		for _, t := range agentTools {
 			logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Str("tool", t.Function.Name).Msg("tool available")
 		}
-		responseContent, toolCalls, err := client.CompleteWithTools(systemPrompt, messages, agentTools)
+		responseContent, toolCalls, agToolUsage, err := client.CompleteWithTools(systemPrompt, messages, agentTools)
 		if err != nil {
 			logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("LLM error")
 			return
 		}
+		s.trackUsage(slug, agToolUsage, resolvedModel, "agent", channelID, senderName)
 
 		if len(toolCalls) == 0 {
 			logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Str("response", truncate(responseContent, 200)).Msg("no tool calls returned")
@@ -229,7 +352,6 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 			}
 			brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 				truncate(content, 200), truncate(responseContent, 500), model, nil)
-			s.maybeStartFollowing(slug, channelID, agent)
 			return
 		}
 
@@ -242,6 +364,7 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 		var toolNames []string
 		var imageRefs []string
 		var imagePromptTag string
+		var toolResults []string
 		for _, call := range toolCalls {
 			s.broadcastAgentState(slug, channelID, agent.ID, agent.Name, "tool_executing", call.Function.Name)
 			senderID := s.resolveMemberIDByName(slug, senderName)
@@ -258,6 +381,8 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 				imagePromptTag = promptTag
 			}
 
+			toolResults = append(toolResults, result)
+
 			followUp = append(followUp, brain.Message{
 				Role:       "tool",
 				Content:    result,
@@ -265,10 +390,24 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 			})
 		}
 
+		// Check if a single tool with ResultAsAnswer was called — skip second LLM round
+		if len(toolCalls) == 1 {
+			if td := findToolDef(allTools, toolCalls[0].Function.Name); td != nil && td.Function.ResultAsAnswer {
+				finalResponse := appendMissingImages(toolResults[0], imageRefs) + imagePromptTag
+				if finalResponse != "" {
+					s.sendAgentMessage(slug, channelID, parentID, agent, finalResponse, isFromAgent, toolNames...)
+				}
+				brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
+					truncate(content, 200), truncate(finalResponse, 500), model, toolNames)
+				return
+			}
+		}
+
 		var finalResponse string
 		{
 			var err2 error
-			finalResponse, err2 = client.Complete(systemPrompt, followUp)
+			var followUsage *brain.CompletionUsage
+			finalResponse, followUsage, err2 = client.Complete(systemPrompt, followUp)
 			if err2 != nil {
 				logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err2).Msg("follow-up LLM error")
 				if responseContent != "" {
@@ -276,6 +415,7 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 				}
 				return
 			}
+			s.trackUsage(slug, followUsage, resolvedModel, "agent", channelID, senderName)
 			finalResponse = strings.TrimSpace(finalResponse)
 		}
 
@@ -290,84 +430,6 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 		brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 			truncate(content, 200), truncate(finalResponse, 500), model, toolNames)
 
-		// Start conversation following if configured
-		s.maybeStartFollowing(slug, channelID, agent)
-	}()
-}
-
-// maybeStartFollowing starts conversation following for an agent if configured.
-func (s *Server) maybeStartFollowing(slug, channelID string, agent *Agent) {
-	if s.convTracker == nil || agent.BehaviorConfig.FollowTTLMinutes <= 0 {
-		return
-	}
-	key := ConversationKey{Slug: slug, ChannelID: channelID, AgentID: agent.ID}
-	s.convTracker.StartFollowing(key, agent.BehaviorConfig.FollowTTLMinutes, agent.BehaviorConfig.FollowMaxMessages)
-	logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Str("channel", channelID).Int("ttl_minutes", agent.BehaviorConfig.FollowTTLMinutes).Int("max_messages", agent.BehaviorConfig.FollowMaxMessages).Msg("started following conversation")
-}
-
-// handleAgentFollowUp is called when an agent is following a conversation (not directly mentioned).
-func (s *Server) handleAgentFollowUp(slug, channelID, parentID, senderName, content string, agent *Agent) {
-	go func() {
-		metrics.AgentExecutionsTotal.WithLabelValues(agent.Name, "follow_up").Inc()
-		logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Msg("handleAgentFollowUp triggered")
-		if !agent.IsActive {
-			return
-		}
-
-		s.broadcastAgentState(slug, channelID, agent.ID, agent.Name, "thinking", "")
-		defer s.broadcastAgentState(slug, channelID, agent.ID, agent.Name, "idle", "")
-
-		apiKey, _ := s.getBrainSettings(slug)
-		if apiKey == "" {
-			return
-		}
-
-		model := agent.Model
-		if model == "" {
-			_, model = s.getBrainSettings(slug)
-		}
-
-		systemPrompt := buildFollowUpSystemPrompt(agent)
-
-		wdb, err := s.ws.Open(slug)
-		if err != nil {
-			return
-		}
-
-		if agent.KnowledgeAccess {
-			kbContext := brain.BuildKnowledgeContext(wdb.DB, content, brain.SemanticOpts{
-				VectorStore: s.vectors, APIKey: apiKey, Slug: slug,
-			})
-			if kbContext != "" {
-				systemPrompt += "\n\n---\n\n" + kbContext
-			}
-		}
-
-		if chSummary := brain.BuildSingleChannelContext(wdb.DB, channelID); chSummary != "" {
-			systemPrompt += "\n\n---\n\n" + chSummary
-		}
-
-		messages := s.getThreadOrChannelMessages(wdb, channelID, parentID, 40)
-
-		resolvedModel, fallbacks := s.resolveFreeAuto(model)
-		client := brain.NewClient(apiKey, resolvedModel)
-		client.FreeModelFallbacks = fallbacks
-		response, err := client.Complete(systemPrompt, messages)
-		if err != nil {
-			logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("follow-up LLM error")
-			return
-		}
-		response = strings.TrimSpace(response)
-
-		// Agent can respond with empty string to stay silent
-		if response == "" {
-			return
-		}
-
-		s.sendAgentMessage(slug, channelID, parentID, agent, response, false)
-
-		brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
-			truncate(content, 200), truncate(response, 500), model, nil)
 	}()
 }
 
@@ -403,14 +465,12 @@ func buildAgentSystemPrompt(agent *Agent) string {
 
 	parts = append(parts, "\n## Response Guidelines\n- When you create something (task, document, etc.), ALWAYS tell the user where to find it.\n- When you use a tool, briefly mention what you did and the result.\n- Be concise.")
 
-	return strings.Join(parts, "\n")
-}
+	// Inject current time so agents can reason about dates accurately
+	now := time.Now().UTC()
+	parts = append(parts, fmt.Sprintf("\n## Current Time\nUTC: %s\nDay: %s",
+		now.Format(time.RFC3339), now.Format("Monday, January 2, 2006")))
 
-// buildFollowUpSystemPrompt builds a system prompt for conversation-following or ambient responses.
-func buildFollowUpSystemPrompt(agent *Agent) string {
-	base := buildAgentSystemPrompt(agent)
-	base += "\n\n## Context\nYou were NOT directly @mentioned in this message. You are following this conversation because you were recently mentioned or the topic is relevant to your expertise.\n- Only respond if you have something genuinely useful to add.\n- If following up on a previous conversation, start with brief context like \"Following up on...\"\n- If the message doesn't need your input, respond with an empty string to stay silent.\n- Do NOT repeat information you've already shared."
-	return base
+	return strings.Join(parts, "\n")
 }
 
 // checkAgentMentions scans message content for @AgentName mentions.
@@ -450,8 +510,10 @@ func (s *Server) checkAgentMentions(slug, content string) []*Agent {
 // handleDelegateToAgent is called when Brain uses the delegate_to_agent tool.
 func (s *Server) handleDelegateToAgent(slug, channelID, argsJSON string) string {
 	var args struct {
-		AgentName string `json:"agent_name"`
-		Task      string `json:"task"`
+		AgentName      string `json:"agent_name"`
+		Task           string `json:"task"`
+		Context        string `json:"context"`
+		ExpectedOutput string `json:"expected_output"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "Error parsing arguments"
@@ -474,6 +536,11 @@ func (s *Server) handleDelegateToAgent(slug, channelID, argsJSON string) string 
 
 	systemPrompt := buildAgentSystemPrompt(agent)
 
+	// Inject North Star context
+	if nsCtx := s.buildNorthStarContext(slug); nsCtx != "" {
+		systemPrompt += "\n\n---\n\n" + nsCtx
+	}
+
 	wdb, err := s.ws.Open(slug)
 	if err != nil {
 		return "Workspace error"
@@ -488,19 +555,158 @@ func (s *Server) handleDelegateToAgent(slug, channelID, argsJSON string) string 
 		}
 	}
 
-	resolvedModel, fallbacks := s.resolveFreeAuto(model)
-	client := brain.NewClient(apiKey, resolvedModel)
-	client.FreeModelFallbacks = fallbacks
-	taskMessages := []brain.Message{
-		{Role: "user", Content: args.Task},
+	if agent.MemoryAccess {
+		memContext := brain.BuildMemoryContext(wdb.DB, args.Task)
+		if memContext != "" {
+			systemPrompt += "\n\n---\n\n" + memContext
+		}
 	}
 
-	response, err := client.Complete(systemPrompt, taskMessages)
+	// Build the user message with context and expected output
+	userContent := args.Task
+	if args.Context != "" {
+		userContent = "## Context\n" + args.Context + "\n\n## Task\n" + args.Task
+	}
+	if args.ExpectedOutput != "" {
+		userContent += "\n\n## Expected Output\n" + args.ExpectedOutput
+	}
+
+	taskMessages := []brain.Message{
+		{Role: "user", Content: userContent},
+	}
+
+	if isGeminiModel(model) {
+		geminiKey := s.getGeminiAPIKey(slug)
+		if geminiKey == "" {
+			return "No Gemini API key configured"
+		}
+		geminiModel := strings.TrimPrefix(model, "google/")
+		response, taskGemUsage, err := brain.GenerateTextGemini(geminiKey, geminiModel, systemPrompt, taskMessages)
+		if err != nil {
+			return fmt.Sprintf("Agent error: %v", err)
+		}
+		s.trackUsage(slug, taskGemUsage, model, "agent", channelID, "")
+		return fmt.Sprintf("[%s]: %s", agent.Name, strings.TrimSpace(response))
+	}
+
+	resolvedModel, fallbacks := s.resolveFreeAuto(model, slug)
+	client := brain.NewClient(apiKey, resolvedModel)
+	client.FreeModelFallbacks = fallbacks
+
+	// Get agent's scoped tools for delegation with tool calling
+	allTools := s.getAllTools(slug)
+	agentTools := getAgentTools(agent, allTools)
+
+	if len(agentTools) == 0 {
+		// No tools — simple completion
+		response, taskUsage, err := client.Complete(systemPrompt, taskMessages)
+		if err != nil {
+			return fmt.Sprintf("Agent error: %v", err)
+		}
+		s.trackUsage(slug, taskUsage, resolvedModel, "agent", channelID, "")
+		return fmt.Sprintf("[%s]: %s", agent.Name, strings.TrimSpace(response))
+	}
+
+	// With tools — multi-turn tool calling loop (up to max_iterations)
+	maxIter := agent.MaxIterations
+	if maxIter <= 0 {
+		maxIter = 5
+	}
+
+	currentMessages := taskMessages
+	for iter := 0; iter < maxIter; iter++ {
+		responseContent, toolCalls, iterUsage, err := client.CompleteWithTools(systemPrompt, currentMessages, agentTools)
+		if err != nil {
+			return fmt.Sprintf("Agent error: %v", err)
+		}
+		s.trackUsage(slug, iterUsage, resolvedModel, "agent", channelID, "")
+
+		if len(toolCalls) == 0 {
+			return fmt.Sprintf("[%s]: %s", agent.Name, strings.TrimSpace(responseContent))
+		}
+
+		// Execute tools
+		assistantMsg := brain.Message{Role: "assistant", Content: responseContent, ToolCalls: toolCalls}
+		currentMessages = append(currentMessages, assistantMsg)
+
+		for _, call := range toolCalls {
+			result := s.executeTool(slug, channelID, "", call)
+			currentMessages = append(currentMessages, brain.Message{
+				Role:       "tool",
+				Content:    result,
+				ToolCallID: call.ID,
+			})
+		}
+	}
+
+	// Final completion after tool loop
+	response, finalTaskUsage, err := client.Complete(systemPrompt, currentMessages)
 	if err != nil {
 		return fmt.Sprintf("Agent error: %v", err)
 	}
-
+	s.trackUsage(slug, finalTaskUsage, resolvedModel, "agent", channelID, "")
 	return fmt.Sprintf("[%s]: %s", agent.Name, strings.TrimSpace(response))
+}
+
+// handleAskAgent is called when Brain uses the ask_agent tool for quick questions.
+func (s *Server) handleAskAgent(slug, channelID, argsJSON string) string {
+	var args struct {
+		AgentName string `json:"agent_name"`
+		Question  string `json:"question"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "Error parsing arguments"
+	}
+
+	agent := s.loadAgentByName(slug, args.AgentName)
+	if agent == nil {
+		return fmt.Sprintf("Agent '%s' not found or not active", args.AgentName)
+	}
+
+	apiKey, _ := s.getBrainSettings(slug)
+	if apiKey == "" {
+		return "No API key configured"
+	}
+
+	model := agent.Model
+	if model == "" {
+		_, model = s.getBrainSettings(slug)
+	}
+
+	systemPrompt := buildAgentSystemPrompt(agent)
+	questionMessages := []brain.Message{
+		{Role: "user", Content: args.Question},
+	}
+
+	if isGeminiModel(model) {
+		geminiKey := s.getGeminiAPIKey(slug)
+		if geminiKey == "" {
+			return "No Gemini API key configured"
+		}
+		geminiModel := strings.TrimPrefix(model, "google/")
+		response, askGemUsage, err := brain.GenerateTextGemini(geminiKey, geminiModel, systemPrompt, questionMessages)
+		if err != nil {
+			return fmt.Sprintf("Agent error: %v", err)
+		}
+		s.trackUsage(slug, askGemUsage, model, "agent", channelID, "")
+		return fmt.Sprintf("[%s]: %s", agent.Name, strings.TrimSpace(response))
+	}
+
+	resolvedModel, fallbacks := s.resolveFreeAuto(model, slug)
+	client := brain.NewClient(apiKey, resolvedModel)
+	client.FreeModelFallbacks = fallbacks
+
+	response, askUsage, err := client.Complete(systemPrompt, questionMessages)
+	if err != nil {
+		return fmt.Sprintf("Agent error: %v", err)
+	}
+	s.trackUsage(slug, askUsage, resolvedModel, "agent", channelID, "")
+	return fmt.Sprintf("[%s]: %s", agent.Name, strings.TrimSpace(response))
+}
+
+// isGeminiModel returns true if the model should be routed to the Gemini API.
+func isGeminiModel(model string) bool {
+	return strings.HasPrefix(model, "google/gemini") || strings.HasPrefix(model, "gemini-")
 }
 
 // isMultimodalModel returns true if the model supports image generation output.

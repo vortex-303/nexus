@@ -2,6 +2,30 @@ package brain
 
 import "encoding/json"
 
+// APIError handles both object {"message":"..."} and plain string error responses.
+type APIError struct {
+	Message string
+}
+
+func (e *APIError) UnmarshalJSON(data []byte) error {
+	// Try object first: {"message": "..."}
+	var obj struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(data, &obj); err == nil {
+		e.Message = obj.Message
+		return nil
+	}
+	// Fall back to plain string: "error text"
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		e.Message = s
+		return nil
+	}
+	e.Message = string(data)
+	return nil
+}
+
 // Tool definitions for OpenRouter function calling (OpenAI-compatible format).
 
 type ToolDef struct {
@@ -46,9 +70,8 @@ type ToolCompletionChoice struct {
 
 type ToolCompletionResponse struct {
 	Choices []ToolCompletionChoice `json:"choices"`
-	Error   *struct {
-		Message string `json:"message"`
-	} `json:"error,omitempty"`
+	Usage   *CompletionUsage       `json:"usage,omitempty"`
+	Error   *APIError              `json:"error,omitempty"`
 }
 
 // Available tools for the Brain.
@@ -356,6 +379,24 @@ var Tools = []ToolDef{
 				"properties": {
 					"query": {"type": "string", "description": "Search query"},
 					"num_results": {"type": "integer", "description": "Number of results to return (default 5, max 10)"}
+				},
+				"required": ["query"]
+			}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: ToolFuncDef{
+			Name:           "search_x",
+			Description:    "Search X/Twitter for posts, discussions, and real-time social media content. Use when someone asks what people are saying on X/Twitter, wants social media sentiment, or asks about trending discussions.",
+			ResultAsAnswer: true,
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"query": {"type": "string", "description": "Search query for X/Twitter"},
+					"from_date": {"type": "string", "description": "Only include posts from this date (YYYY-MM-DD, optional)"},
+					"to_date": {"type": "string", "description": "Only include posts up to this date (YYYY-MM-DD, optional)"},
+					"x_handles": {"type": "array", "items": {"type": "string"}, "description": "Only search posts from these X handles (optional)"}
 				},
 				"required": ["query"]
 			}`),

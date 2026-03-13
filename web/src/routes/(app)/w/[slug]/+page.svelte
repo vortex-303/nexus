@@ -2,25 +2,28 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, createWebhook, listWebhooks, deleteWebhook, listWebhookEvents, listEmailThreads, deleteEmailThread, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI } from '$lib/api';
+	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, createWebhook, listWebhooks, deleteWebhook, listWebhookEvents, listEmailThreads, deleteEmailThread, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, triggerBrainWelcome, extractMemoriesNow, triggerReflection, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage } from '$lib/api';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { connect, disconnect, onMessage, sendMessage, sendTyping, sendReaction, removeReaction, clearChannel, markChannelRead, connectionStatus, generateClientId } from '$lib/ws';
 	import { channels, members, messages, activeChannel, typingUsers, onlineUsers } from '$lib/stores/workspace';
 	import type { Channel } from '$lib/stores/workspace';
 	import TiptapEditor from '$lib/editor/TiptapEditor.svelte';
 	import MarkdownEditor from '$lib/editor/MarkdownEditor.svelte';
-	import { htmlToMarkdown, markdownToHtml } from '$lib/editor/markdown-utils';
+	import { htmlToMarkdown, markdownToHtml, safeMarkdownToHtml } from '$lib/editor/markdown-utils';
 	import OrgChart from '$lib/components/OrgChart.svelte';
 	import SearchModal from '$lib/components/SearchModal.svelte';
 
-	const ROLES = ['admin', 'member', 'designer', 'marketing_coordinator', 'marketing_strategist', 'researcher', 'sales', 'guest', 'custom'];
+	const ROLES = ['admin', 'member', 'guest'];
 
 	let slug = $derived(page.params.slug);
 	let input = $state('');
 	let messagesEl: HTMLElement;
 	let showNewChannel = $state(false);
 	let showNewDM = $state(false);
+	let channelMenuId = $state<string | null>(null);
 	let dmSearchQuery = $state('');
+	let selectedGroupMembers = $state<string[]>([]);
+	let groupName = $state('');
 	let agentIds = $derived(new Set(agentsList.map(a => a.id)));
 	let dmFilteredMembers = $derived.by(() => {
 		const q = dmSearchQuery.toLowerCase();
@@ -55,8 +58,32 @@
 	let viewerImage = $state<{url: string; alt: string; sender?: string; timestamp?: string; prompt?: string; fileName?: string; fileSize?: number; mime?: string} | null>(null);
 
 	// DM helpers
-	let publicChannels = $derived($channels.filter(ch => ch.type !== 'dm'));
+	let publicChannels = $derived($channels.filter(ch => ch.type !== 'dm' && ch.type !== 'group'));
 	let dmChannels = $derived($channels.filter(ch => ch.type === 'dm'));
+	let groupChannels = $derived($channels.filter(ch => ch.type === 'group'));
+
+	// Pinned DMs (persisted in localStorage)
+	let pinnedDMIds = $state<Set<string>>(new Set());
+	$effect(() => {
+		const stored = localStorage.getItem(`nexus_pinned_dms_${slug}`);
+		if (stored) {
+			try { pinnedDMIds = new Set(JSON.parse(stored)); } catch {}
+		}
+	});
+
+	let sortedDmChannels = $derived.by(() => {
+		return [...dmChannels].sort((a, b) => {
+			const aIsBrain = a.name.includes('brain');
+			const bIsBrain = b.name.includes('brain');
+			if (aIsBrain && !bIsBrain) return -1;
+			if (!aIsBrain && bIsBrain) return 1;
+			const aPinned = pinnedDMIds.has(a.id);
+			const bPinned = pinnedDMIds.has(b.id);
+			if (aPinned && !bPinned) return -1;
+			if (!aPinned && bPinned) return 1;
+			return 0;
+		});
+	});
 
 	function dmChannelName(myId: string, theirId: string): string {
 		const sorted = [myId, theirId].sort();
@@ -79,8 +106,14 @@
 	}
 
 	// View state
-	type View = 'chat' | 'board' | 'list' | 'brain' | 'team';
+	type View = 'chat' | 'board' | 'list' | 'brain';
 	let activeView = $state<View>('chat');
+
+	// Onboarding wizard state
+	let showWizard = $state(false);
+	let wizardStep = $state<'welcome' | 'apikey' | 'done'>('welcome');
+	let wizardApiKey = $state('');
+	let wizardSaving = $state(false);
 
 	// Tasks state
 	const STATUSES = ['backlog', 'todo', 'in_progress', 'done', 'cancelled'] as const;
@@ -119,6 +152,10 @@
 	let showAgentLibrary = $state(false);
 	let agentLibSearch = $state('');
 	let agentLibFilter = $state('all');
+
+	// Team modal
+	let showTeamModal = $state(false);
+	let teamModalTab = $state<'members' | 'agents'>('members');
 
 	const agentLibCategories = [
 		{ id: 'all', label: 'All' },
@@ -177,6 +214,15 @@
 		showAgentLibrary = true;
 	}
 
+	async function openTeamModal(tab: 'members' | 'agents' = 'members') {
+		teamModalTab = tab;
+		selectedMember = null;
+		memberDetail = null;
+		await loadAgents();
+		await loadTemplates();
+		showTeamModal = true;
+	}
+
 	function agentLibChat(agent: any) {
 		showAgentLibrary = false;
 		startDMWithAgent(agent);
@@ -184,9 +230,8 @@
 
 	function agentLibEdit(agent: any) {
 		showAgentLibrary = false;
-		activeView = 'team';
-		onViewChange();
-		teamTab = 'agents';
+		showTeamModal = true;
+		teamModalTab = 'agents';
 		openEditAgent(agent);
 	}
 
@@ -218,6 +263,8 @@
 	let prefsTab = $state<'profile' | 'security' | 'appearance'>('profile');
 	let prefsDisplayName = $state('');
 	let prefsEmail = $state('');
+	let prefsOrigEmail = $state('');
+	let prefsEmailPw = $state('');
 	let prefsCurrentPw = $state('');
 	let prefsNewPw = $state('');
 	let prefsConfirmPw = $state('');
@@ -246,7 +293,19 @@
 
 	// Favorites
 	let favoriteChannels = $derived($channels.filter(ch => ch.is_favorite && ch.type !== 'dm'));
-	let regularChannels = $derived(publicChannels.filter(ch => !ch.is_favorite));
+	let regularChannels = $derived(
+		[...publicChannels].sort((a, b) => {
+			// Favorites first
+			if (a.is_favorite && !b.is_favorite) return -1;
+			if (!a.is_favorite && b.is_favorite) return 1;
+			// Among favorites: latest pinned first
+			if (a.is_favorite && b.is_favorite) {
+				return (b.favorited_at || '').localeCompare(a.favorited_at || '');
+			}
+			// Non-favorites: alphabetical
+			return a.name.localeCompare(b.name);
+		})
+	);
 
 	// @-mention autocomplete
 	let mentionActive = $state(false);
@@ -273,19 +332,78 @@
 	});
 
 	// Brain state
+	// Restore brain engine config from localStorage for instant status bar
+	const _cachedBrain = typeof localStorage !== 'undefined' ? JSON.parse(localStorage.getItem('nexus_brain_config') || 'null') : null;
 	let brainSettings = $state<any>({});
 	let brainApiKey = $state('');
-	let brainModel = $state('nexus/free-auto');
-	let brainImageModel = $state('gemini-2.5-flash-image');
+	let brainModel = $state(_cachedBrain?.model || 'nexus/free-auto');
+	let brainImageModel = $state(_cachedBrain?.image_model || 'gemini-2.5-flash-image');
 	let brainGeminiKey = $state('');
+	let brainXAIKey = $state('');
+	let brainXAIModel = $state(_cachedBrain?.xai_model || '');
+	let brainXAIEnabled = $state(_cachedBrain?.xai_enabled ?? false);
+	let brainBraveKey = $state('');
+	let brainOpenAIKey = $state('');
+	let northStar = $state('');
+	let northStarWhy = $state('');
+	let northStarSuccess = $state('');
+	let strategicThemesInput = $state('');
+	let reflectionEnabled = $state(true);
+	let reflectionTime = $state('3:00');
+	let reflectingNow = $state(false);
+	let destroyConfirm = $state('');
+	let destroyingWorkspace = $state(false);
+	let networkStats = $state<any>(null);
+	let networkEntries = $state<any[]>([]);
+	let networkExpanded = $state(false);
+	let brainMemoryEngine = $state('openrouter');
+	let brainStandardChatEnabled = $state(_cachedBrain?.standard_chat_enabled ?? true);
+	let brainLLMEnabled = $state(_cachedBrain?.llm_enabled ?? true);
+	let brainWebLLMEnabled = $state(_cachedBrain?.webllm_enabled ?? false);
+	let brainWebLLMModel = $state(_cachedBrain?.webllm_model || '');
+	const DEFAULT_WEBLLM_PROMPT = `You are Brain, the AI assistant for this Nexus workspace. You run locally in the user's browser.
+
+## Your capabilities
+You receive pre-fetched workspace data below: members, channels, tasks, documents, calendar events, memories, and search results. Use this data to answer questions accurately. Cite specific items (task names, member names, dates) from the data.
+
+## Response guidelines
+- Be concise and direct (2-4 sentences for simple questions)
+- When asked about tasks: reference status, assignee, due dates from the data
+- When asked about people: reference their role and activity from the data
+- When asked about events: reference dates, times, descriptions from the data
+- When asked about documents: summarize relevant content from the data
+- For search results: synthesize the key findings, cite sources
+- If the data doesn't contain the answer, say so clearly — don't guess
+- Use markdown formatting: **bold** for emphasis, bullet lists for multiple items
+- Never mention that you're a local model or have limited context`;
+	let brainWebLLMPrompt = $state(_cachedBrain?.webllm_system_prompt || DEFAULT_WEBLLM_PROMPT);
+	let userWebLLMEnabled = $state(false); // per-user localStorage opt-in
+	let brainSystemMemoryEnabled = $state(true);
 	let brainMemoryEnabled = $state(true);
+	let brainMemoryTotal = $state(0);
+	let brainLastExtraction = $state('');
 	let brainMemoryModel = $state('openai/gpt-4o-mini');
-	let brainExtractFreq = $state(15);
-	let brainDefFiles = ['SOUL.md', 'INSTRUCTIONS.md', 'TEAM.md', 'MEMORY.md', 'HEARTBEAT.md'] as const;
+	let brainExtractFreq = $state(30);
+	let extractingMemories = $state(false);
+	let extractMsg = $state('');
+	let brainLastConsolidation = $state('');
+	let brainDefFiles = ['SOUL.md', 'INSTRUCTIONS.md', 'TEAM.md', 'MEMORY.md', 'REFLECTIONS.md', 'HEARTBEAT.md'] as const;
+	let workspaceFreeModels = $state<any[]>([]);
+	let showFreeModelAdd = $state(false);
+	let newFreeId = $state('');
+	let newFreeName = $state('');
 	let brainActiveFile = $state('');
 	let brainFileContent = $state('');
 	let brainSaving = $state(false);
-	let brainTab = $state<'settings' | 'definitions' | 'memory' | 'activity' | 'skills' | 'knowledge' | 'integrations' | 'roles' | 'tools'>('settings');
+	let brainTab = $state<'settings' | 'north_star' | 'definitions' | 'memory' | 'activity' | 'skills' | 'knowledge' | 'integrations' | 'roles' | 'tools' | 'info' | 'network' | 'portability' | 'costs'>('settings');
+	let usageData = $state<any>(null);
+	let usagePeriod = $state('month');
+	async function loadUsage() {
+		try {
+			usageData = await getUsage(slug, usagePeriod);
+		} catch {}
+	}
+	let workspaceInfo = $state<any>(null);
 	let rolesData = $state<any[]>([]);
 	let rolesLoading = $state(false);
 	let expandedRoles = $state<Set<string>>(new Set());
@@ -305,6 +423,71 @@
 	let newSkillPrompt = $state('');
 	let newSkillDescription = $state('');
 	let generatingSkill = $state(false);
+
+	// Model status bar
+	const recommendedModelNames: Record<string, string> = {
+		'Qwen2.5-1.5B-Instruct-q4f16_1-MLC': 'Qwen 2.5 1.5B',
+		'Qwen2.5-0.5B-Instruct-q4f16_1-MLC': 'Qwen 2.5 0.5B',
+		'SmolLM2-1.7B-Instruct-q4f16_1-MLC': 'SmolLM2 1.7B',
+		'gemma-2b-it-q4f16_1-MLC': 'Gemma 2B',
+		'phi-1_5-q4f16_1-MLC': 'Phi 1.5',
+		'Hermes-3-Llama-3.1-8B-q4f16_1-MLC': 'Hermes 3 8B',
+		'Hermes-3-Llama-3.2-3B-q4f16_1-MLC': 'Hermes 3 3B',
+		'Hermes-2-Pro-Llama-3-8B-q4f16_1-MLC': 'Hermes 2 Pro 8B',
+		'Hermes-2-Pro-Mistral-7B-q4f16_1-MLC': 'Hermes 2 Pro Mistral 7B',
+	};
+	let modelStatusLabel = $derived.by(() => {
+		if ((brainWebLLMEnabled || userWebLLMEnabled) && brainWebLLMModel) {
+			const name = recommendedModelNames[brainWebLLMModel] || brainWebLLMModel.replace(/-/g, ' ');
+			return `Local: ${name}`;
+		}
+		if (brainLLMEnabled && !userWebLLMEnabled) return `OpenRouter: ${brainModel.split('/').pop()}`;
+		if (brainXAIEnabled && !userWebLLMEnabled) return `Grok: ${brainXAIModel || 'not configured'}`;
+		return 'Brain: Off';
+	});
+	let modelStatusColor = $derived.by(() => {
+		if ((brainWebLLMEnabled || userWebLLMEnabled) && brainWebLLMModel) return 'var(--accent)';
+		if (brainLLMEnabled && !userWebLLMEnabled) return '#3b82f6';
+		if (brainXAIEnabled && !userWebLLMEnabled) return '#e44d26';
+		return '#6b7280';
+	});
+
+	// Engine mode derived from the 3 booleans
+	type EngineMode = 'cloud' | 'grok' | 'local' | 'standard';
+	let engineMode = $derived.by((): EngineMode => {
+		if (brainWebLLMEnabled && !brainLLMEnabled) return 'local';
+		if (brainXAIEnabled && !brainLLMEnabled && !brainWebLLMEnabled) return 'grok';
+		if (!brainLLMEnabled && brainStandardChatEnabled) return 'standard';
+		return 'cloud'; // default: standard_chat + llm
+	});
+	function setEngineMode(mode: EngineMode) {
+		switch (mode) {
+			case 'cloud':
+				brainStandardChatEnabled = true;
+				brainLLMEnabled = true;
+				brainWebLLMEnabled = false;
+				brainXAIEnabled = false;
+				break;
+			case 'grok':
+				brainStandardChatEnabled = true;
+				brainLLMEnabled = false;
+				brainWebLLMEnabled = false;
+				brainXAIEnabled = true;
+				break;
+			case 'local':
+				brainStandardChatEnabled = false;
+				brainLLMEnabled = false;
+				brainWebLLMEnabled = true;
+				brainXAIEnabled = false;
+				break;
+			case 'standard':
+				brainStandardChatEnabled = true;
+				brainLLMEnabled = false;
+				brainWebLLMEnabled = false;
+				brainXAIEnabled = false;
+				break;
+		}
+	}
 
 	// Knowledge state
 	let knowledgeItems = $state<any[]>([]);
@@ -363,6 +546,23 @@
 	let workspaceModels = $state<any[]>([]);
 	let modelAvailability = $state<{ model: string; model_available: boolean; fallback_model: string } | null>(null);
 
+	// Profile modal
+	let showProfileModal = $state(false);
+	let profileData = $state<any>(null);
+	let profileLoading = $state(false);
+
+	async function openProfile(memberId: string) {
+		showProfileModal = true;
+		profileLoading = true;
+		profileData = null;
+		try {
+			profileData = await getMember(slug, memberId);
+		} catch (e) {
+			console.error('Failed to load profile', e);
+		}
+		profileLoading = false;
+	}
+
 	// Team / Agents state
 	let teamTab = $state<'members' | 'agents' | 'orgchart'>('orgchart');
 	let agentsList = $state<any[]>([]);
@@ -382,6 +582,13 @@
 
 	// Agent state indicators
 	let agentStates = $state<Map<string, {state: string, toolName: string, channelID: string, agentName: string}>>(new Map());
+
+	// WebLLM tool calling cache + action cards
+	let cachedToolDefs: any[] | null = null;
+	let cachedToolSlug = '';
+	let pendingActions = $state<{ label: string; tool: string; args: string }[]>([]);
+	let quickActionInput = $state('');
+	let quickActionPrompting = $state<string | null>(null);
 
 	// Agent skills state
 	let agentSkillsList = $state<any[]>([]);
@@ -405,7 +612,7 @@
 	// Agent form fields
 	let agentForm = $state({
 		name: '', description: '', avatar: '', role: '', goal: '', backstory: '', instructions: '',
-		constraints: '', escalation_prompt: '', model: '', temperature: 0.7, max_tokens: 2048,
+		constraints: '', escalation_prompt: '', model: '', image_model: '', temperature: 0.7, max_tokens: 2048,
 		tools: [] as string[], channels: [] as string[], knowledge_access: false, memory_access: false,
 		can_delegate: false, max_iterations: 5, trigger_type: 'mention',
 		cooldown_seconds: 30, follow_ttl_minutes: 10, follow_max_messages: 20,
@@ -413,6 +620,7 @@
 		respond_to_agents: false, auto_follow_threads: true, respond_in_threads: true
 	});
 	const BUILTIN_AGENT_TOOLS = ['create_task', 'list_tasks', 'search_messages', 'create_document', 'search_knowledge'];
+	const KNOWN_AGENT_MODELS = ['', 'google/gemini-3.1-pro-preview', 'google/gemini-3-flash-preview', 'google/gemini-3.1-flash-lite-preview', 'google/gemini-3.1-flash-image-preview', 'google/gemini-3-pro-image-preview', 'google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'nexus/free-auto'];
 	let allAgentTools = $derived([...BUILTIN_AGENT_TOOLS, ...mcpServers.flatMap((s: any) => (s.tools || []).map((t: any) => t.qual_name))]);
 
 	// Slash commands — built from available tools + common actions
@@ -482,11 +690,31 @@
 
 			const chs = await listChannels(slug);
 			channels.set(chs);
+			messages.set([]); // Clear stale messages from other pages (e.g. Brain)
 
-			if (chs.length > 0) selectChannel(chs[0]);
+			if (chs.length > 0) {
+				const urlChannelId = new URLSearchParams(window.location.search).get('c');
+				const lastId = localStorage.getItem(`nexus_last_channel_${slug}`);
+				const target = (urlChannelId ? chs.find(c => c.id === urlChannelId) : null)
+					|| (lastId ? chs.find(c => c.id === lastId) : null)
+					|| chs[0];
+				selectChannel(target);
+			}
 
 			// Load agents for sidebar built-in agents
 			loadAgents().catch(() => {});
+
+			// Load brain settings for status bar + WebLLM inference + onboarding check
+			loadBrainSettings().then(() => {
+				if (isAdmin && brainSettings.onboarding_complete !== 'true' && brainSettings.api_key_set !== 'true') {
+					showWizard = true;
+				}
+			}).catch(() => {});
+
+			// Load per-user WebLLM opt-in from localStorage
+			try {
+				userWebLLMEnabled = localStorage.getItem('nexus_user_webllm_' + slug) === 'true';
+			} catch {}
 
 			connect();
 
@@ -496,6 +724,10 @@
 			}
 
 			const unsub = onMessage(handleWS);
+
+			// Catch-up on tab focus
+			const handleVisibility = () => { if (!document.hidden) refreshCurrentView(); };
+			document.addEventListener('visibilitychange', handleVisibility);
 
 			// Fetch online members periodically
 			async function fetchOnline() {
@@ -507,7 +739,7 @@
 			fetchOnline();
 			const onlineInterval = setInterval(fetchOnline, 30000);
 
-			return () => { unsub(); disconnect(); clearInterval(onlineInterval); };
+			return () => { unsub(); disconnect(); clearInterval(onlineInterval); document.removeEventListener('visibilitychange', handleVisibility); };
 		} catch {
 			clearSession();
 			goto('/');
@@ -522,20 +754,32 @@
 		// Mark channel as read
 		markChannelRead(ch.id);
 		channels.update(chs => chs.map(c => c.id === ch.id ? { ...c, unread: 0 } : c));
+		// Persist last-viewed channel
+		localStorage.setItem(`nexus_last_channel_${slug}`, ch.id);
+		// Update URL with channel ID
+		const url = new URL(window.location.href);
+		url.searchParams.set('c', ch.id);
+		history.replaceState(history.state, '', url.toString());
+	}
+
+	let lastRefresh = 0;
+	function refreshCurrentView() {
+		if (Date.now() - lastRefresh < 5000) return;
+		lastRefresh = Date.now();
+		let current: Channel | null = null;
+		activeChannel.subscribe(v => current = v)();
+		if (current) {
+			getMessages(slug, current.id).then(data => {
+				messages.set(data.messages);
+				scrollToBottom();
+			}).catch(() => {});
+		}
+		listChannels(slug).then(chs => channels.set(chs)).catch(() => {});
 	}
 
 	function handleWS(type: string, payload: any) {
 		if (type === '_reconnected') {
-			// Gap-fill: re-fetch messages and channels on reconnect
-			let current: Channel | null = null;
-			activeChannel.subscribe(v => current = v)();
-			if (current) {
-				getMessages(slug, current.id).then(data => {
-					messages.set(data.messages);
-					scrollToBottom();
-				}).catch(() => {});
-			}
-			listChannels(slug).then(chs => channels.set(chs)).catch(() => {});
+			refreshCurrentView();
 			return;
 		}
 		if (type === 'message.new') {
@@ -560,7 +804,9 @@
 						});
 						if (found) return;
 					}
-					threadMessages = [...threadMessages, payload];
+					if (!threadMessages.some(m => m.id === payload.id)) {
+						threadMessages = [...threadMessages, payload];
+					}
 					requestAnimationFrame(() => { if (threadMessagesEl) threadMessagesEl.scrollTop = threadMessagesEl.scrollHeight; });
 				}
 				// Desktop notification for replies
@@ -589,7 +835,10 @@
 					}
 				}
 				// New message from someone else (or no client_id match)
-				messages.update(msgs => [...msgs, payload]);
+				messages.update(msgs => {
+					if (msgs.some(m => m.id === payload.id)) return msgs; // deduplicate
+					return [...msgs, payload];
+				});
 				scrollToBottom();
 				markChannelRead(current.id);
 				// Desktop notification
@@ -677,6 +926,30 @@
 			activeChannel.subscribe(v => current = v)();
 			if (payload.channel_id === current?.id) {
 				messages.set([]);
+			}
+		} else if (type === 'channel.archived') {
+			const archId = payload.channel_id;
+			channels.update(chs => chs.filter(ch => ch.id !== archId));
+			let current: Channel | null = null;
+			activeChannel.subscribe(v => current = v)();
+			if (current?.id === archId) {
+				// Switch to first available channel
+				let chs: Channel[] = [];
+				channels.subscribe(v => chs = v)();
+				if (chs.length > 0) selectChannel(chs[0]);
+			}
+		} else if (type === 'channel.member_removed') {
+			const { channel_id, member_id } = payload;
+			// If we were kicked, remove channel from list
+			if (member_id === currentUser?.uid) {
+				channels.update(chs => chs.filter(ch => ch.id !== channel_id));
+				let current: Channel | null = null;
+				activeChannel.subscribe(v => current = v)();
+				if (current?.id === channel_id) {
+					let chs: Channel[] = [];
+					channels.subscribe(v => chs = v)();
+					if (chs.length > 0) selectChannel(chs[0]);
+				}
 			}
 		} else if (type === 'typing') {
 			typingUsers.update(map => {
@@ -766,6 +1039,259 @@
 		}
 	}
 
+	function isBrainChannel(ch: Channel): boolean {
+		return ch.type === 'dm' && ch.name.includes('brain');
+	}
+
+	function isBrainMention(content: string): boolean {
+		return /@brain\b/i.test(content);
+	}
+
+	function needsWebLLM(ch: Channel, content: string): boolean {
+		if (!isWebLLMOnly()) return false;
+		if (!brainWebLLMModel) return false;
+		return isBrainChannel(ch) || isBrainMention(content);
+	}
+
+	/** True when WebLLM should handle inference (admin workspace mode OR user opt-in) */
+	function isWebLLMOnly(): boolean {
+		// Admin set workspace to Local LLM mode
+		if (brainWebLLMEnabled && !brainLLMEnabled) return true;
+		// Non-admin personal opt-in (localStorage)
+		if (userWebLLMEnabled) return true;
+		return false;
+	}
+
+	/** Strip Qwen3 <think>...</think> chain-of-thought blocks from output */
+	function stripThinkTags(text: string): string {
+		return text.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim();
+	}
+
+	async function runWebLLMInference(channelId: string, userMessage: string) {
+		// Clear pending action cards on new message
+		pendingActions = [];
+
+		const thinkingKey = 'brain';
+		const setAgentState = (state: string, toolName = '') => {
+			const next = new Map(agentStates);
+			next.set(thinkingKey, { state, toolName, channelID: channelId, agentName: 'Brain' });
+			agentStates = next;
+		};
+		setAgentState('thinking');
+		scrollToBottom();
+
+		try {
+			const webllm = await import('$lib/webllm.svelte.ts');
+			const state = webllm.getState();
+			if (!state.isLoaded) {
+				try {
+					await webllm.loadEngine(brainWebLLMModel);
+				} catch (e) {
+					console.error('WebLLM engine load failed:', e);
+					await saveBrainMessage(slug, channelId, 'Local model failed to load. Check Brain Settings.');
+					return;
+				}
+			}
+
+			// Branch: tool-capable model uses real tool calling, others use context prefetch
+			if (webllm.isToolCallingModel(brainWebLLMModel)) {
+				await runWebLLMToolLoop(webllm, channelId, userMessage, setAgentState);
+			} else {
+				await runWebLLMContextPrefetch(webllm, channelId, userMessage, setAgentState);
+			}
+		} catch (e) {
+			console.error('WebLLM inference failed:', e);
+			await saveBrainMessage(slug, channelId, 'Local model error — try reloading in Brain Settings.');
+		} finally {
+			const cleared = new Map(agentStates);
+			cleared.delete(thinkingKey);
+			agentStates = cleared;
+		}
+	}
+
+	async function runWebLLMToolLoop(
+		webllm: any, channelId: string, userMessage: string,
+		setAgentState: (state: string, toolName?: string) => void
+	) {
+		// Fetch tool definitions (cached per slug)
+		if (!cachedToolDefs || cachedToolSlug !== slug) {
+			try {
+				const res = await getBrainTools(slug);
+				cachedToolDefs = (res.tools || []).map((t: any) => ({
+					type: 'function',
+					function: {
+						name: t.name,
+						description: t.description || '',
+						parameters: t.parameters || { type: 'object', properties: {} },
+					},
+				}));
+				cachedToolSlug = slug;
+			} catch (e) {
+				console.warn('Failed to fetch brain tools, falling back to context prefetch:', e);
+				return runWebLLMContextPrefetch(webllm, channelId, userMessage, setAgentState);
+			}
+		}
+
+		const systemPrompt = 'You are Brain, a helpful AI assistant for a workspace. Use the provided tools to take actions when the user asks. Be concise.';
+
+		// Build recent message history (last 6 messages, truncated)
+		let msgs: any[] = [];
+		messages.subscribe(v => msgs = v)();
+		const errorPrefixes = ['Local model error', 'Local model failed to load'];
+		const recent: any[] = msgs
+			.filter(m => !errorPrefixes.some(p => m.content?.startsWith(p)))
+			.slice(-6).map(m => ({
+			role: m.sender_name === 'Brain' ? 'assistant' : 'user',
+			content: stripThinkTags(m.content?.length > 300 ? m.content.slice(0, 300) + '...' : m.content || ''),
+		}));
+
+		const response = await webllm.completeWithTools(
+			systemPrompt,
+			recent,
+			cachedToolDefs,
+			async (name: string, args: string) => {
+				setAgentState('tool_executing', name);
+				let current: Channel | null = null;
+				activeChannel.subscribe(v => current = v)();
+				const res = await executeBrainTool(slug, current?.id || channelId, name, args);
+				return res.result || JSON.stringify(res);
+			},
+			(name: string) => setAgentState('tool_executing', name)
+		);
+
+		const cleaned = stripThinkTags(response);
+		if (cleaned) {
+			await saveBrainMessage(slug, channelId, cleaned);
+			// Parse for action options
+			pendingActions = parseActionOptions(cleaned);
+		}
+	}
+
+	async function runWebLLMContextPrefetch(
+		webllm: any, channelId: string, userMessage: string,
+		setAgentState: (state: string, toolName?: string) => void
+	) {
+		const { classifyIntent } = await import('$lib/intent-classifier');
+		const intents = classifyIntent(userMessage);
+
+		let systemPrompt = 'You are Brain, a helpful AI assistant.';
+		try {
+			setAgentState('tool_executing', intents.filter(i => i !== 'general').join(', ') || 'context');
+			const contextData = await getWebLLMContext(slug, userMessage, intents, channelId, 4000);
+			systemPrompt = contextData.prompt || systemPrompt;
+		} catch (e) {
+			console.warn('getWebLLMContext failed, using basic prompt:', e);
+		}
+
+		if (systemPrompt.length > 4000) {
+			systemPrompt = systemPrompt.slice(0, 4000) + '\n[...]';
+		}
+
+		let msgs: any[] = [];
+		messages.subscribe(v => msgs = v)();
+		const errorPrefixes = ['Local model error', 'Local model failed to load'];
+		const recent: any[] = msgs
+			.filter(m => !errorPrefixes.some(p => m.content?.startsWith(p)))
+			.slice(-4).map(m => ({
+			role: m.sender_name === 'Brain' ? 'assistant' : 'user',
+			content: stripThinkTags(m.content?.length > 200 ? m.content.slice(0, 200) + '...' : m.content || ''),
+		}));
+
+		setAgentState('thinking');
+		const response = await webllm.complete(systemPrompt, recent);
+		const cleaned = stripThinkTags(response);
+		if (cleaned) {
+			await saveBrainMessage(slug, channelId, cleaned);
+			pendingActions = parseActionOptions(cleaned);
+		}
+	}
+
+	/** Parse numbered list options from LLM response into clickable actions */
+	function parseActionOptions(text: string): { label: string; tool: string; args: string }[] {
+		const lines = text.split('\n');
+		const options: { label: string; tool: string; args: string }[] = [];
+		for (const line of lines) {
+			const m = line.match(/^\s*\d+[.)]\s+(.+)$/);
+			if (m) options.push({ label: m[1].trim(), tool: '', args: '' });
+		}
+		if (options.length < 2 || options.length > 5) return [];
+		// Map keywords to tools
+		for (const opt of options) {
+			const lower = opt.label.toLowerCase();
+			if (/\btask/.test(lower)) { opt.tool = 'create_task'; opt.args = JSON.stringify({ title: opt.label }); }
+			else if (/\bsearch|find|look\s?up/.test(lower)) { opt.tool = 'web_search'; opt.args = JSON.stringify({ query: opt.label }); }
+			else if (/\bdoc|document|note/.test(lower)) { opt.tool = 'create_document'; opt.args = JSON.stringify({ title: opt.label }); }
+			else if (/\bcalendar|event|schedule/.test(lower)) { opt.tool = 'list_calendar_events'; opt.args = '{}'; }
+			// No tool match — will be sent as a follow-up message
+		}
+		return options;
+	}
+
+	async function executeAction(action: { label: string; tool: string; args: string }) {
+		pendingActions = [];
+		let current: Channel | null = null;
+		activeChannel.subscribe(v => current = v)();
+		if (!current) return;
+		const channelId = current.id;
+
+		if (action.tool) {
+			// Execute tool directly
+			try {
+				const res = await executeBrainTool(slug, channelId, action.tool, action.args);
+				await saveBrainMessage(slug, channelId, res.result || JSON.stringify(res));
+			} catch (e) {
+				console.error('Action execution failed:', e);
+			}
+		} else {
+			// No tool match — send as a new user message to Brain
+			input = action.label;
+			handleSend();
+		}
+	}
+
+	async function executeQuickAction(qa: { label: string; tool: string; args: string | null }) {
+		let current: Channel | null = null;
+		activeChannel.subscribe(v => current = v)();
+		if (!current) return;
+		const channelId = current.id;
+
+		if (qa.args === null) {
+			// Needs user input — toggle inline prompt
+			if (quickActionPrompting === qa.tool) {
+				quickActionPrompting = null;
+			} else {
+				quickActionPrompting = qa.tool;
+				quickActionInput = '';
+			}
+			return;
+		}
+
+		try {
+			const res = await executeBrainTool(slug, channelId, qa.tool, qa.args);
+			await saveBrainMessage(slug, channelId, res.result || JSON.stringify(res));
+		} catch (e) {
+			console.error('Quick action failed:', e);
+		}
+	}
+
+	async function submitQuickAction(tool: string) {
+		if (!quickActionInput.trim()) return;
+		let current: Channel | null = null;
+		activeChannel.subscribe(v => current = v)();
+		if (!current) return;
+
+		const args = JSON.stringify({ query: quickActionInput.trim() });
+		quickActionPrompting = null;
+		quickActionInput = '';
+
+		try {
+			const res = await executeBrainTool(slug, current.id, tool, args);
+			await saveBrainMessage(slug, current.id, res.result || JSON.stringify(res));
+		} catch (e) {
+			console.error('Quick action failed:', e);
+		}
+	}
+
 	function handleSend() {
 		let current: Channel | null = null;
 		activeChannel.subscribe(v => current = v)();
@@ -789,13 +1315,21 @@
 		input = '';
 		scrollToBottom();
 
-		// Send via WebSocket
-		const sent = sendMessage(current.id, content, clientId);
+		// WebLLM only runs when no cloud LLM is configured (admin choice)
+		const willHandleWebLLM = current && isWebLLMOnly() && needsWebLLM(current, content);
+
+		// Send via WebSocket (tell server to skip brain processing if WebLLM is handling it)
+		const sent = sendMessage(current.id, content, clientId, undefined, willHandleWebLLM);
 		if (!sent) {
 			// Socket not open — message queued, mark as failed for now
 			messages.update(msgs => msgs.map(m =>
 				m.clientId === clientId ? { ...m, status: 'failed' as const } : m
 			));
+		}
+
+		// If WebLLM is enabled and this targets Brain, run local inference
+		if (willHandleWebLLM) {
+			runWebLLMInference(current.id, content);
 		}
 	}
 
@@ -1069,10 +1603,6 @@
 		if (activeView === 'brain') {
 			await loadBrainSettings();
 		}
-		if (activeView === 'team') {
-			if (teamTab === 'orgchart') await loadOrgChart();
-			else if (teamTab === 'agents') await loadAgents();
-		}
 	}
 
 	async function loadTasks() {
@@ -1183,6 +1713,12 @@
 			activeView = 'board';
 		} else if (type === 'knowledge') {
 			activeView = 'brain';
+		} else if (type === 'member') {
+			const member = $members.find((m: any) => m.id === resultId);
+			if (member) handleManageMember(member);
+		} else if (type === 'channel') {
+			const ch = $channels.find((c: any) => c.id === resultId);
+			if (ch) selectChannel(ch);
 		}
 		// For messages, stay in chat view (default)
 	}
@@ -1278,14 +1814,94 @@
 			brainModel = brainSettings.model || 'nexus/free-auto';
 			brainImageModel = brainSettings.image_model || 'gemini-2.5-flash-image';
 			brainGeminiKey = '';
+			brainBraveKey = '';
+			brainXAIKey = '';
+			brainXAIModel = brainSettings.xai_model || '';
+			brainXAIEnabled = brainSettings.xai_enabled === 'true' || brainSettings.xai_api_key_set === 'true';
+			brainMemoryEngine = brainSettings.memory_engine || 'openrouter';
 			brainMemoryModel = brainSettings.memory_model || 'openai/gpt-4o-mini';
+			brainOpenAIKey = '';
+			brainStandardChatEnabled = brainSettings.standard_chat_enabled !== 'false';
+			brainLLMEnabled = brainSettings.llm_enabled !== 'false';
+			brainWebLLMEnabled = brainSettings.webllm_enabled === 'true';
+			brainWebLLMModel = brainSettings.webllm_model || '';
+			brainWebLLMPrompt = brainSettings.webllm_system_prompt || DEFAULT_WEBLLM_PROMPT;
+			brainSystemMemoryEnabled = brainSettings.system_memory_enabled !== 'false';
 			brainMemoryEnabled = brainSettings.memory_enabled !== 'false';
-			brainExtractFreq = parseInt(brainSettings.extraction_frequency) || 15;
+			brainExtractFreq = parseInt(brainSettings.extraction_frequency) || 30;
+			brainMemoryTotal = parseInt(brainSettings.memory_total) || 0;
+			brainLastExtraction = brainSettings.last_extraction || '';
+			brainLastConsolidation = brainSettings.last_consolidation || '';
+			northStar = brainSettings.north_star || '';
+			northStarWhy = brainSettings.north_star_why || '';
+			northStarSuccess = brainSettings.north_star_success || '';
+			try {
+				const themes = JSON.parse(brainSettings.strategic_themes || '[]');
+				strategicThemesInput = Array.isArray(themes) ? themes.join(', ') : '';
+			} catch { strategicThemesInput = ''; }
+			reflectionEnabled = brainSettings.reflection_enabled !== 'false';
+			reflectionTime = brainSettings.reflection_time || '3:00';
 			brainApiKey = '';
+			// Cache engine config for instant restore on refresh
+			try {
+				localStorage.setItem('nexus_brain_config', JSON.stringify({
+					model: brainModel,
+					image_model: brainImageModel,
+					standard_chat_enabled: brainStandardChatEnabled,
+					llm_enabled: brainLLMEnabled,
+					webllm_enabled: brainWebLLMEnabled,
+					webllm_model: brainWebLLMModel,
+				}));
+			} catch {}
 			await loadPinnedModels();
 			await loadWorkspaceModels();
 			await loadModelAvailability();
+			await loadWorkspaceFreeModels();
 		} catch {}
+	}
+
+	async function loadWorkspaceFreeModels() {
+		try {
+			const res = await getWorkspaceFreeModels(slug);
+			workspaceFreeModels = res.models || [];
+		} catch {}
+	}
+
+	async function saveWorkspaceFreeModels(list: any[]) {
+		try {
+			await setWorkspaceFreeModels(slug, list);
+			workspaceFreeModels = list;
+		} catch (e: any) {
+			alert(e.message);
+		}
+	}
+
+	function moveWorkspaceFreeModel(index: number, direction: number) {
+		const list = [...workspaceFreeModels];
+		const target = index + direction;
+		if (target < 0 || target >= list.length) return;
+		[list[index], list[target]] = [list[target], list[index]];
+		list.forEach((m, i) => m.priority = i);
+		saveWorkspaceFreeModels(list);
+	}
+
+	function removeWorkspaceFreeModel(modelId: string) {
+		const list = workspaceFreeModels.filter(m => m.id !== modelId);
+		list.forEach((m, i) => m.priority = i);
+		saveWorkspaceFreeModels(list);
+	}
+
+	function addWorkspaceFreeModel() {
+		if (!newFreeId.trim()) return;
+		const list = [...workspaceFreeModels, { id: newFreeId.trim(), name: newFreeName.trim() || newFreeId.trim(), priority: workspaceFreeModels.length }];
+		saveWorkspaceFreeModels(list);
+		newFreeId = '';
+		newFreeName = '';
+		showFreeModelAdd = false;
+	}
+
+	function resetWorkspaceFreeModels() {
+		saveWorkspaceFreeModels([]);
 	}
 
 	async function loadWorkspaceModels() {
@@ -1309,15 +1925,40 @@
 			const updates: Record<string, string> = {
 				model: brainModel,
 				image_model: brainImageModel,
+				standard_chat_enabled: String(brainStandardChatEnabled),
+				llm_enabled: String(brainLLMEnabled),
+				webllm_enabled: String(brainWebLLMEnabled),
+				webllm_model: brainWebLLMModel,
+				webllm_system_prompt: brainWebLLMPrompt,
+				system_memory_enabled: String(brainSystemMemoryEnabled),
+				memory_engine: brainMemoryEngine,
 				memory_model: brainMemoryModel,
 				memory_enabled: String(brainMemoryEnabled),
 				extraction_frequency: String(brainExtractFreq),
 			};
+			updates.north_star = northStar;
+			updates.north_star_why = northStarWhy;
+			updates.north_star_success = northStarSuccess;
+			const themes = strategicThemesInput.split(',').map(t => t.trim()).filter(Boolean);
+			updates.strategic_themes = JSON.stringify(themes);
+			updates.reflection_enabled = String(reflectionEnabled);
+			updates.reflection_time = reflectionTime;
 			if (brainApiKey) updates.api_key = brainApiKey;
 			if (brainGeminiKey) updates.gemini_api_key = brainGeminiKey;
+			if (brainXAIKey) {
+				updates.xai_api_key = brainXAIKey;
+				brainXAIEnabled = true; // auto-enable when key is provided
+			}
+			updates.xai_model = brainXAIModel;
+			updates.xai_enabled = String(brainXAIEnabled);
+			if (brainOpenAIKey) updates.openai_api_key = brainOpenAIKey;
+			if (brainBraveKey) updates.brave_api_key = brainBraveKey;
 			await updateBrainSettings(slug, updates);
 			await loadBrainSettings();
 			brainApiKey = '';
+			brainXAIKey = '';
+			brainOpenAIKey = '';
+			brainBraveKey = '';
 		} catch (e: any) {
 			alert(e.message);
 		}
@@ -1407,6 +2048,49 @@
 		} catch (e: any) {
 			alert(e.message);
 		}
+	}
+
+	let pinMenuMsgId = $state<string | null>(null);
+	let pinMenuChannelId = $state<string>('');
+
+	function openPinMenu(msgId: string, channelId: string) {
+		pinMenuMsgId = msgId;
+		pinMenuChannelId = channelId;
+	}
+
+	async function handlePinMemory(msgId: string, channelId: string, type: string = 'decision') {
+		try {
+			await pinMemory(slug, msgId, channelId, type);
+			pinMenuMsgId = null;
+		} catch (e: any) {
+			alert(e.message);
+		}
+	}
+
+	let memoryTypeFilter = $state<string>('all');
+
+	let currentMemories = $derived(memories.filter((m: any) => !m.superseded_by && !m.valid_until));
+	let monthMemories = $derived(currentMemories.filter((m: any) => {
+		const d = new Date(m.created_at);
+		const now = new Date();
+		return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+	}));
+	let monthDecisions = $derived(monthMemories.filter((m: any) => m.type === 'decision').length);
+	let monthCommitments = $derived(monthMemories.filter((m: any) => m.type === 'commitment').length);
+	let monthPolicies = $derived(monthMemories.filter((m: any) => m.type === 'policy').length);
+	let filteredMemories = $derived(memories.filter((m: any) => memoryTypeFilter === 'all' || m.type === memoryTypeFilter));
+	let groupedMemories = $derived(filteredMemories.reduce((acc: Record<string, any[]>, m: any) => {
+		const d = new Date(m.created_at);
+		const key = d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }).toUpperCase();
+		if (!acc[key]) acc[key] = [];
+		acc[key].push(m);
+		return acc;
+	}, {} as Record<string, any[]>));
+
+	async function loadWorkspaceInfo() {
+		try {
+			workspaceInfo = await getWorkspaceInfo(slug);
+		} catch {}
 	}
 
 	async function loadActions() {
@@ -2047,7 +2731,7 @@ autonomy: reactive
 	function resetAgentForm() {
 		agentForm = {
 			name: '', description: '', avatar: '', role: '', goal: '', backstory: '', instructions: '',
-			constraints: '', escalation_prompt: '', model: '', temperature: 0.7, max_tokens: 2048,
+			constraints: '', escalation_prompt: '', model: '', image_model: '', temperature: 0.7, max_tokens: 2048,
 			tools: [], channels: [], knowledge_access: false, memory_access: false,
 			can_delegate: false, max_iterations: 5, trigger_type: 'mention',
 			cooldown_seconds: 30, follow_ttl_minutes: 10, follow_max_messages: 20,
@@ -2070,7 +2754,7 @@ autonomy: reactive
 			name: agent.name, description: agent.description, avatar: agent.avatar,
 			role: agent.role, goal: agent.goal, backstory: agent.backstory,
 			instructions: agent.instructions, constraints: agent.constraints,
-			escalation_prompt: agent.escalation_prompt, model: agent.model,
+			escalation_prompt: agent.escalation_prompt, model: agent.model, image_model: agent.image_model || '',
 			temperature: agent.temperature, max_tokens: agent.max_tokens,
 			tools: JSON.parse(JSON.stringify(agent.tools || '[]')),
 			channels: JSON.parse(JSON.stringify(agent.channels || '[]')),
@@ -2283,10 +2967,12 @@ autonomy: reactive
 		showPreferences = true;
 		prefsTab = 'profile';
 		prefsMsg = '';
+		prefsEmailPw = '';
 		try {
 			const me = await getMe();
 			prefsDisplayName = me.display_name || '';
 			prefsEmail = me.email || '';
+			prefsOrigEmail = me.email || '';
 		} catch { /* ignore */ }
 	}
 
@@ -2294,7 +2980,14 @@ autonomy: reactive
 		prefsLoading = true;
 		prefsMsg = '';
 		try {
-			await updateMe({ display_name: prefsDisplayName, email: prefsEmail });
+			const data: { display_name?: string; email?: string; password?: string } = { display_name: prefsDisplayName };
+			if (prefsEmail !== prefsOrigEmail) {
+				data.email = prefsEmail;
+				data.password = prefsEmailPw;
+			}
+			await updateMe(data);
+			prefsOrigEmail = prefsEmail;
+			prefsEmailPw = '';
 			prefsMsg = 'Profile updated';
 		} catch (e: any) {
 			prefsMsg = e.message;
@@ -2459,9 +3152,37 @@ autonomy: reactive
 		try {
 			const result = await toggleFavorite(slug, channelId);
 			channels.update(chs => chs.map(c =>
-				c.id === channelId ? { ...c, is_favorite: result.is_favorite } : c
+				c.id === channelId ? { ...c, is_favorite: result.is_favorite, favorited_at: result.favorited_at || '' } : c
 			));
 		} catch {}
+	}
+
+	function toggleChannelMenu(e: MouseEvent, channelId: string) {
+		e.stopPropagation();
+		channelMenuId = channelMenuId === channelId ? null : channelId;
+	}
+
+	function handleChannelMenuAction(e: MouseEvent, action: string, ch: any) {
+		e.stopPropagation();
+		channelMenuId = null;
+		if (action === 'favorite') {
+			handleToggleFavorite(ch.id);
+		} else if (action === 'clear') {
+			if (confirm('Clear all messages in this conversation? This cannot be undone.')) {
+				clearChannel(ch.id);
+			}
+		} else if (action === 'pin') {
+			pinnedDMIds = new Set([...pinnedDMIds, ch.id]);
+			localStorage.setItem(`nexus_pinned_dms_${slug}`, JSON.stringify([...pinnedDMIds]));
+		} else if (action === 'unpin') {
+			pinnedDMIds = new Set([...pinnedDMIds].filter(id => id !== ch.id));
+			localStorage.setItem(`nexus_pinned_dms_${slug}`, JSON.stringify([...pinnedDMIds]));
+		} else if (action === 'delete') {
+			const label = ch.type === 'dm' ? 'conversation' : `#${ch.name}`;
+			if (confirm(`Delete ${label}? This cannot be undone.`)) {
+				deleteChannel(slug, ch.id);
+			}
+		}
 	}
 
 	// Drag & drop file upload
@@ -2526,7 +3247,7 @@ autonomy: reactive
 	}
 </script>
 
-<svelte:window onkeydown={handleGlobalKeydown} />
+<svelte:window onkeydown={handleGlobalKeydown} onclick={() => { channelMenuId = null; }} />
 
 {#if inviteToken}
 <!-- Invite join form -->
@@ -2589,13 +3310,16 @@ autonomy: reactive
 	<!-- Sidebar -->
 	<aside class="sidebar" class:hidden={activeView === 'brain'}>
 		<div class="sidebar-header">
-			<div class="logo-row">
+			<button class="logo-row" onclick={() => {
+				const brainDM = $channels.find(ch => ch.type === 'dm' && ch.name.includes('brain'));
+				if (brainDM) selectChannel(brainDM);
+			}}>
 				<svg width="20" height="20" viewBox="0 0 40 40" fill="none">
 					<path d="M8 12L20 4L32 12V28L20 36L8 28V12Z" stroke="var(--accent)" stroke-width="2.5" fill="none"/>
 					<circle cx="20" cy="20" r="3" fill="var(--accent)"/>
 				</svg>
 				<span class="logo-text">nexus</span>
-			</div>
+			</button>
 			<span class="slug-badge">/{slug}</span>
 		</div>
 
@@ -2609,13 +3333,6 @@ autonomy: reactive
 						<path d="M5 7L6.5 8.5L9 5.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
 					</svg>
 					<span class="channel-name">Tasks</span>
-				</button>
-				<button class="nav-item" onclick={() => goto(`/w/${slug}/brain`)}>
-					<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;opacity:0.5">
-						<circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.2"/>
-						<circle cx="7" cy="7" r="2" fill="currentColor" opacity="0.5"/>
-					</svg>
-					<span class="channel-name">Brain Chat</span>
 				</button>
 				<button class="nav-item" onclick={() => goto(`/w/${slug}/files`)}>
 					<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;opacity:0.5">
@@ -2631,39 +3348,33 @@ autonomy: reactive
 					</svg>
 					<span class="channel-name">Calendar</span>
 				</button>
-					<button class="nav-item" class:active={activeView === 'team'} onclick={() => { activeView = 'team'; onViewChange(); }}>
+				<button class="nav-item" onclick={() => goto(`/w/${slug}/activity`)}>
 					<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;opacity:0.5">
-						<circle cx="5" cy="4" r="2" stroke="currentColor" stroke-width="1.2"/>
-						<circle cx="10" cy="4" r="1.5" stroke="currentColor" stroke-width="1.2"/>
-						<path d="M1 12c0-2 1.5-3.5 4-3.5s4 1.5 4 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-						<path d="M10 8c1.5 0 3 1 3 2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+						<rect x="1" y="10" width="2" height="3" rx="0.5" fill="currentColor"/>
+						<rect x="4.5" y="7" width="2" height="6" rx="0.5" fill="currentColor"/>
+						<rect x="8" y="4" width="2" height="9" rx="0.5" fill="currentColor"/>
+						<rect x="11.5" y="1" width="2" height="12" rx="0.5" fill="currentColor"/>
 					</svg>
-					<span class="channel-name">Team</span>
+					<span class="channel-name">Activity</span>
+				</button>
+				<button class="nav-item" onclick={() => goto(`/w/${slug}/briefs`)}>
+					<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;opacity:0.5">
+						<rect x="2" y="1" width="10" height="12" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+						<path d="M5 4h4M5 7h4M5 10h2" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+					</svg>
+					<span class="channel-name">Briefs</span>
+				</button>
+				<button class="nav-item" onclick={() => goto(`/w/${slug}/social-pulse`)}>
+					<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;opacity:0.5">
+						<circle cx="7" cy="7" r="2" stroke="currentColor" stroke-width="1.2"/>
+						<circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2"/>
+						<path d="M7 1v2M7 11v2M1 7h2M11 7h2" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+					</svg>
+					<span class="channel-name">Social Pulse</span>
 				</button>
 			</div>
 
 			{#if activeView === 'chat'}
-				<!-- Favorites -->
-				{#if favoriteChannels.length > 0}
-				<div class="nav-section">
-					<div class="nav-section-header"><span>Favorites</span></div>
-					{#each favoriteChannels as ch}
-						<button
-							class="nav-item"
-							class:active={$activeChannel?.id === ch.id}
-							class:unread={ch.unread && ch.unread > 0}
-							onclick={() => selectChannel(ch)}
-						>
-							<span class="channel-hash star-icon">★</span>
-							<span class="channel-name">{ch.name}</span>
-							{#if ch.unread && ch.unread > 0}
-								<span class="unread-badge">{ch.unread > 99 ? '99+' : ch.unread}</span>
-							{/if}
-						</button>
-					{/each}
-				</div>
-				{/if}
-
 				<!-- Channels -->
 				<div class="nav-section">
 					<div class="nav-section-header">
@@ -2687,22 +3398,35 @@ autonomy: reactive
 					{/if}
 
 					{#each regularChannels as ch}
-						<button
-							class="nav-item"
-							class:active={$activeChannel?.id === ch.id}
-							class:unread={ch.unread && ch.unread > 0}
-							onclick={() => selectChannel(ch)}
-						>
-							<span class="channel-hash">#</span>
-							<span class="channel-name">{ch.name}</span>
-							<!-- svelte-ignore a11y_no_static_element_interactions -->
-							<span class="star-btn" class:starred={ch.is_favorite} onclick={(e) => { e.stopPropagation(); handleToggleFavorite(ch.id); }} title={ch.is_favorite ? 'Remove from favorites' : 'Add to favorites'}>
-								{ch.is_favorite ? '★' : '☆'}
-							</span>
-							{#if ch.unread && ch.unread > 0}
-								<span class="unread-badge">{ch.unread > 99 ? '99+' : ch.unread}</span>
+						<div class="nav-item-wrap">
+							<button
+								class="nav-item"
+								class:active={$activeChannel?.id === ch.id}
+								class:unread={ch.unread && ch.unread > 0}
+								onclick={() => selectChannel(ch)}
+							>
+								<!-- svelte-ignore a11y_no_static_element_interactions -->
+								{#if ch.is_favorite}
+									<span class="channel-hash star-icon" onclick={(e) => { e.stopPropagation(); handleToggleFavorite(ch.id); }} title="Unfavorite">★</span>
+								{:else}
+									<span class="channel-hash">#</span>
+								{/if}
+								<span class="channel-name">{ch.name}</span>
+								{#if ch.unread && ch.unread > 0}
+									<span class="unread-badge">{ch.unread > 99 ? '99+' : ch.unread}</span>
+								{/if}
+								<!-- svelte-ignore a11y_no_static_element_interactions -->
+								<span class="ch-menu-btn" onclick={(e) => toggleChannelMenu(e, ch.id)} title="Options">&#8943;</span>
+							</button>
+							{#if channelMenuId === ch.id}
+								<div class="ch-menu">
+									<button onclick={(e) => handleChannelMenuAction(e, 'favorite', ch)}>{ch.is_favorite ? 'Unfavorite' : 'Favorite'}</button>
+									{#if isAdmin}
+										<button class="ch-menu-danger" onclick={(e) => handleChannelMenuAction(e, 'delete', ch)}>Delete channel</button>
+									{/if}
+								</div>
 							{/if}
-						</button>
+						</div>
 					{/each}
 				</div>
 
@@ -2717,59 +3441,74 @@ autonomy: reactive
 						</button>
 					</div>
 
-					{#each dmChannels as ch}
-						<button
-							class="nav-item"
-							class:active={$activeChannel?.id === ch.id}
-							class:unread={ch.unread && ch.unread > 0}
-							onclick={() => selectChannel(ch)}
-						>
-							<span class="channel-hash">@</span>
-							<span class="channel-name">{getDMPartnerName(ch)}</span>
-							{#if ch.unread && ch.unread > 0}
-								<span class="unread-badge">{ch.unread > 99 ? '99+' : ch.unread}</span>
+					{#each sortedDmChannels as ch}
+						<div class="nav-item-wrap">
+							<button
+								class="nav-item"
+								class:active={$activeChannel?.id === ch.id}
+								class:unread={ch.unread && ch.unread > 0}
+								onclick={() => selectChannel(ch)}
+							>
+								<span class="channel-hash">@</span>
+								<span class="channel-name">{getDMPartnerName(ch)}</span>
+								{#if pinnedDMIds.has(ch.id) && !ch.name.includes('brain')}
+									<span class="pin-icon" title="Pinned">📌</span>
+								{/if}
+								{#if ch.unread && ch.unread > 0}
+									<span class="unread-badge">{ch.unread > 99 ? '99+' : ch.unread}</span>
+								{/if}
+								<!-- svelte-ignore a11y_no_static_element_interactions -->
+								<span class="ch-menu-btn" onclick={(e) => toggleChannelMenu(e, ch.id)} title="Options">&#8943;</span>
+							</button>
+							{#if channelMenuId === ch.id}
+								<div class="ch-menu">
+									<button onclick={(e) => handleChannelMenuAction(e, 'clear', ch)}>Clear messages</button>
+									<button class="ch-menu-danger" onclick={(e) => handleChannelMenuAction(e, 'delete', ch)}>Delete conversation</button>
+								</div>
 							{/if}
-						</button>
+						</div>
 					{/each}
 
-					{#if dmChannels.length === 0}
+					{#if groupChannels.length > 0}
+						<div class="new-dm-section-label" style="padding: 0.25rem 0.75rem; font-size: 0.65rem; color: var(--text-tertiary); margin-top: 0.5rem">Groups</div>
+						{#each groupChannels as ch}
+							<div class="nav-item-wrap">
+								<button
+									class="nav-item"
+									class:active={$activeChannel?.id === ch.id}
+									class:unread={ch.unread && ch.unread > 0}
+									onclick={() => selectChannel(ch)}
+								>
+									<span class="channel-hash" style="font-size: 0.7rem">G</span>
+									<span class="channel-name">{ch.name}</span>
+									{#if ch.unread && ch.unread > 0}
+										<span class="unread-badge">{ch.unread > 99 ? '99+' : ch.unread}</span>
+									{/if}
+									<!-- svelte-ignore a11y_no_static_element_interactions -->
+									<span class="ch-menu-btn" onclick={(e) => toggleChannelMenu(e, ch.id)} title="Options">&#8943;</span>
+								</button>
+								{#if channelMenuId === ch.id}
+									<div class="ch-menu">
+										<button onclick={(e) => handleChannelMenuAction(e, 'clear', ch)}>Clear messages</button>
+										<button class="ch-menu-danger" onclick={(e) => handleChannelMenuAction(e, 'delete', ch)}>Delete conversation</button>
+									</div>
+								{/if}
+							</div>
+						{/each}
+					{/if}
+
+					{#if dmChannels.length === 0 && groupChannels.length === 0}
 						<div class="nav-empty">No messages yet</div>
 					{/if}
 				</div>
 
-			{:else if activeView === 'team'}
-				<div class="nav-section">
-					<div class="nav-section-header">
-						<span>Team</span>
-					</div>
-					<button class="nav-item" class:active={teamTab === 'orgchart'} onclick={() => handleTeamTabChange('orgchart')}>
-						<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;opacity:0.5">
-							<rect x="4.5" y="1" width="5" height="3" rx="0.75" stroke="currentColor" stroke-width="1.2"/>
-							<rect x="0.5" y="9" width="4" height="3" rx="0.75" stroke="currentColor" stroke-width="1.2"/>
-							<rect x="9.5" y="9" width="4" height="3" rx="0.75" stroke="currentColor" stroke-width="1.2"/>
-							<path d="M7 4v2.5M7 6.5H2.5V9M7 6.5h4.5V9" stroke="currentColor" stroke-width="1.2"/>
-						</svg>
-						<span class="channel-name">Org Chart</span>
-					</button>
-					<button class="nav-item" class:active={teamTab === 'members'} onclick={() => handleTeamTabChange('members')}>
-						<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;opacity:0.5">
-							<circle cx="7" cy="4" r="2.5" stroke="currentColor" stroke-width="1.2"/>
-							<path d="M2 12.5c0-2.5 2-4 5-4s5 1.5 5 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-						</svg>
-						<span class="channel-name">Members</span>
-					</button>
-					<button class="nav-item" class:active={teamTab === 'agents'} onclick={() => handleTeamTabChange('agents')}>
-						<svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;opacity:0.5">
-							<rect x="3" y="2" width="8" height="6" rx="1" stroke="currentColor" stroke-width="1.2"/>
-							<circle cx="5.5" cy="5" r="0.75" fill="currentColor"/>
-							<circle cx="8.5" cy="5" r="0.75" fill="currentColor"/>
-							<path d="M5 10v2M9 10v2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-						</svg>
-						<span class="channel-name">Agents</span>
-					</button>
-				</div>
 			{/if}
 		</nav>
+
+		<div class="model-status-bar">
+			<span class="model-dot" style="background: {modelStatusColor}"></span>
+			<span class="model-label">{modelStatusLabel}</span>
+		</div>
 
 		<div class="user-menu-wrap">
 			<button class="user-menu-trigger" onclick={() => showUserMenu = !showUserMenu}>
@@ -2798,6 +3537,16 @@ autonomy: reactive
 						</svg>
 						Preferences
 					</button>
+					<button class="user-menu-item" onclick={() => { openTeamModal(); showUserMenu = false; }}>
+						<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+							<circle cx="5" cy="4" r="2" stroke="currentColor" stroke-width="1.2"/>
+							<circle cx="10" cy="4" r="1.5" stroke="currentColor" stroke-width="1.2"/>
+							<path d="M1 12c0-2 1.5-3.5 4-3.5s4 1.5 4 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+							<path d="M10 8c1.5 0 3 1 3 2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+						</svg>
+						Team
+					</button>
+					{#if isAdmin}
 					<button class="user-menu-item" onclick={() => { openAgentLibrary(); showUserMenu = false; }}>
 						<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
 							<rect x="1" y="1" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/>
@@ -2807,6 +3556,7 @@ autonomy: reactive
 						</svg>
 						Agent Library
 					</button>
+				{/if}
 					{#if isAdmin}
 						<button class="user-menu-item" onclick={() => { activeView = 'brain'; onViewChange(); showUserMenu = false; }}>
 							<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -2836,54 +3586,13 @@ autonomy: reactive
 		</div>
 	</aside>
 
-	<!-- Member Panel (admin) -->
-	{#if (activeView === 'chat' || activeView === 'team') && selectedMember && memberDetail}
-		<aside class="member-panel">
-			<div class="panel-header">
-				<h3>Manage Member</h3>
-				<button class="panel-close" onclick={() => { selectedMember = null; memberDetail = null; }}>
-					<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-						<path d="M2 2L12 12M12 2L2 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-					</svg>
-				</button>
-			</div>
-			<div class="panel-body">
-				<div class="panel-avatar">
-					{memberDetail.display_name.charAt(0).toUpperCase()}
-				</div>
-				<p class="panel-name">{memberDetail.display_name}</p>
-
-				<div class="panel-field">
-					<label>Role</label>
-					<select value={memberDetail.role} onchange={(e) => handleRoleChange((e.target as HTMLSelectElement).value)}>
-						{#each allRoles as role}
-							<option value={role}>{role.replace(/_/g, ' ')}</option>
-						{/each}
-					</select>
-				</div>
-
-				<div class="panel-field">
-					<label>Permissions</label>
-					<div class="perm-list">
-						{#each Object.entries(memberDetail.permissions) as [perm, granted]}
-							<button class="perm-row perm-toggle" onclick={() => handleTogglePermission(perm, !!granted)}>
-								<span class="perm-name">{perm}</span>
-								<span class="perm-val" class:granted={granted}>{granted ? 'yes' : 'no'}</span>
-							</button>
-						{/each}
-					</div>
-				</div>
-
-				<button class="btn btn-sm kick-btn" onclick={handleKick}>Remove from workspace</button>
-			</div>
-		</aside>
-	{/if}
 
 	{#if activeView === 'chat'}
 	<!-- Chat area + member drawer wrapper -->
 	<div class="chat-area-wrapper">
 	<main class="chat-main">
 		{#if $activeChannel}
+			{#if activeView === 'chat'}
 			<!-- Channel header -->
 			<header class="chat-header">
 				<div class="chat-header-left">
@@ -2927,6 +3636,7 @@ autonomy: reactive
 					{/if}
 				</div>
 			</header>
+			{/if}
 
 			<!-- Connection status banner -->
 			{#if $connectionStatus !== 'connected'}
@@ -2963,12 +3673,12 @@ autonomy: reactive
 
 				{#each $messages as msg (msg.clientId || msg.id)}
 					<div class="message-row" class:pending={msg.status === 'pending'} class:failed={msg.status === 'failed'}>
-						<div class="avatar">
+						<div class="avatar clickable" onclick={() => openProfile(msg.sender_id)}>
 							{msg.sender_name.charAt(0).toUpperCase()}
 						</div>
 						<div class="message-body">
 							<div class="message-meta">
-								<span class="sender">{msg.sender_name}</span>
+								<span class="sender clickable" onclick={() => openProfile(msg.sender_id)}>{msg.sender_name}</span>
 								<span class="timestamp">{formatTime(msg.created_at)}</span>
 								{#if msg.edited_at}
 									<span class="edited-tag">edited</span>
@@ -2977,7 +3687,7 @@ autonomy: reactive
 							{#if msg.file}
 								<div class="message-file">
 									{#if isImageMime(msg.file.mime)}
-										<img src={msg.file.url} alt={msg.file.name} class="file-preview-img" onclick={() => openImageViewer({url: msg.file.url, alt: msg.file.name, sender: msg.sender_name, timestamp: msg.created_at, fileName: msg.file.name, fileSize: msg.file.size, mime: msg.file.mime})} onerror={(e) => { const el = e.currentTarget as HTMLImageElement; el.style.display = 'none'; el.parentElement?.classList.add('image-load-failed'); }} />
+										<img src={msg.file.url} alt={msg.file.name} class="file-preview-img" onclick={() => openImageViewer({url: msg.file.url, alt: msg.file.name, sender: msg.sender_name, timestamp: msg.created_at, fileName: msg.file.name, fileSize: msg.file.size, mime: msg.file.mime})} onerror={(e) => { const el = e.currentTarget as HTMLImageElement; if (el.parentElement) el.parentElement.style.display = 'none'; }} />
 									{:else}
 										<a href={msg.file.url} class="file-link" download={msg.file.name}>
 											<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 14h8a1 1 0 001-1V6l-4-4H4a1 1 0 00-1 1v10a1 1 0 001 1z" stroke="currentColor" stroke-width="1.2"/><path d="M9 2v4h4" stroke="currentColor" stroke-width="1.2"/></svg>
@@ -2992,10 +3702,10 @@ autonomy: reactive
 								{#if skillInfo}
 									<div class="skill-badge">{skillInfo.badge}</div>
 								{/if}
-								<div class="message-text">{rendered.text}</div>
+								<div class="message-text">{@html safeMarkdownToHtml(rendered.text)}</div>
 								{#each rendered.images as img}
 									<div class="message-file">
-										<img src={img.url} alt={img.alt} class="file-preview-img" onclick={() => openImageViewer({url: img.url, alt: img.alt, sender: msg.sender_name, timestamp: msg.created_at, prompt: rendered.imagePrompt || undefined})} onerror={(e) => { const el = e.currentTarget as HTMLImageElement; el.style.display = 'none'; el.parentElement?.classList.add('image-load-failed'); }} />
+										<img src={img.url} alt={img.alt} class="file-preview-img" onclick={() => openImageViewer({url: img.url, alt: img.alt, sender: msg.sender_name, timestamp: msg.created_at, prompt: rendered.imagePrompt || undefined})} onerror={(e) => { const el = e.currentTarget as HTMLImageElement; if (el.parentElement) el.parentElement.style.display = 'none'; }} />
 									</div>
 								{/each}
 								{#if rendered.imagePrompt}
@@ -3052,6 +3762,19 @@ autonomy: reactive
 						<div class="msg-hover-actions">
 							<button class="msg-action-btn" title="React" onclick={(e) => openEmojiPicker(msg.id, e)}>😀</button>
 							<button class="msg-action-btn" title="Reply in thread" onclick={() => openThread(msg.id)}>💬</button>
+							<div class="pin-memory-wrapper">
+								<button class="msg-action-btn" title="Pin to memory" onclick={() => openPinMenu(msg.id, msg.channel_id)}>
+									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+								</button>
+								{#if pinMenuMsgId === msg.id}
+								<div class="pin-type-menu">
+									<button onclick={() => handlePinMemory(msg.id, msg.channel_id, 'decision')}>Decision</button>
+									<button onclick={() => handlePinMemory(msg.id, msg.channel_id, 'commitment')}>Commitment</button>
+									<button onclick={() => handlePinMemory(msg.id, msg.channel_id, 'policy')}>Policy</button>
+									<button onclick={() => handlePinMemory(msg.id, msg.channel_id, 'person')}>Person</button>
+								</div>
+								{/if}
+							</div>
 						</div>
 					</div>
 				{/each}
@@ -3087,6 +3810,17 @@ autonomy: reactive
 				{/if}
 			{/each}
 
+			<!-- Action chips from model-generated numbered options -->
+			{#if pendingActions.length > 0 && $activeChannel && isBrainChannel($activeChannel)}
+				<div class="action-chips">
+					{#each pendingActions as action, i}
+						<button class="action-chip" onclick={() => executeAction(action)}>
+							<span class="chip-num">{i + 1}</span> {action.label}
+						</button>
+					{/each}
+				</div>
+			{/if}
+
 			<!-- / slash-command popup -->
 			{#if slashActive && slashResults.length > 0}
 				<div class="mention-popup slash-popup">
@@ -3118,6 +3852,36 @@ autonomy: reactive
 						</button>
 					{/each}
 				</div>
+			{/if}
+
+			<!-- Quick-action bar (WebLLM Brain DM only) -->
+			{#if isWebLLMOnly() && $activeChannel && isBrainChannel($activeChannel)}
+				<div class="quick-actions">
+					<button class="quick-action" onclick={() => executeQuickAction({ label: 'Tasks', tool: 'list_tasks', args: '{}' })}>
+						<span>&#9744;</span> Tasks
+					</button>
+					<button class="quick-action" onclick={() => executeQuickAction({ label: 'Search', tool: 'web_search', args: null })}>
+						<span>&#128269;</span> Search
+					</button>
+					<button class="quick-action" onclick={() => executeQuickAction({ label: 'Docs', tool: 'search_knowledge', args: null })}>
+						<span>&#128196;</span> Docs
+					</button>
+					<button class="quick-action" onclick={() => executeQuickAction({ label: 'Calendar', tool: 'list_calendar_events', args: '{}' })}>
+						<span>&#128197;</span> Calendar
+					</button>
+				</div>
+				{#if quickActionPrompting}
+					<div class="quick-action-input">
+						<input
+							type="text"
+							bind:value={quickActionInput}
+							placeholder={quickActionPrompting === 'web_search' ? 'Search the web...' : 'Search docs...'}
+							onkeydown={(e) => { if (e.key === 'Enter') submitQuickAction(quickActionPrompting); if (e.key === 'Escape') quickActionPrompting = null; }}
+						/>
+						<button class="btn btn-primary btn-sm" onclick={() => submitQuickAction(quickActionPrompting)} disabled={!quickActionInput.trim()}>Go</button>
+						<button class="btn btn-ghost btn-sm" onclick={() => quickActionPrompting = null}>Cancel</button>
+					</div>
+				{/if}
 			{/if}
 
 			<!-- Input -->
@@ -3178,7 +3942,7 @@ autonomy: reactive
 			<div class="drawer-section">
 				<div class="drawer-section-label">Online — {onlineMembersList.length}</div>
 				{#each onlineMembersList as om}
-					<div class="drawer-member">
+					<div class="drawer-member clickable" onclick={() => openProfile(om.user_id)}>
 						<div class="drawer-avatar">
 							{om.display_name?.charAt(0)?.toUpperCase() || '?'}
 							<span class="presence-dot online"></span>
@@ -3187,6 +3951,13 @@ autonomy: reactive
 							<span class="drawer-member-name">{om.display_name}</span>
 							<span class="drawer-member-role">{om.role}</span>
 						</div>
+						{#if $activeChannel?.type === 'group' && currentUser?.role === 'admin' && om.user_id !== currentUser?.uid}
+							<button class="kick-btn" title="Remove from group" onclick={async (e) => { e.stopPropagation();
+								if (confirm(`Remove ${om.display_name} from this group?`)) {
+									await kickChannelMember(slug, $activeChannel!.id, om.user_id);
+								}
+							}}>&times;</button>
+						{/if}
 					</div>
 				{/each}
 			</div>
@@ -3194,7 +3965,7 @@ autonomy: reactive
 				<div class="drawer-section">
 					<div class="drawer-section-label">Offline — {offlineMembers().length}</div>
 					{#each offlineMembers() as m}
-						<div class="drawer-member offline">
+						<div class="drawer-member offline clickable" onclick={() => openProfile(m.id)}>
 							<div class="drawer-avatar">
 								{m.display_name?.charAt(0)?.toUpperCase() || '?'}
 							</div>
@@ -3202,6 +3973,13 @@ autonomy: reactive
 								<span class="drawer-member-name">{m.display_name}</span>
 								<span class="drawer-member-role">{m.role}</span>
 							</div>
+							{#if $activeChannel?.type === 'group' && currentUser?.role === 'admin' && m.id !== currentUser?.uid}
+								<button class="kick-btn" title="Remove from group" onclick={async (e) => { e.stopPropagation();
+									if (confirm(`Remove ${m.display_name} from this group?`)) {
+										await kickChannelMember(slug, $activeChannel!.id, m.id);
+									}
+								}}>&times;</button>
+							{/if}
 						</div>
 					{/each}
 				</div>
@@ -3223,15 +4001,15 @@ autonomy: reactive
 			<div class="thread-messages" bind:this={threadMessagesEl}>
 				{#each threadMessages as msg (msg.clientId || msg.id)}
 					<div class="message-row" class:pending={msg.status === 'pending'} class:thread-root={msg.id === threadId}>
-						<div class="avatar">
+						<div class="avatar clickable" onclick={() => openProfile(msg.sender_id)}>
 							{msg.sender_name.charAt(0).toUpperCase()}
 						</div>
 						<div class="message-body">
 							<div class="message-meta">
-								<span class="sender">{msg.sender_name}</span>
+								<span class="sender clickable" onclick={() => openProfile(msg.sender_id)}>{msg.sender_name}</span>
 								<span class="timestamp">{formatTime(msg.created_at)}</span>
 							</div>
-							<div class="message-text">{renderMessageContent(msg.content).text}</div>
+							<div class="message-text">{@html safeMarkdownToHtml(renderMessageContent(msg.content).text)}</div>
 							{#if msg.reactions?.length}
 								<div class="reactions-row">
 									{#each msg.reactions as r}
@@ -3417,134 +4195,656 @@ autonomy: reactive
 
 			<div class="brain-tabs">
 				<button class="brain-tab" class:active={brainTab === 'settings'} onclick={() => brainTab = 'settings'}>Settings</button>
-				<button class="brain-tab" class:active={brainTab === 'definitions'} onclick={() => brainTab = 'definitions'}>Personality</button>
-				<button class="brain-tab" class:active={brainTab === 'memory'} onclick={() => { brainTab = 'memory'; loadMemories(); }}>Memory</button>
-				<button class="brain-tab" class:active={brainTab === 'activity'} onclick={() => { brainTab = 'activity'; loadActions(); }}>Activity</button>
-				<button class="brain-tab" class:active={brainTab === 'skills'} onclick={() => { brainTab = 'skills'; loadSkills(); }}>Skills</button>
-				<button class="brain-tab" class:active={brainTab === 'knowledge'} onclick={() => { brainTab = 'knowledge'; loadKnowledge(); }}>Knowledge</button>
-				<button class="brain-tab" class:active={brainTab === 'integrations'} onclick={() => { brainTab = 'integrations'; loadIntegrations(); }}>Integrations</button>
-				<button class="brain-tab" class:active={brainTab === 'tools'} onclick={() => { brainTab = 'tools'; loadMCPServersData(); loadMCPTemplates(); }}>Tools</button>
-				<button class="brain-tab" class:active={brainTab === 'roles'} onclick={() => { brainTab = 'roles'; loadRoles(); }}>Roles</button>
+				{#if isAdmin}
+					<button class="brain-tab" class:active={brainTab === 'north_star'} onclick={() => brainTab = 'north_star'}>North Star</button>
+					<button class="brain-tab" class:active={brainTab === 'definitions'} onclick={() => brainTab = 'definitions'}>Personality</button>
+					<button class="brain-tab" class:active={brainTab === 'memory'} onclick={() => { brainTab = 'memory'; loadMemories(); }}>Memory</button>
+					<button class="brain-tab" class:active={brainTab === 'activity'} onclick={() => { brainTab = 'activity'; loadActions(); }}>Activity</button>
+					<button class="brain-tab" class:active={brainTab === 'skills'} onclick={() => { brainTab = 'skills'; loadSkills(); }}>Skills</button>
+					<button class="brain-tab" class:active={brainTab === 'knowledge'} onclick={() => { brainTab = 'knowledge'; loadKnowledge(); }}>Knowledge</button>
+					<button class="brain-tab" class:active={brainTab === 'integrations'} onclick={() => { brainTab = 'integrations'; loadIntegrations(); }}>Integrations</button>
+					<button class="brain-tab" class:active={brainTab === 'tools'} onclick={() => { brainTab = 'tools'; loadMCPServersData(); loadMCPTemplates(); }}>Tools</button>
+					<button class="brain-tab" class:active={brainTab === 'roles'} onclick={() => { brainTab = 'roles'; loadRoles(); }}>Roles</button>
+					<button class="brain-tab" class:active={brainTab === 'info'} onclick={() => { brainTab = 'info'; loadWorkspaceInfo(); }}>Info</button>
+					<button class="brain-tab" class:active={brainTab === 'network'} onclick={() => { brainTab = 'network'; getNetworkLog(slug, 'stats').then(s => networkStats = s); }}>Network</button>
+					<button class="brain-tab" class:active={brainTab === 'portability'} onclick={() => brainTab = 'portability'}>Portability</button>
+					<button class="brain-tab" class:active={brainTab === 'costs'} onclick={() => { brainTab = 'costs'; loadUsage(); }}>Costs</button>
+				{/if}
 			</div>
 
-			{#if brainTab === 'settings'}
+			{#if brainTab === 'north_star'}
+			{#if isAdmin}
 			<div class="brain-section">
-				<h3 class="brain-section-title">API Settings</h3>
-				<div class="brain-field">
-					<label>OpenRouter API Key</label>
-					{#if brainSettings.api_key_set === 'true'}
-						<div class="brain-key-status">Key set ({brainSettings.api_key_masked})</div>
-					{/if}
-					<input
-						type="password"
-						class="brain-input"
-						placeholder="sk-or-v1-..."
-						bind:value={brainApiKey}
-					/>
-					<span class="brain-hint">Get a key at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a></span>
-				</div>
+				<h3 class="brain-section-title">North Star</h3>
+				<p class="brain-hint" style="margin-bottom: var(--space-sm);">Set the mission that guides Brain and all agents in this workspace.</p>
+				<label class="brain-hint" style="display:block;margin-top:var(--space-xs)">Goal — What are we trying to achieve?</label>
+				<textarea class="brain-input" rows="2" bind:value={northStar} placeholder="e.g. Build the best AI workspace for teams"></textarea>
+				<label class="brain-hint" style="display:block;margin-top:var(--space-sm)">Why — Why does it matter?</label>
+				<textarea class="brain-input" rows="2" bind:value={northStarWhy} placeholder="e.g. Teams waste too much time switching tools"></textarea>
+				<label class="brain-hint" style="display:block;margin-top:var(--space-sm)">Success — What does success look like?</label>
+				<textarea class="brain-input" rows="2" bind:value={northStarSuccess} placeholder="e.g. 10,000 teams collaborating with AI agents"></textarea>
+				<label class="brain-hint" style="display:block;margin-top:var(--space-sm)">Strategic Themes (comma-separated)</label>
+				<input class="brain-input" type="text" bind:value={strategicThemesInput} placeholder="e.g. AI agents, Seamless collaboration, Developer extensibility" />
+				<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveBrainSettings} disabled={brainSaving}>
+					{brainSaving ? 'Saving...' : 'Save North Star'}
+				</button>
+			</div>
 
-				<div class="brain-field">
-					<label>Model</label>
-					<div style="display: flex; gap: 0.5rem; align-items: center;">
-						<select class="brain-input" bind:value={brainModel} style="flex:1">
-							<option value="nexus/free-auto">Free Auto (Nexus)</option>
-							{#if pinnedModels.length > 0}
-								{#each pinnedModels as m}
-									<option value={m.id}>{m.display_name}</option>
-								{/each}
-							{:else}
-								<option value="anthropic/claude-sonnet-4">Claude Sonnet 4</option>
-								<option value="anthropic/claude-haiku-4">Claude Haiku 4</option>
-								<option value="openai/gpt-4o">GPT-4o</option>
-								<option value="openai/gpt-4o-mini">GPT-4o Mini</option>
-								<option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
-								<option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
-							{/if}
-							{#each addedModels.filter(am => !pinnedModels.some(pm => pm.id === am.id)) as m}
-								<option value={m.id}>{m.display_name}</option>
-							{/each}
-						</select>
-						{#if isAdmin}
-							<button class="btn btn-ghost btn-sm" onclick={openModelBrowser}>Browse</button>
-						{/if}
+			<div class="brain-section">
+				<h3 class="brain-section-title">Self-Reflection</h3>
+				<p class="brain-hint" style="margin-bottom: var(--space-sm);">Brain periodically reflects on workspace activity, team patterns, and North Star alignment. Findings are saved to REFLECTIONS.md and influence all future responses.</p>
+				<label class="brain-toggle-row">
+					<input type="checkbox" bind:checked={reflectionEnabled} />
+					<div>
+						<strong>Enable daily reflection</strong>
+						<span class="brain-hint" style="display: block; margin-top: 2px;">Brain analyzes activity, updates its self-awareness journal</span>
 					</div>
-					{#if modelAvailability && !modelAvailability.model_available}
-						<div class="model-fallback-warning">
-							Model <strong>{modelAvailability.model}</strong> unavailable — falling back to <strong>{modelAvailability.fallback_model}</strong>
+				</label>
+				{#if reflectionEnabled}
+				<label class="brain-hint" style="display:block;margin-top:var(--space-sm)">Reflection time (UTC, HH:MM)</label>
+				<input class="brain-input" type="text" bind:value={reflectionTime} placeholder="3:00" style="max-width: 120px;" />
+				{/if}
+				<div style="display:flex;gap:var(--space-sm);margin-top:var(--space-md);">
+					<button class="btn btn-primary btn-sm" onclick={saveBrainSettings} disabled={brainSaving}>
+						{brainSaving ? 'Saving...' : 'Save'}
+					</button>
+					<button class="btn btn-sm" style="border:1px solid var(--border-subtle);" onclick={async () => {
+						reflectingNow = true;
+						try {
+							await triggerReflection(slug);
+							setTimeout(() => { reflectingNow = false; }, 15000);
+						} catch (e) {
+							reflectingNow = false;
+							alert(e);
+						}
+					}} disabled={reflectingNow}>
+						{reflectingNow ? 'Reflecting...' : 'Reflect Now'}
+					</button>
+				</div>
+			</div>
+			{/if}
+			{/if}
+
+			{#if brainTab === 'settings'}
+			{#if isAdmin}
+			<div class="brain-section">
+				<h3 class="brain-section-title">Engine Mode</h3>
+				<label class="brain-toggle-row">
+					<input type="radio" name="engine-mode" checked={engineMode === 'cloud'} onchange={() => setEngineMode('cloud')} />
+					<div>
+						<strong>OpenRouter</strong>
+						<span class="brain-hint" style="display: block; margin-top: 2px;">300+ models via OpenRouter</span>
+					</div>
+				</label>
+				<label class="brain-toggle-row">
+					<input type="radio" name="engine-mode" checked={engineMode === 'grok'} onchange={() => setEngineMode('grok')} />
+					<div>
+						<strong>Grok / xAI</strong>
+						<span class="brain-hint" style="display: block; margin-top: 2px;">Direct xAI access with native X/Twitter search</span>
+					</div>
+				</label>
+				<label class="brain-toggle-row">
+					<input type="radio" name="engine-mode" checked={engineMode === 'local'} onchange={() => setEngineMode('local')} />
+					<div>
+						<strong>Local LLM</strong>
+						<span class="brain-hint" style="display: block; margin-top: 2px;">Inference runs in your browser via WebGPU — no API key needed</span>
+					</div>
+				</label>
+				<label class="brain-toggle-row" style="opacity: 0.5; pointer-events: none;">
+					<input type="radio" name="engine-mode" disabled checked={engineMode === 'standard'} />
+					<div>
+						<strong>Standard Chat Only</strong>
+						<span class="brain-hint" style="display: block; margin-top: 2px;">Pattern-matching responses — coming soon</span>
+					</div>
+				</label>
+				<div class="engine-status">
+					{#if engineMode === 'cloud'}
+						Active: <strong>OpenRouter</strong> — all messages routed to LLM
+					{:else if engineMode === 'grok'}
+						Active: <strong>Grok / xAI</strong> — all messages routed to xAI
+					{:else if engineMode === 'local'}
+						Active: <strong>Local LLM</strong> — all inference runs in your browser
+					{:else}
+						Active: <strong>Standard Chat</strong> — pattern-matching only, no AI
+					{/if}
+				</div>
+			</div>
+			{:else}
+			<div class="brain-section">
+				<h3 class="brain-section-title">Engine</h3>
+				<div class="engine-status">
+					Workspace engine: <strong>{engineMode === 'cloud' ? 'OpenRouter' : engineMode === 'grok' ? 'Grok / xAI' : engineMode === 'local' ? 'Local LLM' : 'Standard Chat'}</strong>
+				</div>
+				{#if typeof navigator !== 'undefined' && (navigator as any).gpu}
+					<label class="brain-toggle-row" style="margin-top: 8px;">
+						<input type="checkbox" checked={userWebLLMEnabled} onchange={(e: Event) => {
+							userWebLLMEnabled = (e.target as HTMLInputElement).checked;
+							try { localStorage.setItem('nexus_user_webllm_' + slug, String(userWebLLMEnabled)); } catch {}
+						}} />
+						<div>
+							<strong>Use Local Model</strong>
+							<span class="brain-hint" style="display: block; margin-top: 2px;">Run AI in your browser instead of using the workspace engine</span>
+						</div>
+					</label>
+				{/if}
+			</div>
+			{/if}
+
+			<div class="brain-section">
+				<h3 class="brain-section-title">Local Model (WebLLM)</h3>
+				{#if typeof navigator !== 'undefined' && !(navigator as any).gpu}
+					<div class="engine-status engine-warning">
+						WebGPU is not available in this browser. Try Chrome 113+ or Edge 113+.
+					</div>
+				{:else}
+					{#if brainWebLLMEnabled || userWebLLMEnabled}
+						{#await import('$lib/webllm.svelte.ts') then webllm}
+							{@const recommended = webllm.getRecommendedModels()}
+							{@const allModels = webllm.getAvailableModels()}
+							{@const state = webllm.getState()}
+
+							<!-- Installed Models List -->
+							{#if state.installedModels.length > 0}
+								<div class="brain-field">
+									<label>Installed Models ({state.installedModels.length}/{webllm.MAX_INSTALLED})</label>
+									<div class="webllm-installed-list">
+										{#each state.installedModels as modelId}
+											{@const isActive = state.isLoaded && state.currentModel === modelId}
+											{@const displayName = webllm.getModelDisplayName(modelId)}
+											{@const hasTools = webllm.isToolCallingModel(modelId)}
+											{@const rec = recommended.find(m => m.model_id === modelId)}
+											<div class="webllm-model-row" class:active={isActive}>
+												<span class="webllm-model-dot" class:loaded={isActive}></span>
+												<div class="webllm-model-info">
+													<span class="webllm-model-name">{displayName}</span>
+													{#if rec}<span class="webllm-model-size">{rec.size}</span>{/if}
+													{#if hasTools}<span class="webllm-model-badge">Tools</span>{/if}
+												</div>
+												<div class="webllm-model-actions">
+													{#if state.isDownloading}
+														<!-- no actions while downloading -->
+													{:else if isActive}
+														<button class="btn btn-secondary btn-xs" onclick={() => webllm.unloadEngine()}>Unload</button>
+													{:else}
+														<button class="btn btn-primary btn-xs" onclick={() => { brainWebLLMModel = modelId; webllm.loadEngine(modelId); }}>Load</button>
+														<button class="btn btn-danger btn-xs" onclick={() => webllm.deleteModelCache(modelId)} title="Delete from cache">&#128465;</button>
+													{/if}
+												</div>
+											</div>
+										{/each}
+									</div>
+								</div>
+							{:else}
+								<div class="brain-hint" style="margin-bottom: 8px;">No models installed yet. Download one below.</div>
+								<!-- Auto-refresh installed models on first render -->
+								{#await webllm.refreshInstalledModels() then}{/await}
+							{/if}
+
+							<!-- Download progress -->
+							{#if state.isDownloading}
+								<div class="brain-field">
+									<div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 4px;">{state.downloadStatus}</div>
+									<div style="background: var(--bg-tertiary); border-radius: 4px; height: 8px; overflow: hidden;">
+										<div style="background: var(--accent); height: 100%; width: {state.downloadProgress * 100}%; transition: width 0.3s;"></div>
+									</div>
+								</div>
+							{/if}
+
+							<!-- Add Model (admin or user opt-in: full selector, member: download workspace model) -->
+							{#if !state.isDownloading}
+								{#if isAdmin || userWebLLMEnabled}
+									<div class="brain-field" style="margin-top: 8px;">
+										<label>Add Model</label>
+										<div style="display: flex; gap: 8px; align-items: center;">
+											<select class="brain-input" style="flex: 1;" bind:value={brainWebLLMModel} disabled={state.installedModels.length >= webllm.MAX_INSTALLED}>
+												<option value="">Select a model...</option>
+												<optgroup label="Recommended">
+													{#each recommended.filter(m => !state.installedModels.includes(m.model_id)) as m}
+														<option value={m.model_id}>{m.label} ({m.size}){m.hasTools ? ' — Tools' : ''}</option>
+													{/each}
+												</optgroup>
+												<optgroup label="All Models">
+													{#each allModels.filter(m => !state.installedModels.includes(m.model_id)) as m}
+														<option value={m.model_id}>{m.display_name} {m.vram_required_MB ? `(${Math.round(m.vram_required_MB / 1024 * 10) / 10} GB)` : ''}{m.hasTools ? ' — Tools' : ''}</option>
+													{/each}
+												</optgroup>
+											</select>
+											<button class="btn btn-primary btn-sm" disabled={!brainWebLLMModel || state.installedModels.length >= webllm.MAX_INSTALLED} onclick={() => webllm.loadEngine(brainWebLLMModel)}>Download</button>
+										</div>
+										{#if state.installedModels.length >= webllm.MAX_INSTALLED}
+											<div class="brain-hint" style="margin-top: 4px; color: var(--text-warning);">Maximum {webllm.MAX_INSTALLED} models. Delete one to add another.</div>
+										{/if}
+									</div>
+								{:else if brainWebLLMModel && !state.installedModels.includes(brainWebLLMModel)}
+									<div class="brain-field" style="margin-top: 8px;">
+										<label>Workspace Model</label>
+										<div style="display: flex; gap: 8px; align-items: center;">
+											<span style="flex: 1; font-size: var(--text-sm); color: var(--text-secondary);">{webllm.getModelDisplayName(brainWebLLMModel)}</span>
+											<button class="btn btn-primary btn-sm" onclick={() => webllm.loadEngine(brainWebLLMModel)}>Download</button>
+										</div>
+										<span class="brain-hint">Download once to enable @Brain in your browser</span>
+									</div>
+								{/if}
+							{/if}
+
+							<!-- Active model status -->
+							{#if state.isLoaded}
+								<div class="engine-status" style="margin-top: 8px;">
+									Active: <strong>{webllm.getModelDisplayName(state.currentModel)}</strong>
+									{#if webllm.isToolCallingModel(state.currentModel)}
+										<span style="color: var(--accent);"> &#9889; Tools enabled</span>
+									{/if}
+								</div>
+							{/if}
+						{/await}
+					{/if}
+					{#if brainWebLLMEnabled && !userWebLLMEnabled}
+						<div class="engine-status" style="margin-top: 8px; background: rgba(234,88,12,0.1); border: 1px solid rgba(234,88,12,0.3);">
+							Local LLM active — Standard Chat and Cloud LLM are bypassed. All responses come from your browser.
+						</div>
+					{:else if userWebLLMEnabled}
+						<div class="engine-status" style="margin-top: 8px; background: rgba(234,88,12,0.1); border: 1px solid rgba(234,88,12,0.3);">
+							Personal Local LLM active — your messages use local inference instead of the workspace engine.
 						</div>
 					{/if}
+				{/if}
+			</div>
+
+			{#if isAdmin}
+			<div class="brain-section">
+				<h3 class="brain-section-title">LLM Provider</h3>
+				<div class="service-cards">
+					<!-- OpenRouter -->
+					<div class="service-card" class:service-active={brainSettings.api_key_set === 'true'}>
+						<div class="service-header">
+							<div class="service-status-dot" class:active={brainSettings.api_key_set === 'true'}></div>
+							<div class="service-title-area">
+								<span class="service-name">OpenRouter</span>
+								<span class="service-badge">{brainSettings.api_key_set === 'true' ? 'Connected' : 'Not configured'}</span>
+							</div>
+						</div>
+						<div class="service-desc">
+							{#if brainSettings.api_key_set === 'true'}
+								Model: <strong>{brainModel === 'nexus/free-auto' ? 'Free Auto' : brainModel.split('/').pop()}</strong>
+								{#if brainSettings.api_key_masked}&middot; Key: {brainSettings.api_key_masked}{/if}
+							{:else}
+								Cloud LLM via 300+ models. Powers chat, tools, and agents.
+							{/if}
+						</div>
+						<details class="service-details">
+							<summary>Configure</summary>
+							<div class="service-fields">
+								<div class="brain-field">
+									<label>API Key</label>
+									{#if brainSettings.api_key_set === 'true'}
+										<div class="brain-key-status">Active ({brainSettings.api_key_masked})</div>
+									{/if}
+									<input type="password" class="brain-input" placeholder="sk-or-v1-..." bind:value={brainApiKey} />
+									<span class="brain-hint">Get a key at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a></span>
+								</div>
+								<div class="brain-field">
+									<label>Model</label>
+									<div style="display: flex; gap: 0.5rem; align-items: center;">
+										<select class="brain-input" bind:value={brainModel} style="flex:1">
+											<option value="nexus/free-auto">Free Auto (Nexus)</option>
+											{#if pinnedModels.length > 0}
+												{#each pinnedModels as m}
+													<option value={m.id}>{m.display_name}</option>
+												{/each}
+											{:else}
+												<option value="anthropic/claude-sonnet-4">Claude Sonnet 4</option>
+												<option value="anthropic/claude-haiku-4">Claude Haiku 4</option>
+												<option value="openai/gpt-4o">GPT-4o</option>
+												<option value="openai/gpt-4o-mini">GPT-4o Mini</option>
+												<option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
+												<option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
+											{/if}
+											{#each addedModels.filter(am => !pinnedModels.some(pm => pm.id === am.id)) as m}
+												<option value={m.id}>{m.display_name}</option>
+											{/each}
+										</select>
+										<button class="btn btn-ghost btn-sm" onclick={openModelBrowser}>Browse</button>
+									</div>
+									{#if modelAvailability && !modelAvailability.model_available}
+										<div class="model-fallback-warning">
+											Model <strong>{modelAvailability.model}</strong> unavailable — falling back to <strong>{modelAvailability.fallback_model}</strong>
+										</div>
+									{/if}
+								</div>
+
+								{#if brainModel === 'nexus/free-auto'}
+								<div class="brain-field">
+									<label>Free Auto Router</label>
+									<span class="brain-hint" style="margin-bottom: 0.5rem">Models are tried in order. First available model responds.</span>
+									{#if workspaceFreeModels.length > 0}
+									<div class="free-model-list">
+										{#each workspaceFreeModels as model, i}
+										<div class="free-model-row">
+											<span class="free-model-priority">{i + 1}</span>
+											<span class="free-model-id">{model.id}</span>
+											<span class="free-model-name">{model.name}</span>
+											<div class="free-model-actions">
+												<button class="btn btn-ghost btn-xs" onclick={() => moveWorkspaceFreeModel(i, -1)} disabled={i === 0}>&#9650;</button>
+												<button class="btn btn-ghost btn-xs" onclick={() => moveWorkspaceFreeModel(i, 1)} disabled={i === workspaceFreeModels.length - 1}>&#9660;</button>
+												<button class="btn btn-ghost btn-xs danger" onclick={() => removeWorkspaceFreeModel(model.id)}>&times;</button>
+											</div>
+										</div>
+										{/each}
+									</div>
+									{:else}
+									<span class="brain-hint" style="font-style: italic">Using global defaults</span>
+									{/if}
+									<div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; align-items: flex-end;">
+										<div style="flex: 1;">
+											<input class="brain-input" bind:value={newFreeId} placeholder="provider/model:free" style="font-size: 0.8rem; font-family: var(--font-mono);" />
+										</div>
+										<div style="flex: 0.6;">
+											<input class="brain-input" bind:value={newFreeName} placeholder="Name" style="font-size: 0.8rem;" />
+										</div>
+										<button class="btn btn-primary btn-sm" onclick={addWorkspaceFreeModel} disabled={!newFreeId.trim()}>Add</button>
+									</div>
+									{#if workspaceFreeModels.length > 0}
+									<button class="btn btn-ghost btn-xs" style="margin-top: 0.5rem; color: var(--text-tertiary);" onclick={resetWorkspaceFreeModels}>Reset to defaults</button>
+									{/if}
+								</div>
+								{/if}
+							</div>
+						</details>
+					</div>
+
+					<!-- Grok / xAI -->
+					<div class="service-card" class:service-active={brainSettings.xai_api_key_set === 'true' && !!brainXAIModel}>
+						<div class="service-header">
+							<div class="service-status-dot" class:active={brainSettings.xai_api_key_set === 'true' && !!brainXAIModel}></div>
+							<div class="service-title-area">
+								<span class="service-name">Grok / xAI</span>
+								<span class="service-badge">
+									{#if brainSettings.xai_api_key_set === 'true' && brainXAIModel}
+										Active &middot; {brainXAIModel}
+									{:else if brainSettings.xai_api_key_set === 'true'}
+										Key set &middot; Select a model
+									{:else}
+										Not configured
+									{/if}
+								</span>
+							</div>
+						</div>
+						<div class="service-desc">
+							{#if brainSettings.xai_api_key_set === 'true' && brainXAIModel}
+								Brain routes all requests via xAI &mdash; lower latency, native X/Twitter search.
+							{:else}
+								Direct access to Grok models with native X/Twitter search. No OpenRouter needed.
+							{/if}
+						</div>
+						<details class="service-details" open={!brainSettings.xai_api_key_set || !brainXAIModel}>
+							<summary>Configure</summary>
+							<div class="service-fields">
+								<div class="brain-field">
+									<label>API Key</label>
+									{#if brainSettings.xai_api_key_set === 'true'}
+										<div class="brain-key-status">Active ({brainSettings.xai_api_key_masked})</div>
+									{/if}
+									<input type="password" class="brain-input" placeholder="xai-..." bind:value={brainXAIKey} />
+									<span class="brain-hint">Get a key at <a href="https://console.x.ai" target="_blank" rel="noopener">console.x.ai</a> &mdash; includes free credits</span>
+								</div>
+								<div class="brain-field">
+									<label>Model</label>
+									<select class="brain-input" bind:value={brainXAIModel}>
+										<option value="">Select a model...</option>
+										<option value="grok-4-1-fast-non-reasoning">Grok 4.1 Fast — $0.20/$0.50/M, 2M context</option>
+										<option value="grok-4-0709">Grok 4 — $3/$15/M</option>
+										<option value="grok-3-fast">Grok 3 Fast</option>
+										<option value="grok-3-mini-fast">Grok 3 Mini Fast</option>
+										<option value="grok-3">Grok 3</option>
+										<option value="grok-3-mini">Grok 3 Mini</option>
+									</select>
+								</div>
+							</div>
+						</details>
+					</div>
 				</div>
 
-				<div class="brain-field">
-					<label>Gemini API Key</label>
-					{#if brainSettings.gemini_api_key_set === 'true'}
-						<div class="brain-key-status">Key set ({brainSettings.gemini_api_key_masked})</div>
-					{/if}
-					<input
-						type="password"
-						class="brain-input"
-						placeholder="AIza..."
-						bind:value={brainGeminiKey}
-					/>
-					<span class="brain-hint">For image generation. Get a key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com</a></span>
-				</div>
-
-				<div class="brain-field">
-					<label>Image Model</label>
-					<select class="brain-input" bind:value={brainImageModel}>
-						<option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image</option>
-						<option value="gemini-3-pro-image-preview">Gemini 3 Pro Image</option>
-						<option value="gemini-3.1-flash-image-preview">Gemini 3.1 Flash Image</option>
-					</select>
-					<span class="brain-hint">Used by agents with the generate_image tool (via Gemini API)</span>
-				</div>
-
-				<button class="btn btn-primary btn-sm" onclick={saveBrainSettings} disabled={brainSaving}>
+				<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveBrainSettings} disabled={brainSaving}>
 					{brainSaving ? 'Saving...' : 'Save Settings'}
 				</button>
 			</div>
 
 			<div class="brain-section">
-				<h3 class="brain-section-title">Memory</h3>
-				<div class="brain-field">
-					<label class="brain-toggle-row">
-						<input type="checkbox" bind:checked={brainMemoryEnabled} />
-						<span>Enable automatic memory extraction</span>
-					</label>
-					<span class="brain-hint">Brain extracts key facts, decisions, and commitments from conversations automatically.</span>
-				</div>
-
-				{#if brainMemoryEnabled}
-				<div class="brain-field">
-					<label>Memory Model</label>
-					<select class="brain-input" bind:value={brainMemoryModel}>
-						<option value="openai/gpt-4o-mini">GPT-4o Mini</option>
-						<option value="openai/gpt-4o">GPT-4o</option>
-						<option value="anthropic/claude-haiku-4">Claude Haiku 4</option>
-						<option value="anthropic/claude-sonnet-4">Claude Sonnet 4</option>
-						<option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
-						<option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
-					</select>
-					<span class="brain-hint">Model used for memory extraction. Cheaper models work well here.</span>
-				</div>
-
-				<div class="brain-field">
-					<label>Extraction frequency</label>
-					<div class="brain-freq-row">
-						<input type="range" min="5" max="50" step="5" bind:value={brainExtractFreq} class="brain-range" />
-						<span class="brain-freq-val">Every {brainExtractFreq} messages</span>
+				<h3 class="brain-section-title">Services</h3>
+				<div class="service-cards">
+					<!-- Gemini -->
+					<div class="service-card" class:service-active={brainSettings.gemini_api_key_set === 'true'}>
+						<div class="service-header">
+							<div class="service-status-dot" class:active={brainSettings.gemini_api_key_set === 'true'}></div>
+							<div class="service-title-area">
+								<span class="service-name">Google Gemini</span>
+								<span class="service-badge">{brainSettings.gemini_api_key_set === 'true' ? 'Connected' : 'Not configured'}</span>
+							</div>
+						</div>
+						<div class="service-desc">
+							{#if brainSettings.gemini_api_key_set === 'true'}
+								Image model: <strong>{brainImageModel.replace('gemini-', '').replace('-image', '').replace('-preview', '')}</strong>
+								{#if brainSettings.gemini_api_key_masked}&middot; Key: {brainSettings.gemini_api_key_masked}{/if}
+							{:else}
+								Powers image generation for agents. Free tier available.
+							{/if}
+						</div>
+						<details class="service-details">
+							<summary>Configure</summary>
+							<div class="service-fields">
+								<div class="brain-field">
+									<label>API Key</label>
+									{#if brainSettings.gemini_api_key_set === 'true'}
+										<div class="brain-key-status">Active ({brainSettings.gemini_api_key_masked})</div>
+									{/if}
+									<input type="password" class="brain-input" placeholder="AIza..." bind:value={brainGeminiKey} />
+									<span class="brain-hint">Get a key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com</a></span>
+								</div>
+								<div class="brain-field">
+									<label>Image Model</label>
+									<select class="brain-input" bind:value={brainImageModel}>
+										<option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image</option>
+										<option value="gemini-3-pro-image-preview">Gemini 3 Pro Image</option>
+										<option value="gemini-3.1-flash-image-preview">Gemini 3.1 Flash Image</option>
+									</select>
+								</div>
+							</div>
+						</details>
 					</div>
-					<span class="brain-hint">Lower = more frequent extraction (uses more API calls). Default is 15.</span>
+
+					<!-- OpenAI -->
+					<div class="service-card" class:service-active={brainSettings.openai_api_key_set === 'true'}>
+						<div class="service-header">
+							<div class="service-status-dot" class:active={brainSettings.openai_api_key_set === 'true'}></div>
+							<div class="service-title-area">
+								<span class="service-name">OpenAI</span>
+								<span class="service-badge">{brainSettings.openai_api_key_set === 'true' ? 'Connected' : 'Not configured'}</span>
+							</div>
+						</div>
+						<div class="service-desc">
+							{#if brainSettings.openai_api_key_set === 'true'}
+								Available for memory extraction.
+								{#if brainSettings.openai_api_key_masked}Key: {brainSettings.openai_api_key_masked}{/if}
+							{:else}
+								Use OpenAI models directly for memory extraction. GPT-4o Mini is $0.15/M input.
+							{/if}
+						</div>
+						<details class="service-details">
+							<summary>Configure</summary>
+							<div class="service-fields">
+								<div class="brain-field">
+									<label>API Key</label>
+									{#if brainSettings.openai_api_key_set === 'true'}
+										<div class="brain-key-status">Active ({brainSettings.openai_api_key_masked})</div>
+									{/if}
+									<input type="password" class="brain-input" placeholder="sk-..." bind:value={brainOpenAIKey} />
+									<span class="brain-hint">Get a key at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com</a></span>
+								</div>
+							</div>
+						</details>
+					</div>
+
+					<!-- Brave Search -->
+					<div class="service-card" class:service-active={brainSettings.brave_api_key_set === 'true'}>
+						<div class="service-header">
+							<div class="service-status-dot" class:active={brainSettings.brave_api_key_set === 'true'}></div>
+							<div class="service-title-area">
+								<span class="service-name">Brave Search</span>
+								<span class="service-badge">{brainSettings.brave_api_key_set === 'true' ? 'Connected' : 'Not configured'}</span>
+							</div>
+						</div>
+						<div class="service-desc">
+							{#if brainSettings.brave_api_key_set === 'true'}
+								Web search enabled for Brain tools.
+								{#if brainSettings.brave_api_key_masked}Key: {brainSettings.brave_api_key_masked}{/if}
+							{:else}
+								Enables the web_search Brain tool. Free 2,000 queries/month.
+							{/if}
+						</div>
+						<details class="service-details">
+							<summary>Configure</summary>
+							<div class="service-fields">
+								<div class="brain-field">
+									<label>API Key</label>
+									{#if brainSettings.brave_api_key_set === 'true'}
+										<div class="brain-key-status">Active ({brainSettings.brave_api_key_masked})</div>
+									{/if}
+									<input type="password" class="brain-input" placeholder="BSA..." bind:value={brainBraveKey} />
+									<span class="brain-hint">Get a key at <a href="https://brave.com/search/api/" target="_blank" rel="noopener">brave.com/search/api</a></span>
+								</div>
+							</div>
+						</details>
+					</div>
+				</div>
+
+				<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveBrainSettings} disabled={brainSaving}>
+					{brainSaving ? 'Saving...' : 'Save Settings'}
+				</button>
+			</div>
+
+			<div class="brain-section">
+				<h3 class="brain-section-title">Organizational Memory</h3>
+				{#if brainMemoryTotal > 0}
+				<div class="memory-stats-bar">
+					<span>{brainMemoryTotal} memories stored</span>
+					{#if brainLastExtraction}
+						<span class="memory-stats-sep">&middot;</span>
+						<span>Last extraction: {new Date(brainLastExtraction).toLocaleDateString()}</span>
+					{/if}
+					{#if brainLastConsolidation}
+						<span class="memory-stats-sep">&middot;</span>
+						<span>Last consolidation: {new Date(brainLastConsolidation).toLocaleDateString()}</span>
+					{/if}
 				</div>
 				{/if}
+
+				<div class="memory-config-card">
+					<div class="memory-config-header">
+						<div class="memory-config-title-row">
+							<label class="brain-toggle-row" style="margin: 0;">
+								<input type="checkbox" bind:checked={brainSystemMemoryEnabled} />
+								<strong>System Memory</strong>
+							</label>
+						</div>
+						<span class="brain-hint">Captures decisions and commitments using pattern matching. Enables pinning messages to memory. No API cost.</span>
+					</div>
+				</div>
+
+				<div class="memory-config-card">
+					<div class="memory-config-header">
+						<div class="memory-config-title-row">
+							<label class="brain-toggle-row" style="margin: 0;">
+								<input type="checkbox" bind:checked={brainMemoryEnabled} />
+								<strong>LLM Memory</strong>
+							</label>
+						</div>
+						<span class="brain-hint">Uses an LLM to extract organizational decisions, commitments, and policies. Discards creative content, casual chat, and noise. Costs API credits.</span>
+					</div>
+
+					{#if brainMemoryEnabled}
+					<div class="memory-config-body">
+						<div class="brain-field" style="margin-bottom: 0.5rem;">
+							<label>Memory Engine</label>
+							<select class="brain-input" bind:value={brainMemoryEngine} onchange={() => {
+								// Auto-select cheapest model for the engine
+								if (brainMemoryEngine === 'openrouter') brainMemoryModel = 'openai/gpt-4o-mini';
+								else if (brainMemoryEngine === 'gemini') brainMemoryModel = 'gemini-2.5-flash-lite';
+								else if (brainMemoryEngine === 'grok') brainMemoryModel = 'grok-4.1-fast';
+								else if (brainMemoryEngine === 'openai') brainMemoryModel = 'gpt-4o-mini';
+							}}>
+								<option value="openrouter">OpenRouter {brainSettings.api_key_set !== 'true' ? '(free models)' : ''}</option>
+								<option value="gemini" disabled={brainSettings.gemini_api_key_set !== 'true'}>Gemini {brainSettings.gemini_api_key_set !== 'true' ? '— requires API key' : ''}</option>
+								<option value="grok" disabled={brainSettings.xai_api_key_set !== 'true'}>Grok / xAI {brainSettings.xai_api_key_set !== 'true' ? '— requires API key' : ''}</option>
+								<option value="openai" disabled={brainSettings.openai_api_key_set !== 'true'}>OpenAI {brainSettings.openai_api_key_set !== 'true' ? '— requires API key' : ''}</option>
+							</select>
+							<span class="brain-hint">Which provider to use for memory extraction, summaries, and consolidation.</span>
+						</div>
+
+						<div class="brain-field" style="margin-bottom: 0.5rem;">
+							<label>Memory Model</label>
+							<select class="brain-input" bind:value={brainMemoryModel}>
+								{#if brainMemoryEngine === 'openrouter'}
+									<option value="openai/gpt-4o-mini">GPT-4o Mini — $0.15/$0.60/M</option>
+									<option value="google/gemini-2.5-flash">Gemini 2.5 Flash — $0.15/$0.60/M</option>
+									<option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B (free)</option>
+								{:else if brainMemoryEngine === 'gemini'}
+									<option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite — $0.10/$0.40/M</option>
+									<option value="gemini-2.5-flash">Gemini 2.5 Flash — $0.30/$2.50/M</option>
+								{:else if brainMemoryEngine === 'grok'}
+									<option value="grok-4.1-fast">Grok 4.1 Fast — $0.20/$0.50/M</option>
+									<option value="grok-3-mini">Grok 3 Mini — $0.30/$0.50/M</option>
+								{:else if brainMemoryEngine === 'openai'}
+									<option value="gpt-4o-mini">GPT-4o Mini — $0.15/$0.60/M</option>
+								{/if}
+							</select>
+							<span class="brain-hint">Cheaper models work well for extraction.</span>
+						</div>
+
+						<div class="brain-field" style="margin-bottom: 0;">
+							<label>Extraction frequency</label>
+							<div class="brain-freq-row">
+								<input type="range" min="20" max="100" step="10" bind:value={brainExtractFreq} class="brain-range" />
+								<span class="brain-freq-val">Every {brainExtractFreq} messages</span>
+							</div>
+							<span class="brain-hint">Higher = fewer, better extractions. Default is 30. Target: 3-10 memories per week.</span>
+						</div>
+
+						{#if isAdmin && $activeChannel}
+						<div class="brain-field" style="margin-bottom: 0; margin-top: 0.75rem; border-top: 1px solid var(--border); padding-top: 0.75rem;">
+							<button class="btn btn-sm" disabled={extractingMemories} onclick={async () => {
+								extractingMemories = true;
+								extractMsg = '';
+								try {
+									const res = await extractMemoriesNow(slug, $activeChannel.id);
+									const n = res.extracted || 0;
+									extractMsg = n > 0 ? `Extracted ${n} memor${n === 1 ? 'y' : 'ies'} from #${$activeChannel.name}` : 'No memories extracted — messages may not contain decisions, commitments, or policies';
+								} catch (e) {
+									extractMsg = e.message;
+								}
+								extractingMemories = false;
+							}}>
+								{extractingMemories ? 'Extracting...' : 'Extract Now'}
+							</button>
+							{#if extractMsg}
+								<span class="brain-hint" style="color: var(--accent)">{extractMsg}</span>
+							{:else}
+								<span class="brain-hint">Run extraction on #{$activeChannel.name} without waiting for the message threshold.</span>
+							{/if}
+						</div>
+						{/if}
+					</div>
+					{/if}
+				</div>
 			</div>
+
+			{/if}
 
 			<div class="brain-section">
 				<h3 class="brain-section-title">Usage</h3>
 				<p class="brain-hint">Mention <strong>@Brain</strong> in any channel to get a response. Brain can create tasks, search messages, and write documents. It reads the last 20 messages plus stored memories for context.</p>
 			</div>
 
+			{#if isAdmin}
 			<div class="brain-section">
 				<h3 class="brain-section-title">Built-in Agents</h3>
 				<p class="brain-hint" style="margin-bottom: 0.75rem">Toggle built-in agents on or off. Brain is always active.</p>
@@ -3563,9 +4863,11 @@ autonomy: reactive
 					</label>
 				{/each}
 			</div>
+			{/if}
 
 			{:else if brainTab === 'definitions'}
 			<div class="brain-section">
+				<h3 class="brain-section-title">Brain System Prompts</h3>
 				<p class="brain-hint" style="margin-bottom: 0.75rem">These files shape Brain's personality and behavior. Edit them to customize how Brain acts in your workspace.</p>
 
 				<div class="brain-files">
@@ -3596,35 +4898,83 @@ autonomy: reactive
 				{/if}
 			</div>
 
+			<div class="brain-section" style="margin-top: 1rem;">
+				<h3 class="brain-section-title">WebLLM System Prompt</h3>
+				<p class="brain-hint" style="margin-bottom: 0.5rem">System prompt for the local WebLLM model. Keep it short — the local model has a ~4K token context window.</p>
+				<textarea
+					class="brain-file-content"
+					style="min-height: 120px;"
+					bind:value={brainWebLLMPrompt}
+				></textarea>
+				<div style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.5rem;">
+					<button class="btn btn-secondary btn-sm" onclick={() => { brainWebLLMPrompt = DEFAULT_WEBLLM_PROMPT; }} disabled={brainWebLLMPrompt === DEFAULT_WEBLLM_PROMPT}>
+						Reset to Default
+					</button>
+					<button class="btn btn-primary btn-sm" onclick={saveBrainSettings} disabled={brainSaving}>
+						{brainSaving ? 'Saving...' : 'Save'}
+					</button>
+				</div>
+			</div>
+
 			{:else if brainTab === 'memory'}
 			<div class="brain-section">
-				<div class="memory-stats">
-					{#each Object.entries(memoryCounts) as [type, count]}
-						<div class="memory-stat">
-							<span class="memory-stat-count">{count}</span>
-							<span class="memory-stat-label">{type}s</span>
-						</div>
-					{/each}
-					{#if Object.keys(memoryCounts).length === 0}
-						<p class="brain-hint">No memories yet. Brain extracts memories automatically as conversations happen.</p>
-					{/if}
+				{#if currentMemories.length > 0}
+				<div class="memory-month-stats">
+					{#if monthDecisions > 0}<span>{monthDecisions} decision{monthDecisions !== 1 ? 's' : ''}</span>{/if}
+					{#if monthCommitments > 0}<span>{monthCommitments} commitment{monthCommitments !== 1 ? 's' : ''}</span>{/if}
+					{#if monthPolicies > 0}<span>{monthPolicies} {monthPolicies !== 1 ? 'policies' : 'policy'}</span>{/if}
+					{#if monthDecisions === 0 && monthCommitments === 0 && monthPolicies === 0}<span class="brain-hint">No organizational memories this month</span>{/if}
+					<span class="memory-month-stats-label">this month</span>
 				</div>
+				{/if}
 
-				{#if memories.length > 0}
+				{#if memories.length === 0}
+					<p class="brain-hint">No memories yet. Brain extracts organizational decisions, commitments, and policies as conversations happen.</p>
+				{:else}
 					<div class="memory-actions">
-						<button class="btn btn-ghost btn-sm memory-clear-btn" onclick={handleClearMemories}>Clear All Memories</button>
+						<div class="memory-source-filter">
+							{#each ['all', 'decision', 'commitment', 'policy', 'person', 'insight'] as typeFilter}
+								<button class="memory-filter-btn" class:active={memoryTypeFilter === typeFilter} onclick={() => memoryTypeFilter = typeFilter}>
+									{typeFilter === 'all' ? 'All' : typeFilter === 'decision' ? 'Decisions' : typeFilter === 'commitment' ? 'Commitments' : typeFilter === 'policy' ? 'Policies' : typeFilter === 'person' ? 'People' : 'Insights'}
+								</button>
+							{/each}
+						</div>
+						<button class="btn btn-ghost btn-sm memory-clear-btn" onclick={handleClearMemories}>Clear All</button>
 					</div>
 
-					<div class="memory-list">
-						{#each memories as mem}
-							<div class="memory-item">
-								<span class="memory-type-badge" data-type={mem.type}>{mem.type}</span>
-								<span class="memory-content">{mem.content}</span>
-								<button class="memory-delete" onclick={() => handleDeleteMemory(mem.id)} title="Delete">
-									<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-										<path d="M2 2L10 10M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-									</svg>
-								</button>
+					<div class="memory-timeline">
+						{#each Object.entries(groupedMemories) as [month, mems]}
+							<div class="memory-month-group">
+								<div class="memory-month-header">{month}</div>
+								{#each mems as mem}
+									<div class="memory-timeline-item" class:superseded={!!mem.superseded_by || !!mem.valid_until}>
+										<div class="memory-timeline-left">
+											<span class="memory-type-icon" data-type={mem.type}>●</span>
+											<span class="memory-type-badge" data-type={mem.type}>{mem.type.toUpperCase()}</span>
+											<span class="memory-date">{new Date(mem.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+										</div>
+										<div class="memory-timeline-right">
+											<div class="memory-summary" class:struck={!!mem.superseded_by}>{mem.summary || mem.content}</div>
+											{#if mem.participants}
+												<span class="memory-participants">{mem.participants}</span>
+											{/if}
+											{#if mem.channel_name}
+												<span class="memory-channel">#{mem.channel_name}</span>
+											{/if}
+											{#if mem.confidence && mem.confidence < 1}
+												<span class="memory-confidence" title="Confidence: {(mem.confidence * 100).toFixed(0)}%">
+													<span class="confidence-dot" style="opacity: {mem.confidence}"></span>
+												</span>
+											{/if}
+											<span class="memory-source-badge" data-source={mem.source || 'llm'}>{mem.source === 'rule' ? 'rule' : mem.source === 'pin' ? 'pin' : 'auto'}</span>
+										</div>
+										<button class="memory-delete" onclick={() => handleDeleteMemory(mem.id)} title="Delete">
+											<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+												<path d="M2 2L10 10M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+											</svg>
+										</button>
+									</div>
+								{/each}
 							</div>
 						{/each}
 					</div>
@@ -4101,6 +5451,7 @@ autonomy: reactive
 				{/each}
 				{/if}
 				{/if}
+
 			</div>
 
 			{:else if brainTab === 'tools'}
@@ -4263,576 +5614,243 @@ autonomy: reactive
 				{/if}
 			</div>
 
-			{/if}
-		</div>
-	</main>
-
-	{:else if activeView === 'team'}
-	<main class="main-content">
-		<div class="team-view">
-			{#if teamTab === 'members'}
-			<div class="agents-toolbar">
-				{#if isAdmin}
-					<button class="btn btn-primary" onclick={handleAddOrgRole}>Add Role</button>
-				{/if}
-			</div>
-			<div class="agents-grid">
-				{#each $members.filter(m => m.role !== 'agent' && m.role !== 'brain') as member}
-					<div class="agent-card">
-						<div class="agent-card-header">
-							<span class="agent-avatar member-avatar-circle">{member.display_name?.charAt(0)?.toUpperCase() || '?'}</span>
-							<div class="agent-card-name-row">
-								<span class="agent-name">{member.display_name}</span>
-								<span class="member-online-dot" class:online={member.online}></span>
-							</div>
-						</div>
-						<div class="agent-card-role">{member.role}</div>
-						{#if member.title}<div class="agent-card-goal">{member.title}</div>{/if}
-						{#if member.goals}<div class="agent-card-goal">{member.goals}</div>{/if}
-						{#if isAdmin}
-							<div class="agent-card-actions">
-								<button class="btn btn-ghost btn-xs" onclick={() => handleManageMember(member)}>Manage</button>
-							</div>
-						{/if}
-					</div>
-				{/each}
-				{#if $members.filter(m => m.role !== 'agent' && m.role !== 'brain').length === 0}
-					<div class="empty-state">No members yet.</div>
-				{/if}
-			</div>
-
-			{:else if teamTab === 'agents'}
-			<div class="team-agents">
-				{#if !showAgentForm && !showTemplateGallery}
-					<div class="agents-toolbar">
-						{#if isAdmin}
-							<button class="btn btn-primary" onclick={openNewAgent}>Create Agent</button>
-							<button class="btn btn-ghost" onclick={() => { loadTemplates(); showTemplateGallery = true; }}>From Template</button>
-							<button class="btn btn-ghost" onclick={handleGenerateAgent} disabled={agentGenerating}>
-								{agentGenerating ? 'Generating...' : 'Generate with AI'}
-							</button>
-						{/if}
-					</div>
-
-					<div class="agents-grid">
-						{#each agentsList as agent}
-							<div class="agent-card" class:inactive={!agent.is_active} class:system={agent.is_system}>
-								<div class="agent-card-header">
-									<span class="agent-avatar">{agent.avatar || '🤖'}</span>
-									<div class="agent-card-name-row">
-										<span class="agent-name">{agent.name}</span>
-										{#if agent.is_system}<span class="agent-badge system">System</span>{/if}
-										{#if !agent.is_active}<span class="agent-badge paused">Paused</span>{/if}
-									{#if (JSON.parse(typeof agent.channels === 'string' ? agent.channels : '[]') || []).length > 0}
-										<span class="agent-badge channel-count">{(JSON.parse(typeof agent.channels === 'string' ? agent.channels : '[]') || []).length} ch</span>
-									{/if}
-									</div>
-								</div>
-								<div class="agent-card-role">{agent.role}</div>
-								{#if agent.goal}<div class="agent-card-goal">{agent.goal}</div>{/if}
-								<div class="agent-card-tools">
-									{#each JSON.parse(typeof agent.tools === 'string' ? agent.tools : JSON.stringify(agent.tools || [])) as tool}
-										<span class="tool-chip">{tool}</span>
-									{/each}
-								</div>
-								{#if isAdmin}
-									<div class="agent-card-actions">
-										<button class="btn btn-ghost btn-xs" onclick={() => openEditAgent(agent)}>Edit</button>
-										{#if !agent.is_system}
-										<button class="btn btn-ghost btn-xs" onclick={() => handleToggleAgent(agent)}>
-											{agent.is_active ? 'Pause' : 'Activate'}
-										</button>
-										<button class="btn btn-ghost btn-xs btn-danger" onclick={() => handleDeleteAgent(agent.id)}>Delete</button>
-										{/if}
-									</div>
-								{/if}
-							</div>
-						{/each}
-						{#if agentsList.length === 0}
-							<div class="empty-state">No agents yet. Create one or use a template.</div>
-						{/if}
-					</div>
-
-				{:else if showTemplateGallery}
-					<div class="template-gallery">
-						<div class="template-header">
-							<h3>Agent Templates</h3>
-							<button class="btn btn-ghost" onclick={() => showTemplateGallery = false}>Back</button>
-						</div>
-						<div class="agents-grid">
-							{#each agentTemplates as tmpl}
-								<div class="agent-card template-card">
-									<div class="agent-card-header">
-										<span class="agent-avatar">{tmpl.avatar}</span>
-										<span class="agent-name">{tmpl.name}</span>
-									</div>
-									<div class="agent-card-role">{tmpl.role}</div>
-									<div class="agent-card-goal">{tmpl.description}</div>
-									<div class="agent-card-tools">
-										{#each tmpl.tools as tool}
-											<span class="tool-chip">{tool}</span>
-										{/each}
-									</div>
-									<button class="btn btn-primary btn-sm" onclick={() => handleCreateFromTemplate(tmpl.id)}>Use Template</button>
-								</div>
-							{/each}
-						</div>
-					</div>
-
-				{:else if showAgentForm}
-					<div class="agent-form">
-						<div class="agent-form-header">
-							<h3>{editingAgent ? `Edit ${editingAgent.name}` : 'Create Agent'}</h3>
-							<div style="display:flex;gap:8px;align-items:center">
-								{#if editingAgent && !editingAgent.is_system}
-									<button class="btn btn-ghost" onclick={() => { showAIEditInput = !showAIEditInput; aiEditInstruction = ''; }}>
-										{showAIEditInput ? 'Cancel AI' : 'Edit with AI'}
-									</button>
-								{/if}
-								<button class="btn btn-ghost" onclick={() => { showAgentForm = false; editingAgent = null; showAIEditInput = false; }}>Cancel</button>
-							</div>
-						</div>
-						{#if showAIEditInput}
-						<div class="ai-edit-bar">
-							<input
-								type="text"
-								class="ai-edit-input"
-								placeholder="Describe what to change... e.g. 'make it more formal' or 'add web search tool'"
-								bind:value={aiEditInstruction}
-								onkeydown={(e) => { if (e.key === 'Enter' && !agentEditingWithAI) handleEditWithAI(); }}
-							/>
-							<button class="btn btn-primary btn-sm" onclick={handleEditWithAI} disabled={agentEditingWithAI || !aiEditInstruction.trim()}>
-								{agentEditingWithAI ? 'Applying...' : 'Apply'}
-							</button>
-						</div>
-						{/if}
-
-						{#if !editingAgent?.is_system}
-						<div class="form-section">
-							<h4>Identity</h4>
-							<label class="form-field">
-								<span>Name</span>
-								<input type="text" bind:value={agentForm.name} placeholder="Sales Assistant" />
-							</label>
-							<label class="form-field">
-								<span>Description</span>
-								<input type="text" bind:value={agentForm.description} placeholder="What does this agent do?" />
-							</label>
-							<label class="form-field">
-								<span>Avatar (emoji)</span>
-								<input type="text" bind:value={agentForm.avatar} placeholder="🤖" maxlength="4" style="width:80px" />
-							</label>
-						</div>
-
-						<div class="form-section">
-							<h4>Personality</h4>
-							<label class="form-field">
-								<span>Role</span>
-								<input type="text" bind:value={agentForm.role} placeholder="Customer Support Lead" />
-							</label>
-							<label class="form-field">
-								<span>Goal</span>
-								<input type="text" bind:value={agentForm.goal} placeholder="Resolve issues fast" />
-							</label>
-							<label class="form-field">
-								<span>Backstory</span>
-								<textarea bind:value={agentForm.backstory} rows="3" placeholder="Background and expertise..."></textarea>
-							</label>
-							<label class="form-field">
-								<span>Instructions</span>
-								<textarea bind:value={agentForm.instructions} rows="5" placeholder="How should this agent behave?"></textarea>
-							</label>
-							<label class="form-field">
-								<span>Constraints</span>
-								<textarea bind:value={agentForm.constraints} rows="3" placeholder="Things this agent should NOT do"></textarea>
-							</label>
-						</div>
-
-						<div class="form-section">
-							<h4>Capabilities</h4>
-							<label class="form-field">
-								<span>Model (empty = workspace default)</span>
-								<input type="text" bind:value={agentForm.model} placeholder="empty = Free Auto (nexus/free-auto)" />
-							</label>
-							<label class="form-field">
-								<span>Temperature: {agentForm.temperature}</span>
-								<input type="range" min="0" max="2" step="0.1" bind:value={agentForm.temperature} />
-							</label>
-							<div class="form-field">
-								<span>Tools</span>
-								<div class="tools-checkboxes">
-									{#each allAgentTools as tool}
-										<label class="checkbox-label">
-											<input type="checkbox" checked={agentForm.tools.includes(tool)} onchange={() => toggleTool(tool)} />
-											{tool}
-										</label>
-									{/each}
-								</div>
-							</div>
-							<div class="form-toggles">
-								<label class="toggle-label">
-									<input type="checkbox" bind:checked={agentForm.knowledge_access} /> Knowledge Access
-								</label>
-								<label class="toggle-label">
-									<input type="checkbox" bind:checked={agentForm.memory_access} /> Memory Access
-								</label>
-								<label class="toggle-label">
-									<input type="checkbox" bind:checked={agentForm.can_delegate} /> Can Delegate
-								</label>
-							</div>
-						</div>
-						{/if}
-
-						<div class="form-section">
-							<h4>Response & Behavior</h4>
-							<span class="form-hint">Agent always responds to @mentions and DMs. Assign channels above to auto-respond there.</span>
-							<div class="form-row" style="display:flex;gap:12px;margin-top:8px">
-								<label class="form-field" style="flex:1">
-									<span>Cooldown (seconds)</span>
-									<input type="number" bind:value={agentForm.cooldown_seconds} min="0" max="600" style="width:80px" />
-									<span class="form-hint">Min seconds between auto-responses in a channel. 0 = no cooldown.</span>
-								</label>
-								<label class="form-field" style="flex:1">
-									<span>Max follow-up messages</span>
-									<input type="number" bind:value={agentForm.follow_max_messages} min="1" max="100" style="width:80px" />
-								</label>
-							</div>
-							<div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
-								<label class="toggle-label">
-									<input type="checkbox" bind:checked={agentForm.respond_to_agents} /> Respond to other agents
-									<span class="form-hint">React to messages sent by other agents in the channel</span>
-								</label>
-								<label class="toggle-label">
-									<input type="checkbox" bind:checked={agentForm.auto_follow_threads} /> Auto-follow threads
-									<span class="form-hint">Respond when users reply to this agent's messages</span>
-								</label>
-								<label class="toggle-label">
-									<input type="checkbox" bind:checked={agentForm.respond_in_threads} /> Respond in threads
-									<span class="form-hint">Participate in thread conversations</span>
-								</label>
-							</div>
-							{#if (agentForm.channels || []).length > 0}
-							<div class="form-field">
-								<span>Per-Channel Overrides</span>
-								<div class="channel-overrides">
-									{#each agentForm.channels || [] as chId}
-										{#if publicChannels.find((c: any) => c.id === chId)}
-										{@const ch = publicChannels.find((c: any) => c.id === chId)}
-										<div class="channel-override-row">
-											<span class="channel-override-name">#{ch.name}</span>
-											<select value={agentForm.channel_modes[ch.id] || 'active'} onchange={(e) => {
-												const val = (e.target as HTMLSelectElement).value;
-												if (val === 'active') {
-													const { [ch.id]: _, ...rest } = agentForm.channel_modes;
-													agentForm.channel_modes = rest;
-												} else {
-													agentForm.channel_modes = { ...agentForm.channel_modes, [ch.id]: val };
-												}
-											}}>
-												<option value="active">Active</option>
-												<option value="silent">Silent</option>
-											</select>
-										</div>
-										{/if}
-									{/each}
-								</div>
-							</div>
-							{/if}
-						</div>
-
-						{#if editingAgent && !editingAgent.is_system}
-						<div class="form-section">
-							<h4>Skills</h4>
-							{#if showSkillEditor}
-								<div class="skill-editor">
-									<div class="skill-editor-header">
-										<span class="text-sm">{editingSkillFile}</span>
-										<div>
-											<button class="btn btn-sm btn-primary" onclick={() => handleSaveAgentSkill(editingAgent.id)}>Save</button>
-											<button class="btn btn-sm btn-ghost" onclick={() => showSkillEditor = false}>Cancel</button>
-										</div>
-									</div>
-									<textarea class="skill-textarea" bind:value={skillEditorContent} rows="12" placeholder="Skill markdown content..."></textarea>
-								</div>
-							{:else}
-								<div class="skill-list">
-									{#each agentSkillsList as skill}
-										<div class="skill-item">
-											<div>
-												<strong>{skill.name}</strong>
-												<span class="text-muted text-sm"> ({skill.trigger})</span>
-												<div class="text-muted text-sm">{skill.description}</div>
-											</div>
-											<div class="skill-item-actions">
-												<button class="btn btn-ghost btn-sm" onclick={async () => {
-													const data = await getAgentSkill(slug, editingAgent.id, skill.file_name);
-													editingSkillFile = skill.file_name;
-													skillEditorContent = data.content;
-													showSkillEditor = true;
-												}}>Edit</button>
-												<button class="btn btn-ghost btn-sm" onclick={() => handleDeleteAgentSkill(editingAgent.id, skill.file_name)}>x</button>
-											</div>
-										</div>
-									{/each}
-									{#if agentSkillsList.length === 0}
-										<p class="text-muted text-sm">No skills yet.</p>
-									{/if}
-								</div>
-								<button class="btn btn-sm" onclick={() => handleNewAgentSkill(editingAgent.id)}>+ Add Skill</button>
-							{/if}
-						</div>
-						{/if}
-
-						<div class="form-section">
-							<h4>Guardrails</h4>
-							<label class="form-field">
-								<span>Max Iterations</span>
-								<input type="number" bind:value={agentForm.max_iterations} min="1" max="20" style="width:80px" />
-							</label>
-							<label class="form-field">
-								<span>Escalation Prompt</span>
-								<textarea bind:value={agentForm.escalation_prompt} rows="2" placeholder="When to hand off to Brain..."></textarea>
-							</label>
-						</div>
-
-						<div class="form-actions">
-							<button class="btn btn-primary" onclick={handleSaveAgent} disabled={agentSaving}>
-								{agentSaving ? 'Saving...' : (editingAgent ? 'Update Agent' : 'Create Agent')}
-							</button>
-							{#if editingAgent && !editingAgent.is_system}
-								<button class="btn btn-danger" onclick={() => handleDeleteAgent(editingAgent.id)}>Delete</button>
-							{/if}
-						</div>
-					</div>
-				{/if}
-			</div>
-
-			{:else if teamTab === 'orgchart'}
-			<div class="org-chart">
-				<div class="agents-toolbar">
-					{#if isAdmin}
-						<button class="btn btn-primary" onclick={handleAddOrgRole}>Add Role</button>
-					{/if}
-					<button class="btn btn-ghost" onclick={() => chartFit?.()}>Zoom to Fit</button>
-					<button class="btn btn-ghost" onclick={() => { if (chartExpanded) { chartCollapseAll?.(); } else { chartExpandAll?.(); } chartExpanded = !chartExpanded; }}>
-						{chartExpanded ? 'Collapse All' : 'Expand All'}
-					</button>
-					<button class="btn btn-ghost" onclick={() => loadOrgChart()}>Refresh</button>
-				</div>
-
-				{#if orgChartNodes.length === 0}
-					<div class="empty-state">Loading org chart...</div>
+			{:else if brainTab === 'info'}
+			<div class="brain-section">
+				{#if !workspaceInfo}
+				<p class="brain-hint">Loading workspace info...</p>
 				{:else}
-					<OrgChart
-						nodes={orgChartNodes}
-						{isAdmin}
-						onReparent={handleOrgReparent}
-						onNodeClick={handleOrgNodeClick}
-						bind:onFit={chartFit}
-						bind:onExpandAll={chartExpandAll}
-						bind:onCollapseAll={chartCollapseAll}
-					/>
-				{/if}
-
-				{#if selectedNodeForPanel}
-				<div class="org-node-panel">
-					<div class="panel-header">
-						<div>
-							<h4>{selectedNodeForPanel.name}</h4>
-							<span class="panel-type-badge" style="text-transform:capitalize">{selectedNodeForPanel.type.replace('_', ' ')}</span>
-						</div>
-						<button class="role-dialog-close" onclick={() => selectedNodeForPanel = null}>&times;</button>
+				<div class="info-grid">
+					<div class="info-card">
+						<div class="info-card-label">Workspace</div>
+						<div class="info-card-value">{workspaceInfo.name || slug}</div>
 					</div>
-					<div class="panel-body">
-						{#if selectedNodeForPanel.reports_to}
-							<div class="panel-meta">
-								<span class="text-muted text-sm">Reports to:</span>
-								<span class="text-sm">{orgChartNodes.find(n => n.id === selectedNodeForPanel.reports_to)?.name || selectedNodeForPanel.reports_to}</span>
-							</div>
-						{/if}
-
-						<!-- Stats section for all non-role nodes -->
-						{#if selectedNodeForPanel.type !== 'role_slot'}
-							<div class="panel-stats">
-								<div class="stat-item">
-									<span class="stat-value">{selectedNodeForPanel.message_count || 0}</span>
-									<span class="stat-label">Messages</span>
-								</div>
-								<div class="stat-item">
-									<span class="stat-value">{selectedNodeForPanel.task_count || 0}</span>
-									<span class="stat-label">Tasks</span>
-								</div>
-								{#if selectedNodeForPanel.last_active}
-									<div class="stat-item">
-										<span class="stat-value">{formatLastActive(selectedNodeForPanel.last_active)}</span>
-										<span class="stat-label">Last Active</span>
-									</div>
-								{/if}
-							</div>
-						{/if}
-
-						<!-- Human member panel -->
-						{#if selectedNodeForPanel.type === 'human' && isAdmin}
-							<div class="panel-section">
-								<label class="panel-field">
-									<span class="text-muted text-sm">Title</span>
-									<input class="panel-input" type="text" value={selectedNodeForPanel.title || ''}
-										onblur={(e) => handleUpdateProfile(selectedNodeForPanel.id, 'title', e.target.value)}
-										placeholder="e.g. Marketing Lead" />
-								</label>
-								<label class="panel-field">
-									<span class="text-muted text-sm">Bio</span>
-									<textarea class="panel-input" rows="2"
-										onblur={(e) => handleUpdateProfile(selectedNodeForPanel.id, 'bio', e.target.value)}
-										placeholder="Short bio...">{selectedNodeForPanel.bio || ''}</textarea>
-								</label>
-								<label class="panel-field">
-									<span class="text-muted text-sm">Goals</span>
-									<textarea class="panel-input" rows="2"
-										onblur={(e) => handleUpdateProfile(selectedNodeForPanel.id, 'goals', e.target.value)}
-										placeholder="Current goals...">{selectedNodeForPanel.goals || ''}</textarea>
-								</label>
-							</div>
-							<div class="panel-actions">
-								<label class="text-muted text-sm">Change Role:</label>
-								<select class="panel-select" value={selectedNodeForPanel.role} onchange={(e) => {
-									updateMemberRole(slug, selectedNodeForPanel.id, e.target.value);
-									selectedNodeForPanel = { ...selectedNodeForPanel, role: e.target.value };
-								}}>
-									{#each allRoles as r}
-										<option value={r}>{r.replace(/_/g, ' ')}</option>
-									{/each}
-								</select>
-								<button class="btn btn-danger btn-sm" style="margin-top:8px" onclick={() => { if (confirm('Remove this member?')) { kickMember(slug, selectedNodeForPanel.id); selectedNodeForPanel = null; loadOrgChart(); } }}>Remove from Workspace</button>
-							</div>
-
-						<!-- Agent panel -->
-						{:else if selectedNodeForPanel.type === 'agent'}
-							<div class="panel-section">
-								{#if selectedNodeForPanel.description}
-									<div class="panel-field">
-										<span class="text-muted text-sm">Description</span>
-										<p class="text-sm">{selectedNodeForPanel.description}</p>
-									</div>
-								{/if}
-								{#if selectedNodeForPanel.goal}
-									<div class="panel-field">
-										<span class="text-muted text-sm">Goal</span>
-										<p class="text-sm">{selectedNodeForPanel.goal}</p>
-									</div>
-								{/if}
-								{#if selectedNodeForPanel.role}
-									<div class="panel-field">
-										<span class="text-muted text-sm">Role</span>
-										<p class="text-sm">{selectedNodeForPanel.role}</p>
-									</div>
-								{/if}
-							</div>
-							{#if isAdmin && !selectedNodeForPanel.is_system}
-								<div class="panel-actions">
-									<button class="btn btn-sm" onclick={() => { const agent = agentsList.find(a => a.id === selectedNodeForPanel.id); if (agent) { openEditAgent(agent); teamTab = 'agents'; selectedNodeForPanel = null; } }}>Edit Agent</button>
-									<button class="btn btn-sm" onclick={() => handleToggleActive(selectedNodeForPanel)}>
-										{selectedNodeForPanel.is_active ? 'Pause' : 'Activate'}
-									</button>
-									<button class="btn btn-danger btn-sm" onclick={() => { handleDeleteAgent(selectedNodeForPanel.id); selectedNodeForPanel = null; loadOrgChart(); }}>Delete</button>
-								</div>
-							{/if}
-
-						<!-- Vacant role panel -->
-						{:else if selectedNodeForPanel.type === 'role_slot' && isAdmin}
-							{#if selectedNodeForPanel.role}
-								<div class="panel-field">
-									<span class="text-muted text-sm">Description</span>
-									<p class="text-sm">{selectedNodeForPanel.role}</p>
-								</div>
-							{/if}
-							<div class="panel-actions">
-								<label class="text-muted text-sm">Assign to member:</label>
-								<select class="panel-select" onchange={(e) => { handleFillRole(selectedNodeForPanel.id, e.target.value, 'human'); e.target.value = ''; }}>
-									<option value="">Select member...</option>
-									{#each $members.filter(m => m.role !== 'agent' && m.role !== 'brain') as m}
-										<option value={m.id}>{m.display_name}</option>
-									{/each}
-								</select>
-								<label class="text-muted text-sm" style="margin-top:6px">Or assign agent:</label>
-								<select class="panel-select" onchange={(e) => { handleFillRole(selectedNodeForPanel.id, e.target.value, 'agent'); e.target.value = ''; }}>
-									<option value="">Select agent...</option>
-									{#each agentsList.filter(a => !a.is_system) as a}
-										<option value={a.id}>{a.name}</option>
-									{/each}
-								</select>
-								<button class="btn btn-sm btn-primary" style="margin-top:8px" onclick={() => handleCreateAgentForRole(selectedNodeForPanel.id, selectedNodeForPanel.name, selectedNodeForPanel.role)}>Create Agent for Role</button>
-								<button class="btn btn-danger btn-sm" style="margin-top:4px" onclick={() => handleDeleteOrgRoleAction(selectedNodeForPanel.id)}>Delete Role</button>
-							</div>
-						{/if}
+					<div class="info-card">
+						<div class="info-card-label">Created</div>
+						<div class="info-card-value">{workspaceInfo.created_at ? new Date(workspaceInfo.created_at).toLocaleDateString() : '—'}</div>
 					</div>
+					<div class="info-card">
+						<div class="info-card-label">Created by</div>
+						<div class="info-card-value">{workspaceInfo.created_by || '—'}</div>
+					</div>
+					<div class="info-card">
+						<div class="info-card-label">Online now</div>
+						<div class="info-card-value">{workspaceInfo.online_count ?? 0}</div>
+					</div>
+				</div>
+
+				<h3 class="brain-section-title" style="margin-top: 1.5rem;">Storage</h3>
+				<div class="info-grid">
+					<div class="info-card">
+						<div class="info-card-label">Disk usage</div>
+						<div class="info-card-value">{workspaceInfo.disk_display || '0 B'}</div>
+					</div>
+					<div class="info-card">
+						<div class="info-card-label">File storage</div>
+						<div class="info-card-value">{workspaceInfo.files_display || '0 B'}</div>
+					</div>
+				</div>
+
+				<h3 class="brain-section-title" style="margin-top: 1.5rem;">Counts</h3>
+				<div class="info-grid">
+					{#each Object.entries(workspaceInfo.counts || {}).sort((a, b) => a[0].localeCompare(b[0])) as [key, count]}
+					<div class="info-card">
+						<div class="info-card-label">{key.charAt(0).toUpperCase() + key.slice(1)}</div>
+						<div class="info-card-value">{count}</div>
+					</div>
+					{/each}
 				</div>
 				{/if}
 			</div>
-			{/if}
-		</div>
-	</main>
-	{/if}
-</div>
 
-{#if showRoleDialog}
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="modal-overlay" onclick={() => showRoleDialog = false}>
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="modal-dialog" onclick={(e) => e.stopPropagation()} style="max-width: 440px">
-		<div class="modal-header">
-			<h3>Add Role</h3>
-			<button class="modal-close" onclick={() => showRoleDialog = false}>&times;</button>
-		</div>
-		<div class="modal-body">
-			<div class="role-dialog-fields">
-				<div class="form-group">
-					<label>Role</label>
-					<select value={roleForm.preset} onchange={(e) => handleRolePresetChange((e.target as HTMLSelectElement).value)}>
-						<option value="">-- Select a role --</option>
-						{#each ROLES.filter(r => r !== 'custom') as role}
-							<option value={role}>{ROLE_LABELS[role] || role}</option>
-						{/each}
-						<option value="_custom">Custom...</option>
-					</select>
+			{:else if brainTab === 'network'}
+			<div class="brain-section">
+				<h3 class="brain-section-title">Network Transparency</h3>
+				<p class="brain-hint" style="margin-bottom: 0.75rem">Every outbound connection this Nexus instance makes. No hidden telemetry, no tracking, no phone-home. Just the AI providers you configured.</p>
+				<button class="brain-save-btn" style="margin-bottom: 0.75rem;" onclick={async () => {
+					const stats = await getNetworkLog(slug, 'stats');
+					networkStats = stats;
+					if (networkExpanded) {
+						const full = await getNetworkLog(slug, 'entries');
+						networkEntries = full.entries || [];
+					}
+				}}>
+					Refresh
+				</button>
+				{#if networkStats}
+				<div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.75rem;">
+					<strong>{networkStats.total}</strong> outbound requests logged since instance start
 				</div>
-				{#if roleForm.preset === '_custom'}
-				<div class="form-group">
-					<label>Title <span class="required">*</span></label>
-					<input type="text" bind:value={roleForm.title} placeholder="Marketing Manager" />
+				{#if networkStats.hosts && networkStats.hosts.length > 0}
+				<div style="display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 0.75rem;">
+					{#each networkStats.hosts as host}
+					<div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; padding: 0.5rem 0.75rem; background: var(--bg-surface); border-radius: 8px; border: 1px solid var(--border-default);">
+						<span style="color: var(--accent); font-weight: 600; font-family: monospace;">{host.host}</span>
+						<span style="color: var(--text-tertiary); margin-left: auto;">{host.count} requests</span>
+						<span style="background: rgba(249,115,22,0.1); color: var(--accent); padding: 2px 8px; border-radius: 4px; font-size: 0.7rem;">{host.purpose}</span>
+					</div>
+					{/each}
+				</div>
+				{:else}
+				<div style="font-size: 0.85rem; color: var(--text-tertiary); padding: 2rem; text-align: center; border: 1px dashed var(--border-default); border-radius: 8px;">
+					No outbound connections yet. This instance has not contacted any external service.
 				</div>
 				{/if}
-				<div class="form-group">
-					<label>Department</label>
-					<input type="text" bind:value={roleForm.department} placeholder="Marketing" />
+				<button class="brain-hint" style="cursor: pointer; text-decoration: underline; background: none; border: none; padding: 0; font-size: 0.75rem;" onclick={async () => {
+					networkExpanded = !networkExpanded;
+					if (networkExpanded) {
+						const full = await getNetworkLog(slug, 'entries');
+						networkEntries = full.entries || [];
+					}
+				}}>
+					{networkExpanded ? 'Hide full request log' : 'Show full request log'}
+				</button>
+				{#if networkExpanded && networkEntries.length > 0}
+				<div style="margin-top: 0.5rem; max-height: 400px; overflow-y: auto; font-family: monospace; font-size: 0.7rem; background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: 8px; padding: 0.5rem;">
+					{#each networkEntries.slice().reverse() as entry}
+					<div style="display: flex; gap: 0.5rem; padding: 0.3rem 0.25rem; border-bottom: 1px solid var(--border-subtle);">
+						<span style="color: var(--text-tertiary); min-width: 140px;">{entry.timestamp.replace('T', ' ').slice(0, 19)}</span>
+						<span style="color: var(--accent); min-width: 35px;">{entry.method}</span>
+						<span style="color: var(--text-primary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{entry.host}{entry.path}</span>
+						<span style="color: {entry.status_code < 400 ? 'var(--accent)' : '#ef4444'};">{entry.status_code}</span>
+						<span style="color: var(--text-tertiary); min-width: 50px; text-align: right;">{entry.duration_ms}ms</span>
+					</div>
+					{/each}
 				</div>
-				<div class="form-group">
-					<label>Description</label>
-					<textarea bind:value={roleForm.description} rows="3" placeholder="Responsibilities, authority, scope..."></textarea>
-				</div>
-				<div class="form-group">
-					<label>Reports To</label>
-					<select bind:value={roleForm.reports_to}>
-						<option value="">Brain (default)</option>
-						{#each $members.filter(m => m.role !== 'agent' && m.role !== 'brain') as member}
-							<option value={member.id}>{member.display_name}</option>
-						{/each}
-						{#each agentsList.filter(a => !a.is_system) as agent}
-							<option value={agent.id}>{agent.name} (Agent)</option>
-						{/each}
-					</select>
-				</div>
+				{/if}
+				<p class="brain-hint" style="margin-top: 1rem; font-style: italic;">This is the complete list of every external connection. Nothing else leaves your server. Don't trust us — verify it.</p>
+				{/if}
 			</div>
-			<div class="role-dialog-actions">
-				<button class="btn btn-ghost" onclick={() => showRoleDialog = false}>Cancel</button>
-				<button class="btn btn-primary" onclick={handleCreateRole} disabled={roleSaving}>
-					{roleSaving ? 'Creating...' : 'Create'}
+
+			{:else if brainTab === 'portability'}
+			<div class="brain-section">
+				<h3 class="brain-section-title">Export Workspace</h3>
+				<p class="brain-hint" style="margin-bottom: 0.75rem">Download your entire workspace as a single <code>.nexus</code> file. Includes all messages, tasks, documents, files, and Brain configuration. Import it on any Nexus instance — or keep it as a backup.</p>
+				<a href={exportWorkspaceUrl(slug)} download class="brain-save-btn" style="display: inline-block; text-decoration: none; text-align: center;">
+					Export Workspace (.nexus)
+				</a>
+				<p class="brain-hint" style="margin-top: 0.5rem;">Your workspace is a file, not a subscription. Take it anywhere.</p>
+			</div>
+
+			<div class="brain-section" style="margin-top: 2rem; border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 1.25rem; background: rgba(239, 68, 68, 0.03);">
+				<h3 class="brain-section-title" style="color: #ef4444;">Kill Switch</h3>
+				<p class="brain-hint" style="margin-bottom: 0.75rem">Permanently delete this workspace and all its data. Database, files, Brain memory, everything. This cannot be undone. No 30-day wait. No retention policy. Gone.</p>
+				<input
+					type="text"
+					class="brain-input"
+					placeholder="Type workspace name to confirm"
+					bind:value={destroyConfirm}
+					style="margin-bottom: 0.5rem; border-color: rgba(239, 68, 68, 0.3);"
+				/>
+				<button
+					class="brain-save-btn"
+					style="background: #ef4444; border-color: #ef4444; opacity: {destroyConfirm && !destroyingWorkspace ? 1 : 0.4}; pointer-events: {destroyConfirm && !destroyingWorkspace ? 'auto' : 'none'};"
+					onclick={async () => {
+						if (!destroyConfirm) return;
+						destroyingWorkspace = true;
+						try {
+							await destroyWorkspace(slug, destroyConfirm);
+							clearSession();
+							window.location.href = '/';
+						} catch (e: any) {
+							alert(e.message || 'Failed to destroy workspace');
+							destroyingWorkspace = false;
+						}
+					}}
+				>
+					{destroyingWorkspace ? 'Destroying...' : 'Permanently Delete Workspace'}
 				</button>
 			</div>
+
+			{:else if brainTab === 'costs'}
+			<div class="brain-section">
+				<h3 class="brain-section-title">AI Cost Transparency</h3>
+				<p class="brain-hint" style="margin-bottom: 1rem">Every API call tracked. See exactly what you spend — no hidden costs.</p>
+				<div style="display: flex; gap: 0.5rem; margin-bottom: 1.25rem;">
+					{#each ['day', 'week', 'month', 'all'] as p}
+						<button class="btn btn-ghost btn-xs" class:active={usagePeriod === p} onclick={() => { usagePeriod = p; loadUsage(); }}>{p === 'all' ? 'All Time' : p.charAt(0).toUpperCase() + p.slice(1)}</button>
+					{/each}
+				</div>
+				{#if usageData}
+					<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+						<div style="background: var(--bg-secondary); border-radius: 8px; padding: 1rem; text-align: center;">
+							<div style="font-size: 1.75rem; font-weight: 700; color: var(--accent);">${usageData.total_cost.toFixed(4)}</div>
+							<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">Total Spend</div>
+						</div>
+						<div style="background: var(--bg-secondary); border-radius: 8px; padding: 1rem; text-align: center;">
+							<div style="font-size: 1.75rem; font-weight: 700;">{usageData.call_count.toLocaleString()}</div>
+							<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">API Calls</div>
+						</div>
+						<div style="background: var(--bg-secondary); border-radius: 8px; padding: 1rem; text-align: center;">
+							<div style="font-size: 1.75rem; font-weight: 700;">{(usageData.total_input_tokens + usageData.total_output_tokens).toLocaleString()}</div>
+							<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">Total Tokens</div>
+						</div>
+					</div>
+
+					{#if usageData.by_model.length > 0}
+					<h4 style="font-size: 0.85rem; font-weight: 600; margin-bottom: 0.5rem;">By Model</h4>
+					<div style="margin-bottom: 1.25rem;">
+						{#each usageData.by_model as m}
+							<div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; font-size: 0.8rem;">
+								<div style="flex: 1; min-width: 0;">
+									<div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+										<span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{m.model}</span>
+										<span style="color: var(--text-muted); flex-shrink: 0;">${m.cost.toFixed(4)} ({m.calls} calls)</span>
+									</div>
+									<div style="height: 4px; background: var(--bg-tertiary); border-radius: 2px; overflow: hidden;">
+										<div style="height: 100%; background: var(--accent); border-radius: 2px; width: {usageData.total_cost > 0 ? (m.cost / usageData.total_cost * 100) : 0}%;"></div>
+									</div>
+								</div>
+							</div>
+						{/each}
+					</div>
+					{/if}
+
+					{#if usageData.by_action.length > 0}
+					<h4 style="font-size: 0.85rem; font-weight: 600; margin-bottom: 0.5rem;">By Action</h4>
+					<div style="margin-bottom: 1.25rem;">
+						{#each usageData.by_action as a}
+							<div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; font-size: 0.8rem;">
+								<div style="flex: 1; min-width: 0;">
+									<div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+										<span>{a.action}</span>
+										<span style="color: var(--text-muted);">${a.cost.toFixed(4)} ({a.calls} calls)</span>
+									</div>
+									<div style="height: 4px; background: var(--bg-tertiary); border-radius: 2px; overflow: hidden;">
+										<div style="height: 100%; background: #60a5fa; border-radius: 2px; width: {usageData.total_cost > 0 ? (a.cost / usageData.total_cost * 100) : 0}%;"></div>
+									</div>
+								</div>
+							</div>
+						{/each}
+					</div>
+					{/if}
+
+					{#if usageData.daily.length > 0}
+					<h4 style="font-size: 0.85rem; font-weight: 600; margin-bottom: 0.5rem;">Daily Trend (last 30 days)</h4>
+					<div style="display: flex; align-items: flex-end; gap: 2px; height: 80px; margin-bottom: 0.5rem;">
+						{#each usageData.daily as d}
+							{@const maxCost = Math.max(...usageData.daily.map((x: any) => x.cost), 0.0001)}
+							<div
+								title="{d.date}: ${d.cost.toFixed(4)} ({d.calls} calls)"
+								style="flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 2px; height: {(d.cost / maxCost * 100)}%; opacity: 0.8;"
+							></div>
+						{/each}
+					</div>
+					<div style="display: flex; justify-content: space-between; font-size: 0.65rem; color: var(--text-muted);">
+						<span>{usageData.daily[0]?.date?.slice(5) || ''}</span>
+						<span>{usageData.daily[usageData.daily.length - 1]?.date?.slice(5) || ''}</span>
+					</div>
+					{/if}
+				{:else}
+					<p class="brain-hint">Loading usage data...</p>
+				{/if}
+			</div>
+
+			{/if}
 		</div>
-	</div>
+	</main>
+
+		{/if}
 </div>
-{/if}
 
 {#if showModelBrowser}
 <div class="modal-overlay" onclick={() => showModelBrowser = false}>
@@ -4916,7 +5934,7 @@ autonomy: reactive
 			</div>
 			<div class="agent-lib-header-actions">
 				{#if isAdmin}
-					<button class="btn btn-primary btn-sm" onclick={() => { showAgentLibrary = false; activeView = 'team'; onViewChange(); teamTab = 'agents'; openNewAgent(); }}>+ Create Agent</button>
+					<button class="btn btn-primary btn-sm" onclick={() => { showAgentLibrary = false; showTeamModal = true; teamModalTab = 'agents'; openNewAgent(); }}>+ Create Agent</button>
 				{/if}
 				<button class="modal-close" onclick={() => showAgentLibrary = false}>&times;</button>
 			</div>
@@ -5055,6 +6073,504 @@ autonomy: reactive
 </div>
 {/if}
 
+{#if showTeamModal}
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="modal-overlay" onclick={() => showTeamModal = false}>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="modal-dialog team-modal" onclick={(e) => e.stopPropagation()}>
+		<div class="agent-lib-header">
+			<div>
+				<h3>Team</h3>
+				<p class="agent-lib-subtitle">Manage members and agents in your workspace</p>
+			</div>
+			<div class="agent-lib-header-actions">
+				<button class="modal-close" onclick={() => showTeamModal = false}>&times;</button>
+			</div>
+		</div>
+
+		<div class="agent-lib-tabs">
+			<button
+				class="agent-lib-tab"
+				class:active={teamModalTab === 'members'}
+				onclick={() => teamModalTab = 'members'}
+			>Members</button>
+			<button
+				class="agent-lib-tab"
+				class:active={teamModalTab === 'agents'}
+				onclick={() => teamModalTab = 'agents'}
+			>Agents</button>
+		</div>
+
+		<div class="agent-lib-body">
+			{#if teamModalTab === 'members'}
+				{#if selectedMember && memberDetail}
+					<div class="team-member-detail">
+						<button class="btn btn-ghost btn-sm" onclick={() => { selectedMember = null; memberDetail = null; }} style="margin-bottom:12px">&larr; Back to members</button>
+						<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+							<span class="member-avatar-circle" style="width:48px;height:48px;font-size:1.2rem">{memberDetail.display_name?.charAt(0)?.toUpperCase() || '?'}</span>
+							<div>
+								<div style="font-weight:600;font-size:1rem;color:var(--text-primary)">{memberDetail.display_name}</div>
+								<div style="font-size:0.8rem;color:var(--text-tertiary)">{memberDetail.role}</div>
+							</div>
+						</div>
+
+						<div class="form-section">
+							<h4>Role</h4>
+							<select class="team-role-select" value={memberDetail.role} onchange={(e) => handleRoleChange((e.target as HTMLSelectElement).value)}>
+								{#each allRoles as role}
+									<option value={role}>{role.replace(/_/g, ' ')}</option>
+								{/each}
+							</select>
+						</div>
+
+						<div class="form-section">
+							<h4>Permissions</h4>
+							<div class="team-perm-grid">
+								{#each Object.entries(memberDetail.permissions) as [perm, granted]}
+									<button class="team-perm-row" onclick={() => handleTogglePermission(perm, !!granted)}>
+										<span class="perm-name">{perm}</span>
+										<span class="perm-val" class:granted={granted}>{granted ? 'yes' : 'no'}</span>
+									</button>
+								{/each}
+							</div>
+						</div>
+
+						{#if selectedMember.id !== currentUser?.uid}
+							<button class="btn btn-danger btn-sm" style="margin-top:12px" onclick={handleKick}>Remove from workspace</button>
+						{/if}
+					</div>
+				{:else}
+					<div class="agent-lib-grid">
+						{#each $members.filter(m => m.role !== 'agent' && m.role !== 'brain' && !agentIds.has(m.id)) as member}
+							<div class="agent-lib-card">
+								<div class="agent-lib-card-top-bar" style="background: var(--text-tertiary)"></div>
+								<div class="agent-lib-card-header">
+									<span class="member-avatar-circle">{member.display_name?.charAt(0)?.toUpperCase() || '?'}</span>
+									<div>
+										<div class="agent-lib-card-name" style="display:flex;align-items:center;gap:6px">
+											{member.display_name}
+											<span class="member-online-dot" class:online={member.online}></span>
+										</div>
+										<div class="agent-lib-card-desc">{member.role}{member.title ? ` — ${member.title}` : ''}</div>
+									</div>
+								</div>
+								{#if member.goals}
+									<div style="padding: 0 14px; font-size: 0.72rem; color: var(--text-tertiary);">{member.goals}</div>
+								{/if}
+								<div class="agent-lib-card-footer">
+									<span class="agent-lib-badge" style="background: var(--bg-input); color: var(--text-secondary);">{member.role}</span>
+									{#if isAdmin}
+										<div class="agent-lib-card-actions">
+											<button class="btn btn-ghost btn-xs" onclick={() => handleManageMember(member)}>Manage</button>
+											{#if member.id !== currentUser?.uid}
+												<button class="btn btn-ghost btn-xs btn-danger" onclick={async () => { if (!confirm(`Remove ${member.display_name} from this workspace?`)) return; try { await kickMember(slug, member.id); members.update(ms => ms.filter(m => m.id !== member.id)); } catch (e) { alert(e.message); } }}>Remove</button>
+											{/if}
+										</div>
+									{/if}
+								</div>
+							</div>
+						{/each}
+						{#if $members.filter(m => m.role !== 'agent' && m.role !== 'brain' && !agentIds.has(m.id)).length === 0}
+							<div class="empty-state" style="grid-column: 1 / -1;">No members yet.</div>
+						{/if}
+					</div>
+				{/if}
+
+			{:else if teamModalTab === 'agents'}
+				<div class="team-agents">
+					{#if !showAgentForm && !showTemplateGallery}
+						{#if isAdmin}
+							<div class="agents-toolbar">
+								<button class="btn btn-primary" onclick={openNewAgent}>Create Agent</button>
+								<button class="btn btn-ghost" onclick={() => { loadTemplates(); showTemplateGallery = true; }}>From Template</button>
+								<button class="btn btn-ghost" onclick={handleGenerateAgent} disabled={agentGenerating}>
+									{agentGenerating ? 'Generating...' : 'Generate with AI'}
+								</button>
+							</div>
+						{/if}
+
+						<div class="agent-lib-grid">
+							{#each agentsList as agent}
+								<div class="agent-lib-card" style="--card-accent: {agent.is_system ? 'var(--accent)' : 'var(--blue, #3b82f6)'}">
+									<div class="agent-lib-card-top-bar" style="background: {agent.is_system ? 'var(--accent)' : 'var(--blue, #3b82f6)'}"></div>
+									<div class="agent-lib-card-header">
+										<span class="agent-lib-card-avatar">{agent.avatar || '🤖'}</span>
+										<div>
+											<div class="agent-lib-card-name">
+												{agent.name}
+												{#if !agent.is_active}<span class="agent-badge paused" style="margin-left:4px">Paused</span>{/if}
+											</div>
+											<div class="agent-lib-card-desc">{agent.description || agent.role || ''}</div>
+										</div>
+									</div>
+									<div class="agent-lib-card-tools">
+										{#each JSON.parse(typeof agent.tools === 'string' ? agent.tools : JSON.stringify(agent.tools || [])).slice(0, 4) as tool}
+											<span class="tool-chip">{tool}</span>
+										{/each}
+									</div>
+									<div class="agent-lib-card-footer">
+										<span class="agent-lib-badge" class:builtin={agent.is_system} class:custom={!agent.is_system}>{agent.is_system ? 'Built-in' : 'Custom'}</span>
+										{#if isAdmin}
+											<div class="agent-lib-card-actions">
+												<button class="btn btn-ghost btn-xs" onclick={() => openEditAgent(agent)}>Edit</button>
+												{#if !agent.is_system}
+													<button class="btn btn-ghost btn-xs" onclick={() => handleToggleAgent(agent)}>
+														{agent.is_active ? 'Pause' : 'Activate'}
+													</button>
+													<button class="btn btn-ghost btn-xs btn-danger" onclick={() => handleDeleteAgent(agent.id)}>Delete</button>
+												{/if}
+											</div>
+										{/if}
+									</div>
+								</div>
+							{/each}
+							{#if agentsList.length === 0}
+								<div class="empty-state" style="grid-column: 1 / -1;">No agents yet. Create one or use a template.</div>
+							{/if}
+						</div>
+
+					{:else if showTemplateGallery}
+						<div class="template-gallery">
+							<div class="template-header">
+								<h3>Agent Templates</h3>
+								<button class="btn btn-ghost" onclick={() => showTemplateGallery = false}>Back</button>
+							</div>
+							<div class="agent-lib-grid">
+								{#each agentTemplates as tmpl}
+									<div class="agent-lib-card" style="--card-accent: var(--purple, #a855f7)">
+										<div class="agent-lib-card-top-bar template"></div>
+										<div class="agent-lib-card-header">
+											<span class="agent-lib-card-avatar">{tmpl.avatar || '📋'}</span>
+											<div>
+												<div class="agent-lib-card-name">{tmpl.name}</div>
+												<div class="agent-lib-card-desc">{tmpl.description || tmpl.role || ''}</div>
+											</div>
+										</div>
+										<div class="agent-lib-card-tools">
+											{#each (tmpl.tools || []).slice(0, 4) as tool}
+												<span class="tool-chip">{tool}</span>
+											{/each}
+										</div>
+										<div class="agent-lib-card-footer">
+											<span class="agent-lib-badge template">Template</span>
+											<div class="agent-lib-card-actions">
+												<button class="btn btn-primary btn-xs" onclick={() => agentLibUseTemplate(tmpl.id)}>Use Template</button>
+											</div>
+										</div>
+									</div>
+								{/each}
+							</div>
+						</div>
+
+					{:else if showAgentForm}
+						<div class="agent-form">
+							<div class="agent-form-header">
+								<h3>{editingAgent ? `Edit ${editingAgent.name}` : 'Create Agent'}</h3>
+								<div style="display:flex;gap:8px;align-items:center">
+									{#if editingAgent && !editingAgent.is_system}
+										<button class="btn btn-ghost" onclick={() => { showAIEditInput = !showAIEditInput; aiEditInstruction = ''; }}>
+											{showAIEditInput ? 'Cancel AI' : 'Edit with AI'}
+										</button>
+									{/if}
+									<button class="btn btn-ghost" onclick={() => { showAgentForm = false; editingAgent = null; showAIEditInput = false; }}>Cancel</button>
+								</div>
+							</div>
+							{#if showAIEditInput}
+							<div class="ai-edit-bar">
+								<input
+									type="text"
+									class="ai-edit-input"
+									placeholder="Describe what to change... e.g. 'make it more formal' or 'add web search tool'"
+									bind:value={aiEditInstruction}
+									onkeydown={(e) => { if (e.key === 'Enter' && !agentEditingWithAI) handleEditWithAI(); }}
+								/>
+								<button class="btn btn-primary btn-sm" onclick={handleEditWithAI} disabled={agentEditingWithAI || !aiEditInstruction.trim()}>
+									{agentEditingWithAI ? 'Applying...' : 'Apply'}
+								</button>
+							</div>
+							{/if}
+
+							{#if !editingAgent?.is_system}
+							<div class="form-section">
+								<h4>Identity</h4>
+								<label class="form-field">
+									<span>Name</span>
+									<input type="text" bind:value={agentForm.name} placeholder="Sales Assistant" />
+								</label>
+								<label class="form-field">
+									<span>Description</span>
+									<input type="text" bind:value={agentForm.description} placeholder="What does this agent do?" />
+								</label>
+								<label class="form-field">
+									<span>Avatar (emoji)</span>
+									<input type="text" bind:value={agentForm.avatar} placeholder="🤖" maxlength="4" style="width:80px" />
+								</label>
+							</div>
+
+							<div class="form-section">
+								<h4>Personality</h4>
+								<label class="form-field">
+									<span>Role</span>
+									<input type="text" bind:value={agentForm.role} placeholder="Customer Support Lead" />
+								</label>
+								<label class="form-field">
+									<span>Goal</span>
+									<input type="text" bind:value={agentForm.goal} placeholder="Resolve issues fast" />
+								</label>
+								<label class="form-field">
+									<span>Backstory</span>
+									<textarea bind:value={agentForm.backstory} rows="3" placeholder="Background and expertise..."></textarea>
+								</label>
+								<label class="form-field">
+									<span>Instructions</span>
+									<textarea bind:value={agentForm.instructions} rows="5" placeholder="How should this agent behave?"></textarea>
+								</label>
+								<label class="form-field">
+									<span>Constraints</span>
+									<textarea bind:value={agentForm.constraints} rows="3" placeholder="Things this agent should NOT do"></textarea>
+								</label>
+							</div>
+
+							<div class="form-section">
+								<h4>Capabilities</h4>
+								<label class="form-field">
+									<span>Model (empty = workspace default)</span>
+									<select value={KNOWN_AGENT_MODELS.includes(agentForm.model) ? agentForm.model : '__custom__'} onchange={(e) => { const v = (e.target as HTMLSelectElement).value; agentForm.model = v === '__custom__' ? '' : v; }}>
+										<option value="">Workspace default</option>
+										<optgroup label="Gemini 3">
+											<option value="google/gemini-3.1-pro-preview">Gemini 3.1 Pro</option>
+											<option value="google/gemini-3-flash-preview">Gemini 3 Flash</option>
+											<option value="google/gemini-3.1-flash-lite-preview">Gemini 3.1 Flash Lite</option>
+										</optgroup>
+										<optgroup label="Gemini 3 Image">
+											<option value="google/gemini-3.1-flash-image-preview">Gemini 3.1 Flash Image</option>
+											<option value="google/gemini-3-pro-image-preview">Gemini 3 Pro Image</option>
+										</optgroup>
+										<optgroup label="Gemini 2.5">
+											<option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
+											<option value="google/gemini-2.5-pro">Gemini 2.5 Pro</option>
+										</optgroup>
+										<optgroup label="OpenRouter">
+											<option value="nexus/free-auto">Free Auto</option>
+											<option value="__custom__">Custom model ID...</option>
+										</optgroup>
+									</select>
+									{#if !KNOWN_AGENT_MODELS.includes(agentForm.model)}
+										<input type="text" bind:value={agentForm.model} placeholder="e.g. anthropic/claude-3.5-sonnet" style="margin-top: 0.25rem" />
+									{/if}
+								</label>
+								{#if agentForm.tools.includes('generate_image')}
+									<label class="form-field">
+										<span>Image Model (empty = workspace default)</span>
+										<select bind:value={agentForm.image_model}>
+											<option value="">Workspace default</option>
+											<option value="gemini-3.1-flash-image-preview">Gemini 3.1 Flash Image</option>
+											<option value="gemini-3-pro-image-preview">Gemini 3 Pro Image</option>
+											<option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image</option>
+										</select>
+									</label>
+								{/if}
+								<label class="form-field">
+									<span>Temperature: {agentForm.temperature}</span>
+									<input type="range" min="0" max="2" step="0.1" bind:value={agentForm.temperature} />
+								</label>
+								<div class="form-field">
+									<span>Tools</span>
+									<div class="tools-checkboxes">
+										{#each allAgentTools as tool}
+											<label class="checkbox-label">
+												<input type="checkbox" checked={agentForm.tools.includes(tool)} onchange={() => toggleTool(tool)} />
+												{tool}
+											</label>
+										{/each}
+									</div>
+								</div>
+								<div class="form-toggles">
+									<label class="toggle-label">
+										<input type="checkbox" bind:checked={agentForm.knowledge_access} /> Knowledge Access
+									</label>
+									<label class="toggle-label">
+										<input type="checkbox" bind:checked={agentForm.memory_access} /> Memory Access
+									</label>
+									<label class="toggle-label">
+										<input type="checkbox" bind:checked={agentForm.can_delegate} /> Can Delegate
+									</label>
+								</div>
+							</div>
+							{/if}
+
+							{#if editingAgent?.is_system}
+							<div class="form-section">
+								<h4>Model</h4>
+								<label class="form-field">
+									<span>Model (empty = workspace default)</span>
+									<select value={KNOWN_AGENT_MODELS.includes(agentForm.model) ? agentForm.model : '__custom__'} onchange={(e) => { const v = (e.target as HTMLSelectElement).value; agentForm.model = v === '__custom__' ? '' : v; }}>
+										<option value="">Workspace default</option>
+										<optgroup label="Gemini 3">
+											<option value="google/gemini-3.1-pro-preview">Gemini 3.1 Pro</option>
+											<option value="google/gemini-3-flash-preview">Gemini 3 Flash</option>
+											<option value="google/gemini-3.1-flash-lite-preview">Gemini 3.1 Flash Lite</option>
+										</optgroup>
+										<optgroup label="Gemini 3 Image">
+											<option value="google/gemini-3.1-flash-image-preview">Gemini 3.1 Flash Image</option>
+											<option value="google/gemini-3-pro-image-preview">Gemini 3 Pro Image</option>
+										</optgroup>
+										<optgroup label="Gemini 2.5">
+											<option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
+											<option value="google/gemini-2.5-pro">Gemini 2.5 Pro</option>
+										</optgroup>
+										<optgroup label="OpenRouter">
+											<option value="nexus/free-auto">Free Auto</option>
+											<option value="__custom__">Custom model ID...</option>
+										</optgroup>
+									</select>
+									{#if !KNOWN_AGENT_MODELS.includes(agentForm.model)}
+										<input type="text" bind:value={agentForm.model} placeholder="e.g. anthropic/claude-3.5-sonnet" style="margin-top: 0.25rem" />
+									{/if}
+								</label>
+								{#if agentForm.tools.includes('generate_image')}
+									<label class="form-field">
+										<span>Image Model (empty = workspace default)</span>
+										<select bind:value={agentForm.image_model}>
+											<option value="">Workspace default</option>
+											<option value="gemini-3.1-flash-image-preview">Gemini 3.1 Flash Image</option>
+											<option value="gemini-3-pro-image-preview">Gemini 3 Pro Image</option>
+											<option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image</option>
+										</select>
+									</label>
+								{/if}
+							</div>
+							{/if}
+
+							<div class="form-section">
+								<h4>Response & Behavior</h4>
+								<span class="form-hint">Agent always responds to @mentions and DMs. Assign channels above to auto-respond there.</span>
+								<div class="form-row" style="display:flex;gap:12px;margin-top:8px">
+									<label class="form-field" style="flex:1">
+										<span>Cooldown (seconds)</span>
+										<input type="number" bind:value={agentForm.cooldown_seconds} min="0" max="600" style="width:80px" />
+										<span class="form-hint">Min seconds between auto-responses in a channel. 0 = no cooldown.</span>
+									</label>
+									<label class="form-field" style="flex:1">
+										<span>Max follow-up messages</span>
+										<input type="number" bind:value={agentForm.follow_max_messages} min="1" max="100" style="width:80px" />
+									</label>
+								</div>
+								<div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+									<label class="toggle-label">
+										<input type="checkbox" bind:checked={agentForm.respond_to_agents} /> Respond to other agents
+										<span class="form-hint">React to messages sent by other agents in the channel</span>
+									</label>
+									<label class="toggle-label">
+										<input type="checkbox" bind:checked={agentForm.auto_follow_threads} /> Auto-follow threads
+										<span class="form-hint">Respond when users reply to this agent's messages</span>
+									</label>
+									<label class="toggle-label">
+										<input type="checkbox" bind:checked={agentForm.respond_in_threads} /> Respond in threads
+										<span class="form-hint">Participate in thread conversations</span>
+									</label>
+								</div>
+								{#if (agentForm.channels || []).length > 0}
+								<div class="form-field">
+									<span>Per-Channel Overrides</span>
+									<div class="channel-overrides">
+										{#each agentForm.channels || [] as chId}
+											{#if publicChannels.find((c) => c.id === chId)}
+											{@const ch = publicChannels.find((c) => c.id === chId)}
+											<div class="channel-override-row">
+												<span class="channel-override-name">#{ch.name}</span>
+												<select value={agentForm.channel_modes[ch.id] || 'active'} onchange={(e) => {
+													const val = (e.target as HTMLSelectElement).value;
+													if (val === 'active') {
+														const { [ch.id]: _, ...rest } = agentForm.channel_modes;
+														agentForm.channel_modes = rest;
+													} else {
+														agentForm.channel_modes = { ...agentForm.channel_modes, [ch.id]: val };
+													}
+												}}>
+													<option value="active">Active</option>
+													<option value="silent">Silent</option>
+												</select>
+											</div>
+											{/if}
+										{/each}
+									</div>
+								</div>
+								{/if}
+							</div>
+
+							{#if editingAgent && !editingAgent.is_system}
+							<div class="form-section">
+								<h4>Skills</h4>
+								{#if showSkillEditor}
+									<div class="skill-editor">
+										<div class="skill-editor-header">
+											<span class="text-sm">{editingSkillFile}</span>
+											<div>
+												<button class="btn btn-sm btn-primary" onclick={() => handleSaveAgentSkill(editingAgent.id)}>Save</button>
+												<button class="btn btn-sm btn-ghost" onclick={() => showSkillEditor = false}>Cancel</button>
+											</div>
+										</div>
+										<textarea class="skill-textarea" bind:value={skillEditorContent} rows="12" placeholder="Skill markdown content..."></textarea>
+									</div>
+								{:else}
+									<div class="skill-list">
+										{#each agentSkillsList as skill}
+											<div class="skill-item">
+												<div>
+													<strong>{skill.name}</strong>
+													<span class="text-muted text-sm"> ({skill.trigger})</span>
+													<div class="text-muted text-sm">{skill.description}</div>
+												</div>
+												<div class="skill-item-actions">
+													<button class="btn btn-ghost btn-sm" onclick={async () => {
+														const data = await getAgentSkill(slug, editingAgent.id, skill.file_name);
+														editingSkillFile = skill.file_name;
+														skillEditorContent = data.content;
+														showSkillEditor = true;
+													}}>Edit</button>
+													<button class="btn btn-ghost btn-sm" onclick={() => handleDeleteAgentSkill(editingAgent.id, skill.file_name)}>x</button>
+												</div>
+											</div>
+										{/each}
+										{#if agentSkillsList.length === 0}
+											<p class="text-muted text-sm">No skills yet.</p>
+										{/if}
+									</div>
+									<button class="btn btn-sm" onclick={() => handleNewAgentSkill(editingAgent.id)}>+ Add Skill</button>
+								{/if}
+							</div>
+							{/if}
+
+							<div class="form-section">
+								<h4>Guardrails</h4>
+								<label class="form-field">
+									<span>Max Iterations</span>
+									<input type="number" bind:value={agentForm.max_iterations} min="1" max="20" style="width:80px" />
+								</label>
+								<label class="form-field">
+									<span>Escalation Prompt</span>
+									<textarea bind:value={agentForm.escalation_prompt} rows="2" placeholder="When to hand off to Brain..."></textarea>
+								</label>
+							</div>
+
+							<div class="form-actions">
+								<button class="btn btn-primary" onclick={handleSaveAgent} disabled={agentSaving}>
+									{agentSaving ? 'Saving...' : (editingAgent ? 'Update Agent' : 'Create Agent')}
+								</button>
+								{#if editingAgent && !editingAgent.is_system}
+									<button class="btn btn-danger" onclick={() => handleDeleteAgent(editingAgent.id)}>Delete</button>
+								{/if}
+							</div>
+						</div>
+					{/if}
+				</div>
+			{/if}
+		</div>
+	</div>
+</div>
+{/if}
+
 {#if showPreferences}
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="modal-overlay" onclick={() => showPreferences = false}>
@@ -5084,6 +6600,12 @@ autonomy: reactive
 				<label>Email</label>
 				<input class="brain-input" type="email" bind:value={prefsEmail} />
 			</div>
+			{#if prefsEmail !== prefsOrigEmail}
+			<div class="brain-field">
+				<label>Current Password <span style="font-weight: normal; opacity: 0.6">(required to change email)</span></label>
+				<input class="brain-input" type="password" bind:value={prefsEmailPw} placeholder="Enter your password" />
+			</div>
+			{/if}
 			<button class="btn btn-primary" onclick={handleSaveProfile} disabled={prefsLoading}>
 				{prefsLoading ? 'Saving...' : 'Save'}
 			</button>
@@ -5151,14 +6673,38 @@ autonomy: reactive
 
 {#if showNewDM}
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="modal-overlay" onclick={() => showNewDM = false}>
+<div class="modal-overlay" onclick={() => { showNewDM = false; selectedGroupMembers = []; groupName = ''; }}>
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="modal-dialog" onclick={(e) => e.stopPropagation()} style="max-width: 400px">
 		<div class="modal-header">
-			<h3>New Message</h3>
-			<button class="modal-close" onclick={() => showNewDM = false}>&times;</button>
+			<h3>{selectedGroupMembers.length > 1 ? 'New Group' : 'New Message'}</h3>
+			<button class="modal-close" onclick={() => { showNewDM = false; selectedGroupMembers = []; groupName = ''; }}>&times;</button>
 		</div>
 		<div class="modal-body">
+			{#if selectedGroupMembers.length > 1}
+				<div style="margin-bottom: 0.75rem">
+					<div style="display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px">
+						{#each selectedGroupMembers as mid}
+							{@const m = $members.find(x => x.id === mid)}
+							{#if m}
+								<span style="background: var(--bg-tertiary); padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; display: flex; align-items: center; gap: 4px">
+									{m.display_name}
+									<button style="background: none; border: none; color: var(--text-tertiary); cursor: pointer; padding: 0; font-size: 0.9rem" onclick={() => selectedGroupMembers = selectedGroupMembers.filter(x => x !== mid)}>&times;</button>
+								</span>
+							{/if}
+						{/each}
+					</div>
+					<input class="brain-input" type="text" placeholder="Group name (optional)" bind:value={groupName} style="margin-bottom: 8px" />
+					<button class="btn btn-primary btn-sm" style="width: 100%" onclick={async () => {
+						const ch = await createChannel(slug, groupName, 'group', selectedGroupMembers);
+						channels.update(chs => [...chs, { ...ch, classification: 'public' }]);
+						selectChannel(ch);
+						showNewDM = false;
+						selectedGroupMembers = [];
+						groupName = '';
+					}}>Create Group ({selectedGroupMembers.length} members)</button>
+				</div>
+			{/if}
 			<input
 				class="brain-input"
 				type="text"
@@ -5170,7 +6716,7 @@ autonomy: reactive
 				{#if !dmSearchQuery || 'brain'.includes(dmSearchQuery.toLowerCase()) || 'ai assistant'.includes(dmSearchQuery.toLowerCase())}
 					{@const brainAgent = agentsList.find(a => a.id === 'brain')}
 					{#if brainAgent}
-						<button class="new-dm-item" onclick={() => { startDMWithAgent(brainAgent); showNewDM = false; }} style="border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; margin-bottom: 0.5rem;">
+						<button class="new-dm-item" onclick={() => { startDMWithAgent(brainAgent); showNewDM = false; selectedGroupMembers = []; }} style="border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; margin-bottom: 0.5rem;">
 							<span class="agent-dot" style="background: var(--accent)"></span>
 							<span>Brain</span>
 							<span style="font-size: 0.7rem; background: var(--accent); color: white; padding: 0.1rem 0.4rem; border-radius: 0.75rem; margin-left: auto;">AI Assistant</span>
@@ -5178,19 +6724,33 @@ autonomy: reactive
 					{/if}
 				{/if}
 				{#if dmFilteredMembers.length > 0}
-					<div class="new-dm-section-label">Members</div>
+					<div class="new-dm-section-label">Members <span style="font-size:0.65rem;color:var(--text-tertiary)">(click to DM, checkbox for group)</span></div>
 					{#each dmFilteredMembers as member}
-						<button class="new-dm-item" onclick={() => { handleMemberClick(member); showNewDM = false; }}>
-							<span class="presence" class:online={member.online}></span>
-							<span>{member.display_name}</span>
-						</button>
+						<div class="new-dm-item" style="display:flex;align-items:center;gap:8px">
+							<input type="checkbox" checked={selectedGroupMembers.includes(member.id)} onchange={() => {
+								if (selectedGroupMembers.includes(member.id)) {
+									selectedGroupMembers = selectedGroupMembers.filter(x => x !== member.id);
+								} else {
+									selectedGroupMembers = [...selectedGroupMembers, member.id];
+								}
+							}} onclick={(e) => e.stopPropagation()} style="cursor:pointer" />
+							<button class="new-dm-item" style="flex:1;border:none;padding:0.25rem 0" onclick={() => {
+								if (selectedGroupMembers.length === 0) { handleMemberClick(member); showNewDM = false; }
+								else {
+									if (!selectedGroupMembers.includes(member.id)) selectedGroupMembers = [...selectedGroupMembers, member.id];
+								}
+							}}>
+								<span class="presence" class:online={member.online}></span>
+								<span>{member.display_name}</span>
+							</button>
+						</div>
 					{/each}
 				{/if}
 
 				{#if dmFilteredAgents.length > 0}
 					<div class="new-dm-section-label">Agents</div>
 					{#each dmFilteredAgents as agent}
-						<button class="new-dm-item" onclick={() => { startDMWithAgent(agent); showNewDM = false; }}>
+						<button class="new-dm-item" onclick={() => { startDMWithAgent(agent); showNewDM = false; selectedGroupMembers = []; }}>
 							<span class="agent-dot" style="background: {agent.color || 'var(--accent)'}"></span>
 							<span>{agent.name}</span>
 						</button>
@@ -5263,6 +6823,169 @@ autonomy: reactive
 </div>
 {/if}
 
+{#if showProfileModal}
+<div class="modal-overlay" onclick={() => showProfileModal = false}>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="modal-dialog profile-modal" onclick={(e) => e.stopPropagation()} style="max-width: 480px">
+		<div class="modal-header">
+			<h3>Profile</h3>
+			<button class="modal-close" onclick={() => showProfileModal = false}>&times;</button>
+		</div>
+		<div class="modal-body">
+			{#if profileLoading}
+			<p class="brain-hint">Loading...</p>
+			{:else if profileData}
+			<div class="profile-top">
+				<div class="profile-avatar" style="background: {profileData.color || 'var(--accent)'}">
+					{#if profileData.agent?.avatar}
+						<span style="font-size: 2rem;">{profileData.agent.avatar}</span>
+					{:else}
+						{profileData.display_name?.charAt(0)?.toUpperCase() || '?'}
+					{/if}
+				</div>
+				<div class="profile-identity">
+					<div class="profile-name">{profileData.display_name}</div>
+					<div class="profile-role">
+						<span class="profile-role-badge">{profileData.role}</span>
+						{#if profileData.is_online}
+							<span class="profile-status online">Online</span>
+						{:else}
+							<span class="profile-status offline">Offline</span>
+						{/if}
+					</div>
+					{#if profileData.title}
+						<div class="profile-title">{profileData.title}</div>
+					{/if}
+				</div>
+			</div>
+
+			{#if profileData.bio}
+			<div class="profile-section">
+				<div class="profile-section-label">Bio</div>
+				<div class="profile-section-text">{profileData.bio}</div>
+			</div>
+			{/if}
+
+			{#if profileData.goals}
+			<div class="profile-section">
+				<div class="profile-section-label">Goals</div>
+				<div class="profile-section-text">{profileData.goals}</div>
+			</div>
+			{/if}
+
+			{#if profileData.agent}
+			<div class="profile-section">
+				<div class="profile-section-label">Agent Details</div>
+				{#if profileData.agent.description}
+					<div class="profile-section-text" style="margin-bottom: 0.5rem;">{profileData.agent.description}</div>
+				{/if}
+				<div class="profile-detail-grid">
+					<div class="profile-detail"><span class="profile-detail-label">Model</span><span>{profileData.agent.model || '—'}</span></div>
+					<div class="profile-detail"><span class="profile-detail-label">Trigger</span><span>{profileData.agent.trigger_type}</span></div>
+					<div class="profile-detail"><span class="profile-detail-label">Active</span><span>{profileData.agent.is_active ? 'Yes' : 'No'}</span></div>
+					<div class="profile-detail"><span class="profile-detail-label">Tools</span><span>{profileData.agent.tool_count}</span></div>
+					<div class="profile-detail"><span class="profile-detail-label">Knowledge</span><span>{profileData.agent.knowledge_access ? 'Yes' : 'No'}</span></div>
+					<div class="profile-detail"><span class="profile-detail-label">Memory</span><span>{profileData.agent.memory_access ? 'Yes' : 'No'}</span></div>
+				</div>
+			</div>
+			{/if}
+
+			<div class="profile-section">
+				<div class="profile-section-label">Activity</div>
+				<div class="profile-detail-grid">
+					<div class="profile-detail"><span class="profile-detail-label">Messages</span><span>{profileData.message_count ?? 0}</span></div>
+					<div class="profile-detail"><span class="profile-detail-label">Tasks</span><span>{profileData.task_count ?? 0}</span></div>
+					<div class="profile-detail"><span class="profile-detail-label">Joined</span><span>{profileData.joined_at ? new Date(profileData.joined_at).toLocaleDateString() : '—'}</span></div>
+					<div class="profile-detail"><span class="profile-detail-label">Last active</span><span>{profileData.last_active ? new Date(profileData.last_active).toLocaleDateString() : '—'}</span></div>
+				</div>
+			</div>
+
+			{#if isAdmin && profileData.permissions}
+			<div class="profile-section">
+				<div class="profile-section-label">Permissions</div>
+				<div class="profile-perm-chips">
+					{#each Object.entries(profileData.permissions).sort((a, b) => a[0].localeCompare(b[0])) as [perm, granted]}
+						<span class="perm-chip" class:granted={granted}>{perm.replace(/_/g, ' ')}</span>
+					{/each}
+				</div>
+			</div>
+			{/if}
+			{:else}
+			<p class="brain-hint">Profile not found.</p>
+			{/if}
+		</div>
+	</div>
+</div>
+{/if}
+
+{/if}
+
+{#if showWizard}
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="modal-overlay" onclick={() => {}}>
+	<div class="wizard-modal" onclick={(e) => e.stopPropagation()}>
+		{#if wizardStep === 'welcome'}
+			<div class="wizard-icon">
+				<svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+					<circle cx="24" cy="24" r="20" stroke="var(--accent)" stroke-width="2"/>
+					<text x="24" y="32" text-anchor="middle" font-size="24">🧠</text>
+				</svg>
+			</div>
+			<h2 class="wizard-title">Welcome to Nexus</h2>
+			<p class="wizard-sub">Let's set up your AI assistant so you can start chatting right away.</p>
+			<button class="wizard-btn wizard-btn-primary" onclick={() => wizardStep = 'apikey'}>Get Started</button>
+			<button class="wizard-btn wizard-btn-skip" onclick={() => { showWizard = false; updateBrainSettings(slug, { onboarding_complete: 'true' }); }}>Skip setup</button>
+		{:else if wizardStep === 'apikey'}
+			<h2 class="wizard-title">Connect an AI Model</h2>
+			<p class="wizard-sub">Enter your OpenRouter API key to power Brain, agents, and tools.</p>
+			<div class="wizard-field">
+				<label>OpenRouter API Key</label>
+				<input type="password" class="brain-input" placeholder="sk-or-v1-..." bind:value={wizardApiKey} />
+				<a href="https://openrouter.ai/keys" target="_blank" rel="noopener" class="wizard-link">Get a free key at openrouter.ai</a>
+			</div>
+			<button class="wizard-btn wizard-btn-primary" disabled={wizardSaving || !wizardApiKey.trim()} onclick={async () => {
+				wizardSaving = true;
+				try {
+					await updateBrainSettings(slug, { api_key: wizardApiKey.trim(), onboarding_complete: 'true' });
+					await loadBrainSettings();
+					wizardStep = 'done';
+				} catch (e) {
+					alert('Failed to save API key');
+				}
+				wizardSaving = false;
+			}}>
+				{#if wizardSaving}Saving...{:else}Save & Continue{/if}
+			</button>
+			<button class="wizard-btn wizard-btn-skip" onclick={() => { showWizard = false; updateBrainSettings(slug, { onboarding_complete: 'true' }); }}>Skip for now</button>
+		{:else if wizardStep === 'done'}
+			<div class="wizard-icon">
+				<svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+					<circle cx="24" cy="24" r="20" stroke="var(--green, #22c55e)" stroke-width="2"/>
+					<path d="M16 24l5 5 11-11" stroke="var(--green, #22c55e)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+				</svg>
+			</div>
+			<h2 class="wizard-title">You're all set!</h2>
+			<p class="wizard-sub">Brain is ready. Start a conversation to see it in action.</p>
+			<button class="wizard-btn wizard-btn-primary" onclick={async () => {
+				showWizard = false;
+				try {
+					const result = await triggerBrainWelcome(slug);
+					if (result.channel_id) {
+						const ch = $channels.find((c: Channel) => c.id === result.channel_id);
+						if (ch) {
+							selectChannel(ch);
+						} else {
+							const chs = await listChannels(slug);
+							channels.set(chs);
+							const newCh = chs.find((c: any) => c.id === result.channel_id);
+							if (newCh) selectChannel(newCh);
+						}
+					}
+				} catch {}
+			}}>Start Chatting</button>
+		{/if}
+	</div>
+</div>
 {/if}
 
 <style>
@@ -5296,6 +7019,12 @@ autonomy: reactive
 		display: flex;
 		align-items: center;
 		gap: var(--space-sm);
+		cursor: pointer;
+		background: none;
+		border: none;
+		padding: 0;
+		color: inherit;
+		font: inherit;
 	}
 	.logo-text {
 		font-size: var(--text-lg);
@@ -5499,6 +7228,23 @@ autonomy: reactive
 		color: var(--accent);
 		background: var(--accent-glow);
 		border-color: var(--accent-border);
+	}
+
+	/* Model Status Bar */
+	.model-status-bar {
+		padding: 6px 16px;
+		font-size: 11px;
+		color: var(--text-muted);
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		border-top: 1px solid var(--border-subtle);
+	}
+	.model-dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		flex-shrink: 0;
 	}
 
 	/* Sidebar footer */
@@ -5766,9 +7512,60 @@ autonomy: reactive
 		font-size: var(--text-base);
 		line-height: 1.5;
 		color: var(--text-secondary);
-		white-space: pre-wrap;
 		word-break: break-word;
 	}
+	.message-text :global(p) {
+		margin: 0 0 0.25em 0;
+	}
+	.message-text :global(p:last-child) {
+		margin-bottom: 0;
+	}
+	.message-text :global(ul), .message-text :global(ol) {
+		margin: 0.25em 0;
+		padding-left: 1.5em;
+	}
+	.message-text :global(li) {
+		margin: 0.1em 0;
+	}
+	.message-text :global(code) {
+		background: var(--bg-raised);
+		padding: 1px 4px;
+		border-radius: var(--radius-sm);
+		font-family: var(--font-mono);
+		font-size: 0.9em;
+	}
+	.message-text :global(pre) {
+		background: var(--bg-root);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		padding: var(--space-sm);
+		overflow-x: auto;
+		margin: 0.25em 0;
+	}
+	.message-text :global(pre code) {
+		background: none;
+		padding: 0;
+	}
+	.message-text :global(a) {
+		color: var(--accent);
+		text-decoration: none;
+	}
+	.message-text :global(blockquote) {
+		border-left: 3px solid var(--border-subtle);
+		margin: 0.25em 0;
+		padding-left: 0.75em;
+		color: var(--text-tertiary);
+	}
+	.message-text :global(strong) {
+		color: var(--text-primary);
+	}
+	.message-text :global(h1), .message-text :global(h2), .message-text :global(h3) {
+		margin: 0.5em 0 0.25em;
+		color: var(--text-primary);
+	}
+	.message-text :global(h1) { font-size: 1.2em; }
+	.message-text :global(h2) { font-size: 1.1em; }
+	.message-text :global(h3) { font-size: 1.05em; }
 
 	.skill-badge {
 		display: inline-block;
@@ -6571,7 +8368,7 @@ autonomy: reactive
 		padding: var(--space-xl);
 	}
 	.brain-settings {
-		max-width: 640px;
+		max-width: 860px;
 	}
 	.brain-header-row {
 		display: flex;
@@ -6610,10 +8407,13 @@ autonomy: reactive
 		gap: 0;
 		border-bottom: 1px solid var(--border-subtle);
 		margin-bottom: var(--space-xl);
+		overflow-x: auto;
+		white-space: nowrap;
 	}
 	.brain-tab {
-		padding: var(--space-sm) var(--space-lg);
+		padding: var(--space-sm) var(--space-md);
 		background: none;
+		flex-shrink: 0;
 		border: none;
 		border-bottom: 2px solid transparent;
 		color: var(--text-tertiary);
@@ -6640,6 +8440,30 @@ autonomy: reactive
 		font-weight: 600;
 		color: var(--text-primary);
 		margin-bottom: var(--space-md);
+	}
+	.memory-stats-bar {
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+		font-size: 0.75rem;
+		color: var(--text-tertiary);
+		margin-bottom: 0.75rem;
+	}
+	.memory-stats-sep { opacity: 0.4; }
+	.memory-config-card {
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 0.75rem;
+		margin-bottom: 0.5rem;
+	}
+	.memory-config-header { }
+	.memory-config-title-row {
+		margin-bottom: 0.35rem;
+	}
+	.memory-config-body {
+		margin-top: 0.75rem;
+		padding-top: 0.75rem;
+		border-top: 1px solid var(--border);
 	}
 	.brain-field {
 		margin-bottom: var(--space-md);
@@ -6686,6 +8510,94 @@ autonomy: reactive
 		width: 16px;
 		height: 16px;
 	}
+	.engine-status {
+		font-size: 0.8rem;
+		color: var(--text-secondary);
+		padding: 8px 12px;
+		background: var(--bg-raised);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		margin-top: var(--space-xs);
+	}
+	.engine-status.engine-warning {
+		border-color: var(--danger, #ef4444);
+		color: var(--danger, #ef4444);
+	}
+	.webllm-installed-list {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		overflow: hidden;
+	}
+	.webllm-model-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 8px 12px;
+		background: var(--bg-raised);
+	}
+	.webllm-model-row.active {
+		background: rgba(234, 88, 12, 0.08);
+	}
+	.webllm-model-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--text-muted);
+		flex-shrink: 0;
+	}
+	.webllm-model-dot.loaded {
+		background: #22c55e;
+	}
+	.webllm-model-info {
+		flex: 1;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 0.85rem;
+		min-width: 0;
+	}
+	.webllm-model-name {
+		font-weight: 500;
+		color: var(--text-primary);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.webllm-model-size {
+		color: var(--text-muted);
+		font-size: 0.78rem;
+		white-space: nowrap;
+	}
+	.webllm-model-badge {
+		font-size: 0.7rem;
+		padding: 1px 5px;
+		border-radius: 3px;
+		background: rgba(234, 88, 12, 0.15);
+		color: var(--accent);
+		white-space: nowrap;
+	}
+	.webllm-model-actions {
+		display: flex;
+		gap: 4px;
+		flex-shrink: 0;
+	}
+	.btn-xs {
+		padding: 2px 8px;
+		font-size: 0.75rem;
+		border-radius: 4px;
+	}
+	.btn-danger {
+		background: transparent;
+		color: var(--danger, #ef4444);
+		border: 1px solid var(--danger, #ef4444);
+		cursor: pointer;
+	}
+	.btn-danger:hover {
+		background: rgba(239, 68, 68, 0.1);
+	}
 	.brain-freq-row {
 		display: flex;
 		align-items: center;
@@ -6705,6 +8617,130 @@ autonomy: reactive
 		font-size: 0.8rem;
 		color: var(--green, #22c55e);
 		margin-bottom: var(--space-xs);
+	}
+
+	/* Service cards */
+	.service-cards {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+	.service-card {
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md, 8px);
+		padding: 12px 14px;
+		background: var(--bg-root);
+		transition: border-color 0.2s, box-shadow 0.2s;
+	}
+	.service-card.service-active {
+		border-color: rgba(34, 197, 94, 0.4);
+		box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.08), inset 0 1px 0 rgba(34, 197, 94, 0.06);
+		background: linear-gradient(to bottom, rgba(34, 197, 94, 0.03), transparent);
+	}
+	.service-header {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+	}
+	.service-status-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--text-muted, #555);
+		flex-shrink: 0;
+		opacity: 0.4;
+	}
+	.service-status-dot.active {
+		background: #22c55e;
+		opacity: 1;
+		box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
+	}
+	.service-title-area {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+	}
+	.service-name {
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+	.service-badge {
+		font-size: 0.7rem;
+		color: var(--text-tertiary);
+		white-space: nowrap;
+	}
+	.service-active .service-badge {
+		color: var(--green, #22c55e);
+	}
+	.service-desc {
+		font-size: 0.78rem;
+		color: var(--text-secondary);
+		margin-top: 4px;
+		padding-left: 18px;
+		line-height: 1.4;
+	}
+	.service-details {
+		margin-top: 8px;
+		padding-left: 18px;
+	}
+	.service-details summary {
+		font-size: 0.78rem;
+		color: var(--text-tertiary);
+		cursor: pointer;
+		user-select: none;
+		padding: 2px 0;
+	}
+	.service-details summary:hover {
+		color: var(--text-secondary);
+	}
+	.service-details[open] summary {
+		margin-bottom: 8px;
+	}
+	.service-fields {
+		padding: 8px 0 4px;
+		border-top: 1px solid var(--border-subtle);
+	}
+	.service-toggle {
+		flex-shrink: 0;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+	}
+	.service-toggle input {
+		position: absolute;
+		opacity: 0;
+		width: 0;
+		height: 0;
+	}
+	.service-toggle-track {
+		width: 32px;
+		height: 18px;
+		border-radius: 9px;
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border-subtle);
+		position: relative;
+		transition: background 0.2s, border-color 0.2s;
+	}
+	.service-toggle input:checked + .service-toggle-track {
+		background: rgba(34, 197, 94, 0.3);
+		border-color: rgba(34, 197, 94, 0.5);
+	}
+	.service-toggle-thumb {
+		position: absolute;
+		top: 2px;
+		left: 2px;
+		width: 12px;
+		height: 12px;
+		border-radius: 50%;
+		background: var(--text-muted);
+		transition: transform 0.2s, background 0.2s;
+	}
+	.service-toggle input:checked + .service-toggle-track .service-toggle-thumb {
+		transform: translateX(14px);
+		background: #22c55e;
 	}
 	.brain-files {
 		display: flex;
@@ -6764,40 +8800,76 @@ autonomy: reactive
 		outline: none;
 	}
 
-	/* Memory List */
-	.memory-stats {
+	/* Memory Timeline */
+	.memory-month-stats {
 		display: flex;
-		gap: var(--space-lg);
-		margin-bottom: var(--space-lg);
-	}
-	.memory-stat {
-		display: flex;
-		flex-direction: column;
+		gap: var(--space-sm);
 		align-items: center;
+		margin-bottom: var(--space-lg);
+		font-size: 0.85rem;
+		color: var(--text-secondary);
 	}
-	.memory-stat-count {
-		font-size: 1.5rem;
-		font-weight: 700;
-		color: var(--accent);
+	.memory-month-stats span:not(:last-child):not(.memory-month-stats-label)::after {
+		content: '\00b7';
+		margin-left: var(--space-sm);
 	}
-	.memory-stat-label {
-		font-size: 0.75rem;
+	.memory-month-stats-label {
 		color: var(--text-tertiary);
-		text-transform: capitalize;
+		font-size: 0.75rem;
 	}
 	.memory-actions {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
 		margin-bottom: var(--space-md);
 	}
 	.memory-clear-btn:hover {
 		color: var(--red) !important;
 		background: rgba(239,68,68,0.1) !important;
 	}
-	.memory-list {
+	.memory-source-filter {
+		display: flex;
+		gap: 4px;
+		flex-wrap: wrap;
+	}
+	.memory-filter-btn {
+		padding: 2px 10px;
+		border-radius: 9999px;
+		font-size: 0.75rem;
+		border: 1px solid var(--border-subtle);
+		background: none;
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition: all 0.15s;
+	}
+	.memory-filter-btn.active {
+		background: var(--accent);
+		color: var(--bg-root);
+		border-color: var(--accent);
+	}
+	.memory-filter-btn:hover:not(.active) {
+		background: var(--bg-surface);
+	}
+	.memory-timeline {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-lg);
+	}
+	.memory-month-group {
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-xs);
 	}
-	.memory-item {
+	.memory-month-header {
+		font-size: 0.7rem;
+		font-weight: 700;
+		letter-spacing: 0.1em;
+		color: var(--text-tertiary);
+		padding-bottom: var(--space-xs);
+		border-bottom: 1px solid var(--border-subtle);
+		margin-bottom: var(--space-xs);
+	}
+	.memory-timeline-item {
 		display: flex;
 		align-items: flex-start;
 		gap: var(--space-sm);
@@ -6805,12 +8877,32 @@ autonomy: reactive
 		background: var(--bg-root);
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-sm);
+		transition: opacity 0.2s;
 	}
+	.memory-timeline-item.superseded {
+		opacity: 0.5;
+	}
+	.memory-timeline-left {
+		display: flex;
+		align-items: center;
+		gap: var(--space-xs);
+		flex-shrink: 0;
+	}
+	.memory-type-icon {
+		font-size: 0.6rem;
+		line-height: 1;
+	}
+	.memory-type-icon[data-type="decision"] { color: var(--yellow, #eab308); }
+	.memory-type-icon[data-type="commitment"] { color: var(--green, #22c55e); }
+	.memory-type-icon[data-type="policy"] { color: #a78bfa; }
+	.memory-type-icon[data-type="person"] { color: #8b5cf6; }
+	.memory-type-icon[data-type="insight"] { color: var(--accent); }
+	.memory-type-icon[data-type="fact"] { color: var(--text-tertiary); }
 	.memory-type-badge {
 		flex-shrink: 0;
 		padding: 2px 8px;
 		border-radius: 9999px;
-		font-size: 0.7rem;
+		font-size: 0.65rem;
 		font-weight: 600;
 		text-transform: uppercase;
 		background: color-mix(in srgb, var(--accent) 15%, transparent);
@@ -6824,15 +8916,78 @@ autonomy: reactive
 		background: color-mix(in srgb, var(--green, #22c55e) 15%, transparent);
 		color: var(--green, #22c55e);
 	}
+	.memory-type-badge[data-type="policy"] {
+		background: color-mix(in srgb, #a78bfa 15%, transparent);
+		color: #a78bfa;
+	}
 	.memory-type-badge[data-type="person"] {
 		background: color-mix(in srgb, #8b5cf6 15%, transparent);
 		color: #8b5cf6;
 	}
-	.memory-content {
+	.memory-type-badge[data-type="insight"] {
+		background: color-mix(in srgb, var(--accent) 15%, transparent);
+		color: var(--accent);
+	}
+	.memory-date {
+		font-size: 0.7rem;
+		color: var(--text-tertiary);
+		white-space: nowrap;
+	}
+	.memory-timeline-right {
 		flex: 1;
+		display: flex;
+		align-items: baseline;
+		gap: var(--space-sm);
+		flex-wrap: wrap;
+		min-width: 0;
+	}
+	.memory-summary {
 		font-size: 0.85rem;
 		color: var(--text-primary);
 		line-height: 1.4;
+		font-weight: 500;
+	}
+	.memory-summary.struck {
+		text-decoration: line-through;
+		opacity: 0.6;
+	}
+	.memory-participants {
+		font-size: 0.75rem;
+		color: var(--text-secondary);
+	}
+	.memory-channel {
+		font-size: 0.7rem;
+		color: var(--text-muted, var(--text-secondary));
+		opacity: 0.7;
+	}
+	.memory-confidence {
+		display: inline-flex;
+		align-items: center;
+	}
+	.confidence-dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--accent);
+		display: inline-block;
+	}
+	.memory-source-badge {
+		flex-shrink: 0;
+		padding: 1px 6px;
+		border-radius: 9999px;
+		font-size: 0.65rem;
+		font-weight: 500;
+		text-transform: uppercase;
+		background: color-mix(in srgb, var(--text-tertiary) 15%, transparent);
+		color: var(--text-tertiary);
+	}
+	.memory-source-badge[data-source="rule"] {
+		background: color-mix(in srgb, var(--blue, #3b82f6) 15%, transparent);
+		color: var(--blue, #3b82f6);
+	}
+	.memory-source-badge[data-source="pin"] {
+		background: color-mix(in srgb, var(--accent) 15%, transparent);
+		color: var(--accent);
 	}
 	.memory-delete {
 		flex-shrink: 0;
@@ -6844,12 +8999,44 @@ autonomy: reactive
 		border-radius: var(--radius-sm);
 		opacity: 0;
 	}
-	.memory-item:hover .memory-delete {
+	.memory-timeline-item:hover .memory-delete {
 		opacity: 1;
 	}
 	.memory-delete:hover {
 		color: var(--red);
 		background: rgba(239,68,68,0.1);
+	}
+	/* Pin type menu */
+	.pin-memory-wrapper {
+		position: relative;
+	}
+	.pin-type-menu {
+		position: absolute;
+		bottom: 100%;
+		right: 0;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		padding: 4px;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		z-index: 100;
+		box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+		min-width: 120px;
+	}
+	.pin-type-menu button {
+		padding: 4px 10px;
+		background: none;
+		border: none;
+		color: var(--text-primary);
+		font-size: 0.8rem;
+		text-align: left;
+		cursor: pointer;
+		border-radius: var(--radius-sm);
+	}
+	.pin-type-menu button:hover {
+		background: var(--bg-hover);
 	}
 
 	/* Activity Log */
@@ -6882,6 +9069,72 @@ autonomy: reactive
 	.action-type-badge[data-type="mention"] { background: rgba(59,130,246,0.15); color: #60a5fa; }
 	.action-type-badge[data-type="extraction"] { background: rgba(168,85,247,0.15); color: #c084fc; }
 	.action-type-badge[data-type="heartbeat"] { background: rgba(34,197,94,0.15); color: #4ade80; }
+	.action-type-badge[data-type="config_change"] { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+
+	.free-model-list {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		overflow: hidden;
+	}
+	.free-model-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.35rem 0.5rem;
+		background: var(--bg);
+		font-size: 0.8rem;
+	}
+	.free-model-row:hover { background: var(--bg-hover); }
+	.free-model-priority {
+		color: var(--text-tertiary);
+		font-size: 0.7rem;
+		min-width: 1.2rem;
+		text-align: center;
+	}
+	.free-model-id {
+		flex: 1;
+		font-family: var(--font-mono);
+		font-size: 0.75rem;
+		color: var(--text-secondary);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.free-model-name {
+		color: var(--text-primary);
+		font-size: 0.75rem;
+		min-width: 5rem;
+	}
+	.free-model-actions {
+		display: flex;
+		gap: 2px;
+	}
+	.info-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+		gap: 0.75rem;
+	}
+	.info-card {
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 0.75rem;
+	}
+	.info-card-label {
+		font-size: 0.7rem;
+		color: var(--text-dim);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		margin-bottom: 0.25rem;
+	}
+	.info-card-value {
+		font-size: 1.1rem;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
 	.action-model {
 		font-size: 0.7rem;
 		color: var(--text-tertiary);
@@ -7132,6 +9385,98 @@ autonomy: reactive
 		padding: 0 20px 20px;
 		overflow-y: auto;
 		flex: 1;
+	}
+	.profile-top {
+		display: flex;
+		gap: 1rem;
+		align-items: center;
+		margin-bottom: 1rem;
+	}
+	.profile-avatar {
+		width: 56px;
+		height: 56px;
+		border-radius: 50%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 1.5rem;
+		font-weight: 700;
+		color: white;
+		flex-shrink: 0;
+	}
+	.profile-identity { flex: 1; min-width: 0; }
+	.profile-name {
+		font-size: 1.1rem;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+	.profile-role {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		margin-top: 0.15rem;
+	}
+	.profile-role-badge {
+		font-size: 0.7rem;
+		padding: 1px 8px;
+		border-radius: 10px;
+		background: var(--bg-raised, rgba(255,255,255,0.08));
+		color: var(--text-secondary);
+		text-transform: capitalize;
+	}
+	.profile-status {
+		font-size: 0.7rem;
+		font-weight: 500;
+	}
+	.profile-status.online { color: var(--green, #4caf50); }
+	.profile-status.offline { color: var(--text-dim); }
+	.profile-title {
+		font-size: 0.8rem;
+		color: var(--text-secondary);
+		margin-top: 0.15rem;
+	}
+	.profile-section {
+		border-top: 1px solid var(--border-subtle);
+		padding-top: 0.75rem;
+		margin-top: 0.75rem;
+	}
+	.profile-section-label {
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-dim);
+		margin-bottom: 0.4rem;
+	}
+	.profile-section-text {
+		font-size: 0.85rem;
+		color: var(--text-secondary);
+		line-height: 1.4;
+	}
+	.profile-detail-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 0.4rem 1rem;
+	}
+	.profile-detail {
+		display: flex;
+		justify-content: space-between;
+		font-size: 0.8rem;
+		color: var(--text-primary);
+	}
+	.profile-detail-label {
+		color: var(--text-dim);
+	}
+	.profile-perm-chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+	}
+	.clickable { cursor: pointer; }
+	.avatar.clickable:hover, .sender.clickable:hover {
+		opacity: 0.8;
+	}
+	.drawer-member.clickable:hover {
+		background: var(--bg-raised, rgba(255,255,255,0.04));
 	}
 	.model-browser-controls {
 		padding: 12px 20px;
@@ -7402,6 +9747,87 @@ autonomy: reactive
 	}
 	.agent-working-text {
 		font-weight: 500;
+	}
+
+	/* Quick-action bar */
+	.quick-actions {
+		display: flex;
+		gap: 6px;
+		padding: 4px var(--space-xl);
+		flex-wrap: wrap;
+	}
+	.quick-action {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		padding: 4px 10px;
+		border-radius: 14px;
+		border: 1px solid var(--border);
+		background: var(--bg-secondary);
+		color: var(--text-secondary);
+		font-size: 0.75rem;
+		cursor: pointer;
+		transition: border-color 0.15s, color 0.15s;
+	}
+	.quick-action:hover {
+		border-color: var(--accent);
+		color: var(--text-primary);
+	}
+	.quick-action-input {
+		display: flex;
+		gap: 6px;
+		padding: 4px var(--space-xl);
+		align-items: center;
+	}
+	.quick-action-input input {
+		flex: 1;
+		padding: 4px 10px;
+		border-radius: 6px;
+		border: 1px solid var(--border);
+		background: var(--bg-input);
+		color: var(--text-primary);
+		font-size: 0.8rem;
+		outline: none;
+	}
+	.quick-action-input input:focus {
+		border-color: var(--accent);
+	}
+
+	/* Action chips */
+	.action-chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		padding: var(--space-sm) var(--space-xl);
+		animation: agentFadeIn 0.3s ease;
+	}
+	.action-chip {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 6px 12px;
+		border-radius: 16px;
+		border: 1px solid var(--accent);
+		background: transparent;
+		color: var(--text-primary);
+		font-size: 0.8rem;
+		cursor: pointer;
+		transition: background 0.15s;
+	}
+	.action-chip:hover {
+		background: var(--accent-glow);
+	}
+	.chip-num {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 18px;
+		height: 18px;
+		border-radius: 50%;
+		background: var(--accent);
+		color: var(--bg-primary);
+		font-size: 0.7rem;
+		font-weight: 600;
 	}
 
 	/* Org chart toolbar */
@@ -7704,6 +10130,26 @@ autonomy: reactive
 		text-transform: capitalize;
 	}
 
+	.kick-btn {
+		background: none;
+		border: none;
+		color: var(--text-tertiary);
+		cursor: pointer;
+		font-size: 1.1rem;
+		padding: 2px 6px;
+		border-radius: 4px;
+		margin-left: auto;
+		opacity: 0;
+		transition: opacity 0.15s;
+	}
+	.drawer-member:hover .kick-btn {
+		opacity: 1;
+	}
+	.kick-btn:hover {
+		background: var(--danger, #e74c3c);
+		color: white;
+	}
+
 	/* @-mention autocomplete popup */
 	.mention-popup {
 		position: relative;
@@ -7851,6 +10297,54 @@ autonomy: reactive
 		font-size: 0.75rem;
 		color: var(--text-muted);
 	}
+
+	/* Team Modal */
+	.team-modal {
+		max-width: 800px;
+		width: 90vw;
+		max-height: 80vh;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		padding: 0;
+	}
+	.team-modal .agent-form {
+		max-width: 100%;
+	}
+	.team-member-detail {
+		max-width: 560px;
+	}
+	.team-role-select {
+		padding: 6px 10px;
+		border-radius: 6px;
+		border: 1px solid var(--border);
+		background: var(--bg-input);
+		color: var(--text-primary);
+		font-size: 0.85rem;
+		width: 100%;
+		max-width: 240px;
+	}
+	.team-perm-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+		gap: 2px;
+	}
+	.team-perm-row {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		padding: 5px 8px;
+		border: none;
+		background: none;
+		color: inherit;
+		font-size: 0.8rem;
+		cursor: pointer;
+		border-radius: 4px;
+	}
+	.team-perm-row:hover { background: var(--bg-secondary); }
+	.team-perm-row .perm-name { color: var(--text-secondary); }
+	.team-perm-row .perm-val { font-size: 0.75rem; color: var(--text-tertiary); }
+	.team-perm-row .perm-val.granted { color: var(--green, #22c55e); }
 
 	/* Agent Library Modal */
 	.agent-library-modal {
@@ -8025,22 +10519,54 @@ autonomy: reactive
 	.perm-chip { font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; background: var(--bg-raised); color: var(--text-muted); }
 	.perm-chip.granted { background: rgba(34,197,94,0.15); color: var(--green, #22c55e); }
 
-	/* Star/Favorite button */
-	.star-btn {
+	.star-icon { color: var(--accent); cursor: pointer; }
+
+	/* Channel context menu */
+	.nav-item-wrap { position: relative; }
+	.ch-menu-btn {
 		background: none;
 		border: none;
 		color: var(--text-tertiary);
 		cursor: pointer;
-		font-size: 12px;
-		padding: 0 2px;
+		font-size: 14px;
+		padding: 0 4px;
 		opacity: 0;
-		transition: opacity 0.15s, color 0.15s;
+		transition: opacity 0.15s;
 		margin-left: auto;
+		line-height: 1;
 	}
-	.nav-item:hover .star-btn { opacity: 0.7; }
-	.star-btn.starred { opacity: 1; color: var(--accent); }
-	.star-btn:hover { opacity: 1 !important; color: var(--accent); }
-	.star-icon { color: var(--accent); }
+	.nav-item:hover .ch-menu-btn { opacity: 0.7; }
+	.ch-menu-btn:hover { opacity: 1 !important; color: var(--text-primary); }
+	.pin-icon { font-size: 0.55rem; opacity: 0.5; margin-left: 2px; }
+	.ch-menu {
+		position: absolute;
+		top: 100%;
+		right: 8px;
+		z-index: 100;
+		background: var(--bg-raised);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-md);
+		box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+		min-width: 150px;
+		padding: 4px 0;
+	}
+	.ch-menu button {
+		display: block;
+		width: 100%;
+		text-align: left;
+		padding: 6px 12px;
+		font-size: var(--text-sm);
+		color: var(--text-secondary);
+		background: none;
+		border: none;
+		cursor: pointer;
+	}
+	.ch-menu button:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+	.ch-menu-danger { color: var(--red, #ef4444) !important; }
+	.ch-menu-danger:hover { background: rgba(239,68,68,0.1) !important; }
 
 	/* Message hover actions */
 	.message-row { position: relative; }
@@ -8330,4 +10856,119 @@ autonomy: reactive
 		color: var(--accent);
 		text-decoration: underline;
 	}
+
+	/* Onboarding Wizard */
+	.wizard-modal {
+		background: var(--bg-surface);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-lg, 12px);
+		padding: 2.5rem 2rem;
+		max-width: 420px;
+		width: 90vw;
+		text-align: center;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 0.75rem;
+	}
+	.wizard-icon { margin-bottom: 0.5rem; }
+	.wizard-title {
+		font-size: 1.25rem;
+		font-weight: 700;
+		margin: 0;
+		color: var(--text-primary);
+	}
+	.wizard-sub {
+		font-size: 0.85rem;
+		color: var(--text-secondary);
+		margin: 0;
+		line-height: 1.5;
+		max-width: 320px;
+	}
+	.wizard-field {
+		width: 100%;
+		text-align: left;
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+		margin: 0.5rem 0;
+	}
+	.wizard-field label {
+		font-size: 0.8rem;
+		font-weight: 500;
+		color: var(--text-secondary);
+	}
+	.wizard-link {
+		font-size: 0.75rem;
+		color: var(--accent);
+		text-decoration: none;
+	}
+	.wizard-link:hover { text-decoration: underline; }
+	.wizard-btn {
+		border: none;
+		border-radius: var(--radius-md, 6px);
+		padding: 0.6rem 1.5rem;
+		font-size: 0.85rem;
+		font-weight: 600;
+		cursor: pointer;
+		min-width: 160px;
+	}
+	.wizard-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+	.wizard-btn-primary {
+		background: var(--accent);
+		color: #fff;
+	}
+	.wizard-btn-primary:hover:not(:disabled) { opacity: 0.9; }
+	.wizard-btn-skip {
+		background: none;
+		color: var(--text-tertiary);
+		font-weight: 400;
+		padding: 0.4rem 1rem;
+		font-size: 0.75rem;
+	}
+	.wizard-btn-skip:hover { color: var(--text-secondary); }
+
+	/* North Star sidebar badge */
+	.north-star-badge {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: var(--space-sm) var(--space-md);
+		background: color-mix(in srgb, var(--accent) 8%, transparent);
+		border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		width: 100%;
+		text-align: left;
+		color: var(--text-primary);
+		font-size: 0.8rem;
+		line-height: 1.3;
+		transition: border-color 0.15s;
+	}
+	.north-star-badge:hover {
+		border-color: var(--accent);
+	}
+	.north-star-badge svg {
+		margin-bottom: 2px;
+	}
+	.north-star-text {
+		font-size: 0.78rem;
+		color: var(--text-secondary);
+		line-height: 1.3;
+	}
+	.north-star-themes {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+		margin-top: 2px;
+	}
+	.north-star-pill {
+		font-size: 0.68rem;
+		padding: 1px 6px;
+		border-radius: 8px;
+		background: color-mix(in srgb, var(--accent) 15%, transparent);
+		color: var(--accent);
+		white-space: nowrap;
+	}
+
 </style>

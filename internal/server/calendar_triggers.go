@@ -17,7 +17,10 @@ type calendarTriggerConfig struct {
 
 // checkCalendarAgentTriggers runs as part of the reminder cron to fire matching agents.
 func (s *Server) checkCalendarAgentTriggers() {
-	slugs := s.hubs.ActiveSlugs()
+	// Also check events with agent_id set directly
+	s.checkDirectAgentEvents()
+
+	slugs := s.hubs.ActiveSlugs() // ActiveSlugs OK here — trigger-based agents need a connected client to deliver results
 	now := time.Now().UTC()
 
 	for _, slug := range slugs {
@@ -116,12 +119,112 @@ func (s *Server) checkCalendarAgentTriggers() {
 					agent := s.loadAgentByID(slug, trigger.agentID)
 					if agent != nil {
 						logger.WithCategory(logger.CatCalendar).Info().Str("workspace", slug).Str("agent", trigger.agentName).Str("event", title).Msg("triggering agent for event")
-						s.handleAgentMention(slug, targetChannel, "", "Calendar", content, agent)
+						s.handleAgentMention(slug, targetChannel, "", "Calendar", content, agent, time.Now())
 					}
 				}
 			}
 		}
 		eventRows.Close()
+	}
+}
+
+// checkDirectAgentEvents fires Brain/agents directly assigned to calendar events via agent_id.
+// Queries ALL workspaces (not just active ones) so scheduled events fire even when nobody is online.
+func (s *Server) checkDirectAgentEvents() {
+	// Get all workspace slugs from global DB
+	slugRows, err := s.global.DB.Query("SELECT slug FROM workspaces")
+	if err != nil {
+		return
+	}
+	var slugs []string
+	for slugRows.Next() {
+		var slug string
+		slugRows.Scan(&slug)
+		slugs = append(slugs, slug)
+	}
+	slugRows.Close()
+
+	now := time.Now().UTC()
+	nowStr := now.Format(time.RFC3339)
+	// Look at events starting within the last 1 minute (the cron runs every 1m)
+	windowStart := now.Add(-1 * time.Minute).Format(time.RFC3339)
+
+	logger.WithCategory(logger.CatCalendar).Debug().Int("workspaces", len(slugs)).Str("now", nowStr).Str("window_start", windowStart).Msg("checking direct agent events")
+
+	for _, slug := range slugs {
+		wdb, err := s.ws.Open(slug)
+		if err != nil {
+			continue
+		}
+
+		// First check how many agent events exist at all for debugging
+		var totalAgentEvents int
+		_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM calendar_events WHERE agent_id != ''").Scan(&totalAgentEvents)
+		if totalAgentEvents > 0 {
+			logger.WithCategory(logger.CatCalendar).Info().Str("workspace", slug).Int("agent_events", totalAgentEvents).Str("window", windowStart+" to "+nowStr).Msg("agent events in workspace")
+		}
+
+		rows, err := wdb.DB.Query(
+			`SELECT id, title, description, start_time, agent_id, model, COALESCE(channel_id,'')
+			 FROM calendar_events
+			 WHERE status = 'confirmed' AND agent_id != '' AND start_time <= ? AND start_time > ?`,
+			nowStr, windowStart,
+		)
+		if err != nil {
+			continue
+		}
+
+		for rows.Next() {
+			var eventID, title, description, startTime, agentID, model, channelID string
+			if err := rows.Scan(&eventID, &title, &description, &startTime, &agentID, &model, &channelID); err != nil {
+				continue
+			}
+
+			// Dedup
+			reminderKey := fmt.Sprintf("agent_direct:%s:%s", agentID, eventID)
+			var exists int
+			_ = wdb.DB.QueryRow("SELECT 1 FROM calendar_reminders_sent WHERE reminder_key = ?", reminderKey).Scan(&exists)
+			if exists == 1 {
+				continue
+			}
+			_, _ = wdb.DB.Exec(
+				"INSERT INTO calendar_reminders_sent (id, event_id, reminder_key, sent_at) VALUES (?, ?, ?, ?)",
+				fmt.Sprintf("ad_%s_%s", agentID, eventID), eventID, reminderKey, nowStr,
+			)
+
+			// Resolve channel
+			targetChannel := channelID
+			if targetChannel == "" {
+				_ = wdb.DB.QueryRow("SELECT id FROM channels LIMIT 1").Scan(&targetChannel)
+			}
+			if targetChannel == "" {
+				continue
+			}
+
+			prompt := fmt.Sprintf("Scheduled task from calendar event \"%s\"", title)
+			if description != "" {
+				prompt += "\n\n" + description
+			}
+
+			// Brain vs custom agent
+			if agentID == "brain" {
+				logger.WithCategory(logger.CatCalendar).Info().Str("workspace", slug).Str("event", title).Str("model", model).Msg("triggering Brain for scheduled event")
+				s.handleBrainMentionWithTools(slug, targetChannel, "", "Scheduler", prompt, time.Now(), model)
+			} else {
+				agent := s.loadAgentByID(slug, agentID)
+				if agent != nil {
+					logger.WithCategory(logger.CatCalendar).Info().Str("workspace", slug).Str("agent", agent.Name).Str("event", title).Msg("triggering agent for scheduled event")
+					s.handleAgentMention(slug, targetChannel, "", "Scheduler", prompt, agent, time.Now())
+				}
+			}
+
+			// Mark event as executed (dispatch confirmed — dedup prevents re-fire)
+			_, _ = wdb.DB.Exec(
+				"UPDATE calendar_events SET executed_at = ?, updated_at = ? WHERE id = ?",
+				nowStr, nowStr, eventID,
+			)
+		}
+		rows.Close()
 	}
 }
 

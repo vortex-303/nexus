@@ -3,6 +3,8 @@ package brain
 import (
 	"database/sql"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"time"
 )
@@ -13,16 +15,26 @@ const (
 	MemoryTypeDecision   = "decision"
 	MemoryTypeCommitment = "commitment"
 	MemoryTypePerson     = "person"
+	MemoryTypePolicy     = "policy"
+	MemoryTypeInsight    = "insight"
 )
 
 // Memory represents an extracted memory.
 type Memory struct {
-	ID              string `json:"id"`
-	Type            string `json:"type"`
-	Content         string `json:"content"`
-	SourceChannel   string `json:"source_channel,omitempty"`
-	SourceMessageID string `json:"source_message_id,omitempty"`
-	CreatedAt       string `json:"created_at"`
+	ID              string  `json:"id"`
+	Type            string  `json:"type"`
+	Content         string  `json:"content"`
+	Source          string  `json:"source"`
+	Importance      float64 `json:"importance"`
+	Summary         string  `json:"summary"`
+	Confidence      float64 `json:"confidence"`
+	Participants    string  `json:"participants"`
+	Metadata        string  `json:"metadata"`
+	ValidUntil      string  `json:"valid_until,omitempty"`
+	SupersededBy    string  `json:"superseded_by,omitempty"`
+	SourceChannel   string  `json:"source_channel,omitempty"`
+	SourceMessageID string  `json:"source_message_id,omitempty"`
+	CreatedAt       string  `json:"created_at"`
 }
 
 // ChannelSummary holds a rolling summary for a channel.
@@ -35,7 +47,11 @@ type ChannelSummary struct {
 
 // ListMemories returns all memories, optionally filtered by type.
 func ListMemories(db *sql.DB, memType string, limit int) ([]Memory, error) {
-	query := "SELECT id, type, content, COALESCE(source_channel,''), COALESCE(source_message_id,''), created_at FROM brain_memories"
+	query := `SELECT id, type, content, COALESCE(source,'llm'), COALESCE(importance, 0.5),
+		COALESCE(summary,''), COALESCE(confidence, 0.5), COALESCE(participants,''),
+		COALESCE(metadata,'{}'), COALESCE(valid_until,''), COALESCE(superseded_by,''),
+		COALESCE(source_channel,''), COALESCE(source_message_id,''), created_at
+		FROM brain_memories`
 	var args []any
 
 	if memType != "" {
@@ -56,11 +72,18 @@ func ListMemories(db *sql.DB, memType string, limit int) ([]Memory, error) {
 	var memories []Memory
 	for rows.Next() {
 		var m Memory
-		if err := rows.Scan(&m.ID, &m.Type, &m.Content, &m.SourceChannel, &m.SourceMessageID, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Type, &m.Content, &m.Source, &m.Importance,
+			&m.Summary, &m.Confidence, &m.Participants, &m.Metadata,
+			&m.ValidUntil, &m.SupersededBy,
+			&m.SourceChannel, &m.SourceMessageID, &m.CreatedAt); err != nil {
 			continue
 		}
 		memories = append(memories, m)
 	}
+
+	// Sort by importance * recency decay for no-query listing
+	sortByComposite(memories)
+
 	return memories, nil
 }
 
@@ -96,13 +119,270 @@ func ClearMemories(db *sql.DB) error {
 }
 
 // SaveMemory stores a new memory.
-func SaveMemory(db *sql.DB, id, memType, content, sourceChannel, sourceMessageID string) error {
+func SaveMemory(db *sql.DB, id, memType, content, source, sourceChannel, sourceMessageID string, importance float64) error {
+	return SaveMemoryFull(db, id, memType, content, source, sourceChannel, sourceMessageID, importance, "", 0, "")
+}
+
+// SaveMemoryFull stores a new memory with all organizational fields.
+func SaveMemoryFull(db *sql.DB, id, memType, content, source, sourceChannel, sourceMessageID string, importance float64, summary string, confidence float64, participants string) error {
+	if source == "" {
+		source = "llm"
+	}
+	if importance <= 0 {
+		importance = defaultImportance(memType)
+	}
+	if confidence <= 0 {
+		confidence = importance
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := db.Exec(
-		"INSERT INTO brain_memories (id, type, content, source_channel, source_message_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-		id, memType, content, sourceChannel, sourceMessageID, now,
+		`INSERT INTO brain_memories (id, type, content, source, source_channel, source_message_id, importance, summary, confidence, participants, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, memType, content, source, sourceChannel, sourceMessageID, importance, summary, confidence, participants, now,
 	)
 	return err
+}
+
+// defaultImportance returns a sensible default importance for a memory type.
+func defaultImportance(memType string) float64 {
+	switch memType {
+	case MemoryTypeDecision:
+		return 0.8
+	case MemoryTypePolicy:
+		return 0.8
+	case MemoryTypeCommitment:
+		return 0.7
+	case MemoryTypeInsight:
+		return 0.7
+	case MemoryTypePerson:
+		return 0.6
+	default:
+		return 0.5
+	}
+}
+
+// MemoryExists checks if a memory with the same content already exists.
+func MemoryExists(db *sql.DB, content string) bool {
+	var count int
+	_ = db.QueryRow("SELECT COUNT(*) FROM brain_memories WHERE content = ?", content).Scan(&count)
+	return count > 0
+}
+
+// MemorySimilarExists checks if a similar memory already exists (fuzzy dedup).
+// Returns true if among the last 50 memories of the same type, one is a substring
+// of the other or they share >80% word overlap.
+func MemorySimilarExists(db *sql.DB, memType, content string) bool {
+	if MemoryExists(db, content) {
+		return true
+	}
+
+	rows, err := db.Query(
+		"SELECT content FROM brain_memories WHERE type = ? ORDER BY created_at DESC LIMIT 50",
+		memType,
+	)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+
+	normNew := normalizeForDedup(content)
+	newWords := wordSet(normNew)
+
+	for rows.Next() {
+		var existing string
+		if rows.Scan(&existing) != nil {
+			continue
+		}
+		normExisting := normalizeForDedup(existing)
+
+		// Substring check
+		if strings.Contains(normNew, normExisting) || strings.Contains(normExisting, normNew) {
+			return true
+		}
+
+		// Word overlap check
+		existingWords := wordSet(normExisting)
+		if wordOverlap(newWords, existingWords) > 0.8 {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeForDedup(s string) string {
+	s = strings.ToLower(s)
+	s = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == ' ' {
+			return r
+		}
+		return ' '
+	}, s)
+	return strings.Join(strings.Fields(s), " ")
+}
+
+func wordSet(s string) map[string]bool {
+	m := map[string]bool{}
+	for _, w := range strings.Fields(s) {
+		m[w] = true
+	}
+	return m
+}
+
+func wordOverlap(a, b map[string]bool) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	shared := 0
+	for w := range a {
+		if b[w] {
+			shared++
+		}
+	}
+	total := len(a)
+	if len(b) > total {
+		total = len(b)
+	}
+	return float64(shared) / float64(total)
+}
+
+// SearchMemories uses FTS5 full-text search with composite scoring.
+func SearchMemories(db *sql.DB, query string, limit int) ([]Memory, error) {
+	return SearchMemoriesTyped(db, query, "", limit)
+}
+
+// SearchMemoriesTyped uses FTS5 search with optional type filter and composite scoring.
+func SearchMemoriesTyped(db *sql.DB, query, memType string, limit int) ([]Memory, error) {
+	if query == "" || limit <= 0 {
+		return ListMemories(db, memType, limit)
+	}
+
+	ftsQuery := sanitizeFTSQuery(query)
+	if ftsQuery == "" {
+		return ListMemories(db, memType, limit)
+	}
+
+	// Fetch more than needed so composite scoring can re-rank
+	fetchLimit := limit * 3
+	if fetchLimit < 30 {
+		fetchLimit = 30
+	}
+
+	q := `
+		SELECT m.id, m.type, m.content, COALESCE(m.source,'llm'), COALESCE(m.importance, 0.5),
+			COALESCE(m.summary,''), COALESCE(m.confidence, 0.5), COALESCE(m.participants,''),
+			COALESCE(m.metadata,'{}'), COALESCE(m.valid_until,''), COALESCE(m.superseded_by,''),
+			COALESCE(m.source_channel,''), COALESCE(m.source_message_id,''), m.created_at,
+			bm25(brain_memories_fts) AS rank
+		FROM brain_memories m
+		JOIN brain_memories_fts fts ON m.rowid = fts.rowid
+		WHERE brain_memories_fts MATCH ?`
+	args := []any{ftsQuery}
+
+	if memType != "" {
+		q += " AND m.type = ?"
+		args = append(args, memType)
+	}
+	q += " ORDER BY rank LIMIT ?"
+	args = append(args, fetchLimit)
+
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return ListMemories(db, memType, limit)
+	}
+	defer rows.Close()
+
+	type scoredMemory struct {
+		Memory
+		bm25Score float64
+	}
+
+	var scored []scoredMemory
+	for rows.Next() {
+		var sm scoredMemory
+		var rank float64
+		if err := rows.Scan(&sm.ID, &sm.Type, &sm.Content, &sm.Source, &sm.Importance,
+			&sm.Summary, &sm.Confidence, &sm.Participants, &sm.Metadata,
+			&sm.ValidUntil, &sm.SupersededBy,
+			&sm.SourceChannel, &sm.SourceMessageID, &sm.CreatedAt, &rank); err != nil {
+			continue
+		}
+		// BM25 returns negative scores (more negative = better match), normalize
+		sm.bm25Score = -rank
+		scored = append(scored, sm)
+	}
+	if len(scored) == 0 {
+		return ListMemories(db, memType, limit)
+	}
+
+	// Normalize BM25 scores to 0-1
+	var maxBM25 float64
+	for _, s := range scored {
+		if s.bm25Score > maxBM25 {
+			maxBM25 = s.bm25Score
+		}
+	}
+	if maxBM25 == 0 {
+		maxBM25 = 1
+	}
+
+	// Compute composite scores and sort
+	type ranked struct {
+		Memory
+		composite float64
+	}
+	var results []ranked
+	for _, s := range scored {
+		normBM25 := s.bm25Score / maxBM25
+		recency := recencyDecay(s.CreatedAt)
+		composite := 0.5*normBM25 + 0.3*recency + 0.2*s.Importance
+		results = append(results, ranked{s.Memory, composite})
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].composite > results[j].composite
+	})
+
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	memories := make([]Memory, len(results))
+	for i, r := range results {
+		memories[i] = r.Memory
+	}
+	return memories, nil
+}
+
+// compositeScore computes a blended relevance score.
+func recencyDecay(createdAt string) float64 {
+	t, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		return 0.5
+	}
+	ageDays := time.Since(t).Hours() / 24
+	return math.Pow(0.5, ageDays/30) // half-life = 30 days
+}
+
+// sortByComposite sorts memories by importance * recency (for no-query listing).
+func sortByComposite(memories []Memory) {
+	sort.Slice(memories, func(i, j int) bool {
+		ri := recencyDecay(memories[i].CreatedAt) * memories[i].Importance
+		rj := recencyDecay(memories[j].CreatedAt) * memories[j].Importance
+		return ri > rj
+	})
+}
+
+// sanitizeFTSQuery strips FTS5 operators and joins words with OR.
+func sanitizeFTSQuery(q string) string {
+	// Remove FTS5 special characters
+	var cleaned []string
+	for _, word := range strings.Fields(q) {
+		// Strip leading/trailing punctuation and FTS operators
+		word = strings.Trim(word, `"'()*+-:^~{}[]<>!@#$%&`)
+		if word == "" || strings.EqualFold(word, "AND") || strings.EqualFold(word, "OR") || strings.EqualFold(word, "NOT") || strings.EqualFold(word, "NEAR") {
+			continue
+		}
+		cleaned = append(cleaned, word)
+	}
+	return strings.Join(cleaned, " OR ")
 }
 
 // GetChannelSummary returns the current summary for a channel.
@@ -132,35 +412,67 @@ func SaveChannelSummary(db *sql.DB, channelID, summary, lastMessageID string, me
 }
 
 // BuildMemoryContext creates a text block of memories for inclusion in system prompt.
-func BuildMemoryContext(db *sql.DB) string {
-	memories, err := ListMemories(db, "", 50)
+// Only includes current memories (not superseded). Shows participants and dates.
+func BuildMemoryContext(db *sql.DB, query string) string {
+	var memories []Memory
+	var err error
+	if query != "" {
+		memories, err = SearchMemories(db, query, 20)
+	} else {
+		memories, err = ListMemories(db, "", 50)
+	}
 	if err != nil || len(memories) == 0 {
 		return ""
 	}
 
+	// Filter out superseded memories
+	var current []Memory
+	for _, m := range memories {
+		if m.SupersededBy == "" && m.ValidUntil == "" {
+			current = append(current, m)
+		}
+	}
+	if len(current) == 0 {
+		return ""
+	}
+
 	var parts []string
-	parts = append(parts, "# Active Memory\n\nHere are key facts and decisions you've extracted from conversations:\n")
+	parts = append(parts, "# Organizational Memory\n")
 
 	byType := map[string][]Memory{}
-	for _, m := range memories {
+	for _, m := range current {
 		byType[m.Type] = append(byType[m.Type], m)
 	}
 
 	typeLabels := map[string]string{
 		MemoryTypeDecision:   "Decisions",
 		MemoryTypeCommitment: "Commitments",
+		MemoryTypePolicy:     "Policies",
 		MemoryTypePerson:     "People",
+		MemoryTypeInsight:    "Insights",
 		MemoryTypeFact:       "Facts",
 	}
 
-	for _, t := range []string{MemoryTypeDecision, MemoryTypeCommitment, MemoryTypePerson, MemoryTypeFact} {
+	for _, t := range []string{MemoryTypeDecision, MemoryTypeCommitment, MemoryTypePolicy, MemoryTypePerson, MemoryTypeInsight, MemoryTypeFact} {
 		mems := byType[t]
 		if len(mems) == 0 {
 			continue
 		}
 		parts = append(parts, fmt.Sprintf("## %s", typeLabels[t]))
 		for _, m := range mems {
-			parts = append(parts, fmt.Sprintf("- %s", m.Content))
+			line := fmt.Sprintf("- **%s**", m.Content)
+			// Add participants and date
+			var meta []string
+			if m.Participants != "" {
+				meta = append(meta, m.Participants)
+			}
+			if t, err := time.Parse(time.RFC3339, m.CreatedAt); err == nil {
+				meta = append(meta, t.Format("Jan 2"))
+			}
+			if len(meta) > 0 {
+				line += " — " + strings.Join(meta, ", ")
+			}
+			parts = append(parts, line)
 		}
 		parts = append(parts, "")
 	}
@@ -299,21 +611,103 @@ func BuildCrossChannelContext(db *sql.DB, excludeChannelID string) string {
 }
 
 // ExtractionPrompt returns the system prompt for memory extraction.
-const ExtractionPrompt = `You are a memory extraction system. Given a batch of chat messages, extract key facts, decisions, commitments, and information about people.
+const ExtractionPrompt = `You are an organizational memory system. Extract ONLY information someone would search for weeks or months from now.
 
-Output ONLY a JSON array of objects. Each object must have:
-- "type": one of "fact", "decision", "commitment", "person"
-- "content": a concise, standalone statement (one sentence)
+EXTRACT (use these types):
+- "decision": A choice the team made. Include WHO decided, WHAT was decided, WHY.
+- "commitment": Something someone promised to do. Include WHO, WHAT, WHEN (deadline if mentioned).
+- "policy": A rule, standard, or recurring practice the team follows. Include SCOPE.
+- "person": A lasting fact about a member's role, expertise, or responsibility.
 
-Types:
-- "decision": A choice or conclusion the team made (e.g., "Team decided to use PostgreSQL for the backend")
-- "commitment": Something someone promised to do (e.g., "Sarah will send the proposal by Friday")
-- "person": Information about a team member (e.g., "Jake handles frontend development and design")
-- "fact": Any other important information (e.g., "The project deadline is March 15th")
+DISCARD everything else — be extremely selective:
+- Creative content, brainstorming ideas, stylistic text, ad copy, image descriptions
+- Casual conversation, greetings, jokes, reactions, emoji-only messages
+- Temporary context, debugging output, live status updates
+- Image generation prompts, visual compositions, design mockups
+- Questions without answers, incomplete thoughts, speculation
+- URLs, dates, and dollar amounts that lack organizational significance
+- Content that is only relevant in the moment, not months later
+
+Output ONLY a JSON array. Each object must have:
+- "type": one of "decision", "commitment", "policy", "person"
+- "content": Full standalone statement with context (one or two sentences)
+- "summary": One-line summary, max 100 characters
+- "confidence": 0.0 to 1.0 (1.0 = explicit clear statement, 0.8 = strong implication, 0.5 = ambiguous)
+- "participants": array of names involved (e.g. ["Nico", "Maria"])
+
+Confidence guide:
+- 1.0: "We decided to use Stripe" — explicit, clear
+- 0.8: "I think we should go with Stripe" + agreement — strong implication
+- 0.5: mentioned in passing, no clear conclusion — DO NOT INCLUDE
+
+Critical test: "Would someone search for this 3 months from now?" If no → discard.
+If nothing worth extracting, return: []
+Return ONLY valid JSON, no other text.`
+
+// ConsolidationPrompt instructs the LLM to merge, supersede, and generate insights from memories.
+const ConsolidationPrompt = `You are an organizational memory consolidation system. Given a set of recent memories, identify:
+
+1. DUPLICATES: memories that say the same thing differently. Return the ID to keep and IDs to supersede.
+2. SUPERSEDED: memories where a newer one replaces an older fact/decision. Mark the old one with valid_until.
+3. INSIGHTS: patterns you notice across multiple memories. Generate new "insight" type memories.
+4. CONFIDENCE UPGRADES: if a memory was later confirmed by another, upgrade its confidence.
+
+Output a JSON object:
+{
+  "supersede": [{"old_id": "...", "new_id": "...", "reason": "..."}],
+  "insights": [{"content": "...", "summary": "...", "based_on": ["id1", "id2"]}],
+  "upgrade_confidence": [{"id": "...", "new_confidence": 0.9}]
+}
 
 Rules:
-- Only extract genuinely important, reusable information
-- Skip small talk, greetings, and trivial messages
-- Each fact should be self-contained and make sense without context
-- If there's nothing worth extracting, return an empty array: []
-- Return ONLY valid JSON, no other text`
+- Only supersede when the newer memory clearly replaces the older one
+- Only generate insights when a genuine pattern exists across 3+ memories
+- Keep it minimal — quality over quantity
+- If nothing to consolidate, return: {"supersede": [], "insights": [], "upgrade_confidence": []}`
+
+// RecentMemories fetches memories from the last N days.
+func RecentMemories(db *sql.DB, days int, limit int) ([]Memory, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+	query := `SELECT id, type, content, COALESCE(source,'llm'), COALESCE(importance, 0.5),
+		COALESCE(summary,''), COALESCE(confidence, 0.5), COALESCE(participants,''),
+		COALESCE(metadata,'{}'), COALESCE(valid_until,''), COALESCE(superseded_by,''),
+		COALESCE(source_channel,''), COALESCE(source_message_id,''), created_at
+		FROM brain_memories
+		WHERE created_at > ? AND valid_until IS NULL AND superseded_by IS NULL OR superseded_by = ''
+		ORDER BY created_at DESC`
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", limit)
+	}
+
+	rows, err := db.Query(query, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var memories []Memory
+	for rows.Next() {
+		var m Memory
+		if err := rows.Scan(&m.ID, &m.Type, &m.Content, &m.Source, &m.Importance,
+			&m.Summary, &m.Confidence, &m.Participants, &m.Metadata,
+			&m.ValidUntil, &m.SupersededBy,
+			&m.SourceChannel, &m.SourceMessageID, &m.CreatedAt); err != nil {
+			continue
+		}
+		memories = append(memories, m)
+	}
+	return memories, nil
+}
+
+// SupersedeMemory marks a memory as superseded by another.
+func SupersedeMemory(db *sql.DB, oldID, newID string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.Exec("UPDATE brain_memories SET superseded_by = ?, valid_until = ? WHERE id = ?", newID, now, oldID)
+	return err
+}
+
+// UpdateConfidence updates the confidence score of a memory.
+func UpdateConfidence(db *sql.DB, id string, confidence float64) error {
+	_, err := db.Exec("UPDATE brain_memories SET confidence = ? WHERE id = ?", confidence, id)
+	return err
+}

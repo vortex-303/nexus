@@ -16,7 +16,6 @@ builds:
       - -X main.version={{.Version}}
     goos:
       - linux
-      - darwin
     goarch:
       - amd64
       - arm64
@@ -32,16 +31,6 @@ builds:
         env:
           - CC=aarch64-linux-musl-gcc
           - CXX=aarch64-linux-musl-g++
-      - goos: darwin
-        goarch: amd64
-        env:
-          - CC=o64-clang
-          - CXX=o64-clang++
-      - goos: darwin
-        goarch: arm64
-        env:
-          - CC=oa64-clang
-          - CXX=oa64-clang++
 
 archives:
   - id: nexus

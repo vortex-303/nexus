@@ -122,6 +122,12 @@ func (s *Server) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	h := s.hubs.Get(slug)
 	h.Broadcast(channelID, hub.MakeEnvelope("file.new", fi), "")
 
+	s.onPulse(slug, Pulse{
+		Type: "file.uploaded", ActorID: claims.UserID, ActorName: claims.DisplayName,
+		ChannelID: channelID, EntityID: fileID,
+		Summary: pulseSummary(claims.DisplayName, "uploaded", header.Filename),
+	})
+
 	writeJSON(w, http.StatusCreated, fi)
 }
 
@@ -190,15 +196,22 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	channelID := r.URL.Query().Get("channel_id")
+	uploaderID := r.URL.Query().Get("uploader_id")
+	if uploaderID == "me" {
+		uploaderID = claims.UserID
+	}
 
-	var query string
+	query := "SELECT id, channel_id, uploader_id, name, mime, size, hash, created_at FROM files WHERE 1=1"
 	var args []any
 	if channelID != "" {
-		query = "SELECT id, channel_id, uploader_id, name, mime, size, hash, created_at FROM files WHERE channel_id = ? ORDER BY created_at DESC"
-		args = []any{channelID}
-	} else {
-		query = "SELECT id, channel_id, uploader_id, name, mime, size, hash, created_at FROM files ORDER BY created_at DESC"
+		query += " AND channel_id = ?"
+		args = append(args, channelID)
 	}
+	if uploaderID != "" {
+		query += " AND uploader_id = ?"
+		args = append(args, uploaderID)
+	}
+	query += " ORDER BY created_at DESC"
 
 	rows, err := wdb.DB.Query(query, args...)
 	if err != nil {

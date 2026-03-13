@@ -104,6 +104,16 @@ func (wm *WorkspaceManager) BlobsDir(slug string) string {
 	return filepath.Join(wm.dataDir, "workspaces", slug, "blobs")
 }
 
+// Close closes and removes a single workspace database connection.
+func (wm *WorkspaceManager) Close(slug string) {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	if wdb, ok := wm.dbs[slug]; ok {
+		wdb.DB.Close()
+		delete(wm.dbs, slug)
+	}
+}
+
 // CloseAll closes all workspace database connections.
 func (wm *WorkspaceManager) CloseAll() {
 	wm.mu.Lock()
@@ -114,10 +124,14 @@ func (wm *WorkspaceManager) CloseAll() {
 }
 
 func openSQLite(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on")
+	db, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_busy_timeout=30000&_foreign_keys=on")
 	if err != nil {
 		return nil, err
 	}
+	// SQLite WAL: concurrent reads OK, single writer. Keep pool reasonable
+	// but not too tight — low limits cause request queuing under load.
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(10)
 	// Verify connection
 	if err := db.Ping(); err != nil {
 		db.Close()

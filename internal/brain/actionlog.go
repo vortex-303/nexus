@@ -20,9 +20,10 @@ type ActionLog struct {
 
 // Action types
 const (
-	ActionMention    = "mention"
-	ActionExtraction = "extraction"
-	ActionHeartbeat  = "heartbeat"
+	ActionMention      = "mention"
+	ActionExtraction   = "extraction"
+	ActionHeartbeat    = "heartbeat"
+	ActionConfigChange = "config_change"
 )
 
 // LogAction stores a brain action in the log.

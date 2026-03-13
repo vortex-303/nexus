@@ -22,7 +22,26 @@
 	let newTaskPriority = $state('medium');
 	let newTaskStatus = $state('backlog');
 	let newTaskDescription = $state('');
+	let newTaskAssignee = $state('');
 	let editingTask = $state<any>(null);
+	let myTasksOnly = $state(false);
+
+	let membersList: any[] = [];
+	const unsubMembers = members.subscribe(v => membersList = v);
+
+	function getMember(id: string) {
+		return membersList.find((m: any) => m.id === id);
+	}
+
+	function memberInitial(m: any) {
+		return (m?.display_name || '?')[0].toUpperCase();
+	}
+
+	function memberColor(m: any) {
+		return m?.color || 'var(--text-tertiary)';
+	}
+
+	let filteredTasks = $derived(myTasksOnly ? tasks.filter(t => t.assignee_id === currentUser?.uid) : tasks);
 
 	// Drag state
 	let draggedTask = $state<any>(null);
@@ -31,12 +50,18 @@
 	let unsubWS: (() => void) | null = null;
 
 	function tasksForStatus(status: string): any[] {
-		return tasks.filter(t => t.status === status).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+		return filteredTasks.filter(t => t.status === status).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+	}
+
+	function toggleMyTasks() {
+		myTasksOnly = !myTasksOnly;
+		localStorage.setItem('nexus_my_tasks', String(myTasksOnly));
 	}
 
 	onMount(async () => {
 		const saved = localStorage.getItem('nexus_tasks_view');
 		if (saved === 'list' || saved === 'board') viewMode = saved;
+		myTasksOnly = localStorage.getItem('nexus_my_tasks') === 'true';
 
 		connect();
 		unsubWS = onMessage(handleWS);
@@ -45,6 +70,7 @@
 
 	onDestroy(() => {
 		if (unsubWS) unsubWS();
+		unsubMembers();
 		disconnect();
 	});
 
@@ -68,16 +94,19 @@
 	async function handleCreateTask() {
 		if (!newTaskTitle.trim()) return;
 		try {
-			await createTask(slug, {
+			const taskData: any = {
 				title: newTaskTitle.trim(),
 				priority: newTaskPriority,
 				status: newTaskStatus,
 				description: newTaskDescription.trim() || undefined,
-			});
+			};
+			if (newTaskAssignee) taskData.assignee_id = newTaskAssignee;
+			await createTask(slug, taskData);
 			newTaskTitle = '';
 			newTaskPriority = 'medium';
 			newTaskStatus = 'backlog';
 			newTaskDescription = '';
+			newTaskAssignee = '';
 			showNewTask = false;
 		} catch (e: any) {
 			alert(e.message);
@@ -220,6 +249,9 @@
 			<span class="task-count">{tasks.length}</span>
 		</div>
 		<div class="header-right">
+			<button class="my-tasks-btn" class:active={myTasksOnly} onclick={toggleMyTasks}>
+				{myTasksOnly ? 'My Tasks' : 'All Tasks'}
+			</button>
 			<div class="view-toggle">
 				<button class="toggle-btn" class:active={viewMode === 'board'} onclick={() => setViewMode('board')} title="Board view">
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -248,6 +280,10 @@
 				</select>
 				<select bind:value={newTaskStatus}>
 					{#each STATUSES as s}<option value={s}>{STATUS_LABELS[s]}</option>{/each}
+				</select>
+				<select bind:value={newTaskAssignee}>
+					<option value="">Unassigned</option>
+					{#each membersList as m}<option value={m.id}>{m.display_name}</option>{/each}
 				</select>
 				<button class="btn-create" onclick={handleCreateTask}>Create</button>
 				<button class="btn-cancel" onclick={() => showNewTask = false}>Cancel</button>
@@ -289,9 +325,16 @@
 								<div class="task-card-header">
 									<span class="task-priority-dot" style="background: {PRIORITY_COLORS[task.priority]}"></span>
 									<span class="task-title">{task.title}</span>
+									{#if task.assignee_id}
+										{@const assignee = getMember(task.assignee_id)}
+										<span class="task-avatar" style="background: {memberColor(assignee)}" title={assignee?.display_name || 'Unknown'}>{memberInitial(assignee)}</span>
+									{/if}
 								</div>
 								{#if task.description}
 									<p class="task-desc">{task.description}</p>
+								{/if}
+								{#if task.expected_output}
+									<p class="task-expected"><em>Expected: {task.expected_output}</em></p>
 								{/if}
 								{#if task.tags?.length > 0}
 									<div class="task-tags">
@@ -332,12 +375,13 @@
 			<div class="task-list-header">
 				<span class="tl-pri">Priority</span>
 				<span class="tl-title">Title</span>
+				<span class="tl-assignee">Assignee</span>
 				<span class="tl-status">Status</span>
 				<span class="tl-tags">Tags</span>
 				<span class="tl-date">Created</span>
 				<span class="tl-actions"></span>
 			</div>
-			{#each tasks as task (task.id)}
+			{#each filteredTasks as task (task.id)}
 				<div class="task-list-row">
 					<span class="tl-pri">
 						<select value={task.priority} onchange={(e) => handleTaskPriorityChange(task.id, (e.target as HTMLSelectElement).value)}>
@@ -345,6 +389,15 @@
 						</select>
 					</span>
 					<span class="tl-title">{task.title}</span>
+					<span class="tl-assignee">
+						{#if task.assignee_id}
+							{@const assignee = getMember(task.assignee_id)}
+							<span class="task-avatar-sm" style="background: {memberColor(assignee)}">{memberInitial(assignee)}</span>
+							<span class="assignee-name">{assignee?.display_name || 'Unknown'}</span>
+						{:else}
+							<span class="unassigned">—</span>
+						{/if}
+					</span>
 					<span class="tl-status">
 						<select value={task.status} onchange={(e) => handleTaskStatusChange(task.id, (e.target as HTMLSelectElement).value)}>
 							{#each STATUSES as s}<option value={s}>{STATUS_LABELS[s]}</option>{/each}
@@ -420,6 +473,12 @@
 		font-weight: 600; cursor: pointer; font-family: inherit;
 	}
 	.btn-new-task:hover { background: var(--accent-hover); }
+	.my-tasks-btn {
+		padding: 5px 12px; background: var(--bg-raised); color: var(--text-secondary);
+		border: 1px solid var(--border-default); border-radius: var(--radius-md);
+		font-size: var(--text-xs); cursor: pointer; font-family: inherit; font-weight: 500;
+	}
+	.my-tasks-btn.active { background: var(--accent); color: var(--text-inverse); border-color: var(--accent); }
 
 	.new-task-form {
 		display: flex; flex-direction: column; gap: var(--space-sm);
@@ -521,12 +580,28 @@
 		display: -webkit-box; -webkit-line-clamp: 2;
 		-webkit-box-orient: vertical; overflow: hidden;
 	}
+	.task-expected {
+		font-size: var(--text-xs); color: var(--text-tertiary);
+		margin: var(--space-xs) 0 0 0; line-height: 1.3;
+		display: -webkit-box; -webkit-line-clamp: 2;
+		-webkit-box-orient: vertical; overflow: hidden;
+	}
 	.task-tags { display: flex; gap: 4px; margin-top: var(--space-sm); flex-wrap: wrap; }
 	.task-tag {
 		font-size: 10px; padding: 1px 6px; border-radius: var(--radius-full);
 		background: var(--bg-raised); border: 1px solid var(--border-subtle);
 		color: var(--text-tertiary);
 	}
+	.task-avatar {
+		width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+		font-size: 11px; font-weight: 700; color: #fff; flex-shrink: 0; margin-left: auto;
+	}
+	.task-avatar-sm {
+		width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+		font-size: 10px; font-weight: 700; color: #fff; flex-shrink: 0; vertical-align: middle;
+	}
+	.assignee-name { font-size: var(--text-xs); color: var(--text-secondary); margin-left: 4px; }
+	.unassigned { color: var(--text-tertiary); font-size: var(--text-xs); }
 	.task-due { font-size: var(--text-xs); color: var(--text-tertiary); margin-top: var(--space-xs); }
 	.task-card-actions {
 		display: flex; gap: 4px; margin-top: var(--space-sm);
@@ -565,6 +640,7 @@
 		font-size: var(--text-xs); font-family: inherit;
 	}
 	.tl-title { flex: 1; min-width: 0; font-size: var(--text-sm); color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.tl-assignee { width: 140px; flex-shrink: 0; display: flex; align-items: center; }
 	.tl-status { width: 120px; flex-shrink: 0; }
 	.tl-status select {
 		padding: 2px 4px; background: var(--bg-raised); color: var(--text-primary);

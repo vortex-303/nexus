@@ -8,13 +8,16 @@ import (
 
 	"github.com/nexus-chat/nexus/internal/auth"
 	"github.com/nexus-chat/nexus/internal/db"
+	"github.com/nexus-chat/nexus/internal/hub"
 	"github.com/nexus-chat/nexus/internal/id"
+	"github.com/nexus-chat/nexus/internal/search"
 )
 
 type createChannelReq struct {
-	Name           string `json:"name"`
-	Type           string `json:"type"`           // public, private, dm
-	Classification string `json:"classification"` // public, internal, confidential, restricted
+	Name           string   `json:"name"`
+	Type           string   `json:"type"`           // public, private, dm, group
+	Classification string   `json:"classification"` // public, internal, confidential, restricted
+	Members        []string `json:"members"`        // member IDs for group channels
 }
 
 type channelResp struct {
@@ -27,6 +30,7 @@ type channelResp struct {
 	Archived       bool   `json:"archived"`
 	Unread         int    `json:"unread"`
 	IsFavorite     bool   `json:"is_favorite"`
+	FavoritedAt    string `json:"favorited_at,omitempty"`
 }
 
 func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +73,36 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// For group channels, auto-generate name from member display names if not provided
+	if req.Type == "group" && len(req.Members) > 0 {
+		// Ensure creator is included
+		hasCreator := false
+		for _, m := range req.Members {
+			if m == claims.UserID {
+				hasCreator = true
+				break
+			}
+		}
+		if !hasCreator {
+			req.Members = append(req.Members, claims.UserID)
+		}
+
+		if req.Name == "" {
+			var names []string
+			for _, mid := range req.Members {
+				var dn string
+				if wdb.DB.QueryRow("SELECT display_name FROM members WHERE id = ?", mid).Scan(&dn) == nil {
+					names = append(names, dn)
+				}
+			}
+			if len(names) > 0 {
+				req.Name = strings.Join(names, ", ")
+			} else {
+				req.Name = "Group"
+			}
+		}
+	}
+
 	chID := id.New()
 	_, err = wdb.DB.Exec(
 		"INSERT INTO channels (id, name, type, classification, created_by) VALUES (?, ?, ?, ?, ?)",
@@ -79,10 +113,33 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Subscribe all current WebSocket connections to the new channel
-	h := s.hubs.Get(slug)
-	if h != nil {
-		h.SubscribeAll(chID)
+	// For group channels, insert channel_members and subscribe only those users
+	if req.Type == "group" && len(req.Members) > 0 {
+		for _, mid := range req.Members {
+			_, _ = wdb.DB.Exec("INSERT OR IGNORE INTO channel_members (channel_id, member_id) VALUES (?, ?)", chID, mid)
+		}
+		h := s.hubs.Get(slug)
+		if h != nil {
+			h.SubscribeUsersByID(chID, req.Members)
+		}
+	} else {
+		// Subscribe all current WebSocket connections to the new channel
+		h := s.hubs.Get(slug)
+		if h != nil {
+			h.SubscribeAll(chID)
+		}
+	}
+
+	// Index channel for search
+	s.search.Index(slug, search.SearchDoc{
+		ID: chID, Type: "channel", Title: req.Name,
+	})
+
+	if req.Type != "dm" {
+		s.onPulse(slug, Pulse{
+			Type: "channel.created", ActorID: claims.UserID, ActorName: claims.DisplayName,
+			EntityID: chID, Summary: pulseSummary(claims.DisplayName, "created #"+req.Name, ""),
+		})
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]string{
@@ -113,9 +170,13 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 				AND m.created_at > COALESCE((SELECT last_read_at FROM channel_reads WHERE channel_id = c.id AND user_id = ?), '')
 				AND m.sender_id != ?
 			), 0) AS unread,
-			COALESCE((SELECT cr.is_favorite FROM channel_reads cr WHERE cr.channel_id = c.id AND cr.user_id = ?), FALSE) AS is_favorite
-		FROM channels c WHERE c.archived = FALSE ORDER BY c.created_at`,
-		claims.UserID, claims.UserID, claims.UserID,
+			COALESCE((SELECT cr.is_favorite FROM channel_reads cr WHERE cr.channel_id = c.id AND cr.user_id = ?), FALSE) AS is_favorite,
+			COALESCE((SELECT cr.favorited_at FROM channel_reads cr WHERE cr.channel_id = c.id AND cr.user_id = ?), '') AS favorited_at
+		FROM channels c WHERE c.archived = FALSE
+			AND (c.type NOT IN ('dm', 'group') OR c.name LIKE '%' || ? || '%'
+				OR (c.type = 'group' AND c.id IN (SELECT channel_id FROM channel_members WHERE member_id = ?)))
+		ORDER BY c.created_at`,
+		claims.UserID, claims.UserID, claims.UserID, claims.UserID, claims.UserID, claims.UserID,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query error")
@@ -126,7 +187,7 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 	channels := make([]channelResp, 0)
 	for rows.Next() {
 		var ch channelResp
-		if err := rows.Scan(&ch.ID, &ch.Name, &ch.Type, &ch.Classification, &ch.CreatedBy, &ch.CreatedAt, &ch.Archived, &ch.Unread, &ch.IsFavorite); err != nil {
+		if err := rows.Scan(&ch.ID, &ch.Name, &ch.Type, &ch.Classification, &ch.CreatedBy, &ch.CreatedAt, &ch.Archived, &ch.Unread, &ch.IsFavorite, &ch.FavoritedAt); err != nil {
 			continue
 		}
 		channels = append(channels, ch)
@@ -174,6 +235,25 @@ func (s *Server) handleMessageHistory(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "workspace error")
 		return
+	}
+
+	// DM privacy: only participants can read DM message history
+	var chType, chName string
+	if err := wdb.DB.QueryRow("SELECT type, name FROM channels WHERE id = ?", channelID).Scan(&chType, &chName); err != nil {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	if chType == "dm" && !strings.Contains(chName, claims.UserID) {
+		writeError(w, http.StatusForbidden, "not a participant")
+		return
+	}
+	if chType == "group" {
+		var isMember int
+		_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM channel_members WHERE channel_id = ? AND member_id = ?", channelID, claims.UserID).Scan(&isMember)
+		if isMember == 0 {
+			writeError(w, http.StatusForbidden, "not a member of this group")
+			return
+		}
 	}
 
 	// Cursor-based pagination: before=<message_id>, limit=N
@@ -346,10 +426,12 @@ func (s *Server) handleToggleFavorite(w http.ResponseWriter, r *http.Request) {
 	// Upsert channel_reads row and toggle is_favorite
 	now := strings.Replace(time.Now().UTC().Format(time.RFC3339), "+00:00", "Z", 1)
 	_, err = wdb.DB.Exec(
-		`INSERT INTO channel_reads (channel_id, user_id, last_read_at, is_favorite)
-		 VALUES (?, ?, ?, TRUE)
-		 ON CONFLICT(channel_id, user_id) DO UPDATE SET is_favorite = NOT is_favorite`,
-		channelID, claims.UserID, now,
+		`INSERT INTO channel_reads (channel_id, user_id, last_read_at, is_favorite, favorited_at)
+		 VALUES (?, ?, ?, TRUE, ?)
+		 ON CONFLICT(channel_id, user_id) DO UPDATE SET
+		   is_favorite = NOT is_favorite,
+		   favorited_at = CASE WHEN NOT is_favorite THEN ? ELSE '' END`,
+		channelID, claims.UserID, now, now, now,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to toggle favorite")
@@ -358,8 +440,63 @@ func (s *Server) handleToggleFavorite(w http.ResponseWriter, r *http.Request) {
 
 	// Return new state
 	var isFav bool
-	_ = wdb.DB.QueryRow("SELECT is_favorite FROM channel_reads WHERE channel_id = ? AND user_id = ?", channelID, claims.UserID).Scan(&isFav)
-	writeJSON(w, http.StatusOK, map[string]bool{"is_favorite": isFav})
+	var favAt string
+	_ = wdb.DB.QueryRow("SELECT is_favorite, favorited_at FROM channel_reads WHERE channel_id = ? AND user_id = ?", channelID, claims.UserID).Scan(&isFav, &favAt)
+	writeJSON(w, http.StatusOK, map[string]any{"is_favorite": isFav, "favorited_at": favAt})
+}
+
+// handleDeleteChannel archives a channel (soft-delete).
+// Admin can delete any channel. Regular users can only delete their own DM channels.
+func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	channelID := r.PathValue("channelID")
+	claims := auth.GetClaims(r)
+	if claims == nil || claims.WorkspaceSlug != slug {
+		writeError(w, http.StatusForbidden, "not a member")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	// Check channel type and ownership
+	var chType, chName string
+	err = wdb.DB.QueryRow("SELECT type, name FROM channels WHERE id = ? AND archived = FALSE", channelID).Scan(&chType, &chName)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+
+	// Non-admins can only delete DM channels they belong to
+	if claims.Role != "admin" {
+		if chType != "dm" {
+			writeError(w, http.StatusForbidden, "only admins can delete channels")
+			return
+		}
+		// Verify user is part of this DM
+		if !strings.Contains(chName, claims.UserID) {
+			writeError(w, http.StatusForbidden, "not your conversation")
+			return
+		}
+	}
+
+	// Archive the channel
+	_, err = wdb.DB.Exec("UPDATE channels SET archived = TRUE WHERE id = ?", channelID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete channel")
+		return
+	}
+
+	// Broadcast to all connected clients
+	h := s.hubs.Get(slug)
+	h.BroadcastAll(hub.MakeEnvelope(hub.TypeChannelArchived, map[string]string{
+		"channel_id": channelID,
+	}), "")
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleOnlineMembers(w http.ResponseWriter, r *http.Request) {
@@ -371,4 +508,68 @@ func (s *Server) handleOnlineMembers(w http.ResponseWriter, r *http.Request) {
 	}
 	h := s.hubs.Get(slug)
 	writeJSON(w, http.StatusOK, h.OnlineMembers())
+}
+
+// handleKickChannelMember removes a member from a group channel.
+func (s *Server) handleKickChannelMember(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	channelID := r.PathValue("channelID")
+	memberID := r.PathValue("memberID")
+	claims := auth.GetClaims(r)
+	if claims == nil || claims.WorkspaceSlug != slug {
+		writeError(w, http.StatusForbidden, "not a member")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	// Verify channel is group type
+	var chType string
+	if err := wdb.DB.QueryRow("SELECT type FROM channels WHERE id = ? AND archived = FALSE", channelID).Scan(&chType); err != nil {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	if chType != "group" {
+		writeError(w, http.StatusBadRequest, "can only kick from group channels")
+		return
+	}
+
+	// Can't kick yourself
+	if memberID == claims.UserID {
+		writeError(w, http.StatusBadRequest, "cannot kick yourself")
+		return
+	}
+
+	// Remove from channel_members
+	res, err := wdb.DB.Exec("DELETE FROM channel_members WHERE channel_id = ? AND member_id = ?", channelID, memberID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove member")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeError(w, http.StatusNotFound, "member not in channel")
+		return
+	}
+
+	// Unsubscribe from hub
+	h := s.hubs.Get(slug)
+	h.UnsubscribeUsersByID(channelID, []string{memberID})
+
+	// Broadcast removal event
+	h.Broadcast(channelID, hub.MakeEnvelope(hub.TypeChannelMemberRemoved, hub.ChannelMemberRemovedPayload{
+		ChannelID: channelID,
+		MemberID:  memberID,
+	}), "")
+
+	// Also notify the kicked user directly
+	h.SendToUser(memberID, hub.MakeEnvelope(hub.TypeChannelMemberRemoved, hub.ChannelMemberRemovedPayload{
+		ChannelID: channelID,
+		MemberID:  memberID,
+	}))
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nexus-chat/nexus/internal/auth"
+	"github.com/nexus-chat/nexus/internal/db"
 	"github.com/nexus-chat/nexus/internal/hub"
 	"github.com/nexus-chat/nexus/internal/id"
 )
@@ -257,7 +258,7 @@ func (s *Server) handleUpdateFolder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, f)
 }
 
-// handleDeleteFolder deletes an empty folder.
+// handleDeleteFolder deletes a folder. With ?force=true (admin only), deletes contents recursively.
 func (s *Server) handleDeleteFolder(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	folderID := r.PathValue("folderID")
@@ -273,25 +274,61 @@ func (s *Server) handleDeleteFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check folder is empty
-	var childCount int
-	wdb.DB.QueryRow("SELECT COUNT(*) FROM folders WHERE parent_id = ?", folderID).Scan(&childCount)
-	if childCount > 0 {
-		writeError(w, http.StatusConflict, "folder contains subfolders")
-		return
+	force := r.URL.Query().Get("force") == "true"
+
+	if force {
+		// Only admins can force-delete
+		if claims.Role != "admin" {
+			writeError(w, http.StatusForbidden, "only admins can force-delete folders")
+			return
+		}
+		// Recursively delete: subfolders, files, documents
+		s.deleteFolderRecursive(wdb, folderID)
+	} else {
+		// Check folder is empty
+		var childCount int
+		wdb.DB.QueryRow("SELECT COUNT(*) FROM folders WHERE parent_id = ?", folderID).Scan(&childCount)
+		if childCount > 0 {
+			writeError(w, http.StatusConflict, "folder contains subfolders")
+			return
+		}
+
+		var fileCount int
+		wdb.DB.QueryRow("SELECT COUNT(*) FROM files WHERE folder_id = ?", folderID).Scan(&fileCount)
+		var docCount int
+		wdb.DB.QueryRow("SELECT COUNT(*) FROM documents WHERE folder_id = ?", folderID).Scan(&docCount)
+		if fileCount+docCount > 0 {
+			writeError(w, http.StatusConflict, "folder contains files or documents")
+			return
+		}
+
+		wdb.DB.Exec("DELETE FROM folders WHERE id = ?", folderID)
 	}
 
-	var fileCount int
-	wdb.DB.QueryRow("SELECT COUNT(*) FROM files WHERE folder_id = ?", folderID).Scan(&fileCount)
-	var docCount int
-	wdb.DB.QueryRow("SELECT COUNT(*) FROM documents WHERE folder_id = ?", folderID).Scan(&docCount)
-	if fileCount+docCount > 0 {
-		writeError(w, http.StatusConflict, "folder contains files or documents")
-		return
-	}
-
-	wdb.DB.Exec("DELETE FROM folders WHERE id = ?", folderID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) deleteFolderRecursive(wdb *db.WorkspaceDB, folderID string) {
+	// Delete child folders recursively
+	rows, err := wdb.DB.Query("SELECT id FROM folders WHERE parent_id = ?", folderID)
+	if err == nil {
+		defer rows.Close()
+		var childIDs []string
+		for rows.Next() {
+			var id string
+			if rows.Scan(&id) == nil {
+				childIDs = append(childIDs, id)
+			}
+		}
+		for _, childID := range childIDs {
+			s.deleteFolderRecursive(wdb, childID)
+		}
+	}
+	// Delete files and documents in this folder
+	wdb.DB.Exec("DELETE FROM files WHERE folder_id = ?", folderID)
+	wdb.DB.Exec("DELETE FROM documents WHERE folder_id = ?", folderID)
+	// Delete the folder itself
+	wdb.DB.Exec("DELETE FROM folders WHERE id = ?", folderID)
 }
 
 // handleUploadToFolder uploads a file to a specific folder.

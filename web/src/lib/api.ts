@@ -61,6 +61,10 @@ export async function getWorkspace(slug: string) {
 	return request('GET', `/api/workspaces/${slug}`);
 }
 
+export async function getWorkspaceInfo(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/info`);
+}
+
 export async function createInvite(slug: string) {
 	return request('POST', `/api/workspaces/${slug}/invite`);
 }
@@ -69,8 +73,16 @@ export async function listChannels(slug: string) {
 	return request('GET', `/api/workspaces/${slug}/channels`);
 }
 
-export async function createChannel(slug: string, name: string, type = 'public') {
-	return request('POST', `/api/workspaces/${slug}/channels`, { name, type });
+export async function createChannel(slug: string, name: string, type = 'public', members?: string[]) {
+	return request('POST', `/api/workspaces/${slug}/channels`, { name, type, members });
+}
+
+export async function deleteChannel(slug: string, channelId: string) {
+	return request('DELETE', `/api/workspaces/${slug}/channels/${channelId}`);
+}
+
+export async function kickChannelMember(slug: string, channelId: string, memberId: string) {
+	return request('DELETE', `/api/workspaces/${slug}/channels/${channelId}/members/${memberId}`);
 }
 
 export async function getMessages(slug: string, channelId: string, before?: string) {
@@ -172,14 +184,34 @@ export async function uploadFile(slug: string, channelId: string, file: File): P
 	return data;
 }
 
-export async function listFiles(slug: string, channelId?: string) {
+export async function listFiles(slug: string, channelId?: string, uploaderId?: string) {
 	let url = `/api/workspaces/${slug}/files`;
-	if (channelId) url += `?channel_id=${channelId}`;
+	const params = new URLSearchParams();
+	if (channelId) params.set('channel_id', channelId);
+	if (uploaderId) params.set('uploader_id', uploaderId);
+	const qs = params.toString();
+	if (qs) url += `?${qs}`;
 	return request('GET', url);
 }
 
 export function fileUrl(slug: string, hash: string): string {
 	return `/api/workspaces/${slug}/files/${hash}`;
+}
+
+// Activity
+export async function listActivity(slug: string, params?: { type?: string; before?: string; limit?: number }) {
+	let url = `/api/workspaces/${slug}/activity`;
+	const qs = new URLSearchParams();
+	if (params?.type) qs.set('type', params.type);
+	if (params?.before) qs.set('before', params.before);
+	if (params?.limit) qs.set('limit', String(params.limit));
+	const s = qs.toString();
+	if (s) url += `?${s}`;
+	return request('GET', url);
+}
+
+export async function getActivityStats(slug: string, days = 365) {
+	return request('GET', `/api/workspaces/${slug}/activity/stats?days=${days}`);
 }
 
 // Folders
@@ -197,8 +229,8 @@ export async function updateFolder(slug: string, folderId: string, updates: { na
 	return request('PUT', `/api/workspaces/${slug}/folders/${folderId}`, updates);
 }
 
-export async function deleteFolder(slug: string, folderId: string) {
-	return request('DELETE', `/api/workspaces/${slug}/folders/${folderId}`);
+export async function deleteFolder(slug: string, folderId: string, force = false) {
+	return request('DELETE', `/api/workspaces/${slug}/folders/${folderId}${force ? '?force=true' : ''}`);
 }
 
 export async function uploadToFolder(slug: string, folderId: string, file: File): Promise<any> {
@@ -244,6 +276,10 @@ export async function updateBrainSettings(slug: string, settings: Record<string,
 	return request('PUT', `/api/workspaces/${slug}/brain/settings`, settings);
 }
 
+export async function getUsage(slug: string, period: string = 'month') {
+	return request('GET', `/api/workspaces/${slug}/usage?period=${period}`);
+}
+
 export async function getBrainDefinition(slug: string, file: string) {
 	return request('GET', `/api/workspaces/${slug}/brain/definitions/${file}`);
 }
@@ -265,6 +301,14 @@ export async function deleteMemory(slug: string, memoryId: string) {
 
 export async function clearMemories(slug: string) {
 	return request('DELETE', `/api/workspaces/${slug}/brain/memories`);
+}
+
+export async function pinMemory(slug: string, messageId: string, channelId: string, type?: string) {
+	return request('POST', `/api/workspaces/${slug}/brain/memories/pin`, {
+		message_id: messageId,
+		channel_id: channelId,
+		type: type || 'fact',
+	});
 }
 
 // Brain Actions (Observability)
@@ -390,7 +434,48 @@ export async function getMe() {
 	return request('GET', '/api/auth/me');
 }
 
-export async function updateMe(data: { display_name?: string; email?: string }) {
+export async function extractMemoriesNow(slug: string, channelId: string) {
+	return request('POST', `/api/workspaces/${slug}/brain/memories/extract`, { channel_id: channelId });
+}
+
+export async function triggerReflection(slug: string) {
+	return request('POST', `/api/workspaces/${slug}/brain/reflect`, {});
+}
+
+// Living Briefs
+export async function listBriefs(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/briefs`);
+}
+
+export async function getBrief(slug: string, briefId: string) {
+	return request('GET', `/api/workspaces/${slug}/briefs/${briefId}`);
+}
+
+export async function createBrief(slug: string, data: { title?: string; template: string; topic?: string; schedule?: string; schedule_time?: string }) {
+	return request('POST', `/api/workspaces/${slug}/briefs`, data);
+}
+
+export async function deleteBrief(slug: string, briefId: string) {
+	return request('DELETE', `/api/workspaces/${slug}/briefs/${briefId}`);
+}
+
+export async function generateBrief(slug: string, briefId: string) {
+	return request('POST', `/api/workspaces/${slug}/briefs/${briefId}/generate`, {});
+}
+
+export async function listBriefTemplates(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/briefs/templates`);
+}
+
+export async function shareBrief(slug: string, briefId: string) {
+	return request('POST', `/api/workspaces/${slug}/briefs/${briefId}/share`, {});
+}
+
+export async function unshareBrief(slug: string, briefId: string) {
+	return request('DELETE', `/api/workspaces/${slug}/briefs/${briefId}/share`);
+}
+
+export async function updateMe(data: { display_name?: string; email?: string; password?: string }) {
 	return request('PUT', '/api/auth/me', data);
 }
 
@@ -662,12 +747,13 @@ export async function refreshMCPServer(slug: string, id: string) {
 }
 
 // Calendar Events
-export async function listCalendarEvents(slug: string, filters?: { start?: string; end?: string; calendar?: string }) {
+export async function listCalendarEvents(slug: string, filters?: { start?: string; end?: string; calendar?: string; scope?: string }) {
 	let url = `/api/workspaces/${slug}/calendar/events`;
 	const params = new URLSearchParams();
 	if (filters?.start) params.set('start', filters.start);
 	if (filters?.end) params.set('end', filters.end);
 	if (filters?.calendar) params.set('calendar', filters.calendar);
+	if (filters?.scope) params.set('scope', filters.scope);
 	const qs = params.toString();
 	if (qs) url += `?${qs}`;
 	return request('GET', url);
@@ -678,6 +764,7 @@ export async function createCalendarEvent(slug: string, event: {
 	description?: string; location?: string; all_day?: boolean;
 	recurrence_rule?: string; color?: string; calendar?: string;
 	attendees?: any[]; reminders?: any[]; channel_id?: string;
+	agent_id?: string; model?: string;
 }) {
 	return request('POST', `/api/workspaces/${slug}/calendar/events`, event);
 }
@@ -692,6 +779,14 @@ export async function updateCalendarEvent(slug: string, eventId: string, updates
 
 export async function deleteCalendarEvent(slug: string, eventId: string) {
 	return request('DELETE', `/api/workspaces/${slug}/calendar/events/${eventId}`);
+}
+
+export async function getEventOutcome(slug: string, eventId: string) {
+	return request('GET', `/api/workspaces/${slug}/calendar/events/${eventId}/outcome`);
+}
+
+export async function clearPastAgentEvents(slug: string, mode: 'past' | 'all' = 'past') {
+	return request('DELETE', `/api/workspaces/${slug}/calendar/events/clear-past-agent?mode=${mode}`);
 }
 
 // Workspace Models
@@ -715,6 +810,14 @@ export async function checkModelAvailability(slug: string) {
 	return request('GET', `/api/workspaces/${slug}/models/check`);
 }
 
+export async function getWorkspaceFreeModels(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/models/free`);
+}
+
+export async function setWorkspaceFreeModels(slug: string, models: any[]) {
+	return request('PUT', `/api/workspaces/${slug}/models/free`, { models });
+}
+
 // Logs
 export async function getLogs(slug: string, params?: { category?: string; level?: string; since?: string; limit?: number; offset?: number }) {
 	const q = new URLSearchParams();
@@ -727,8 +830,97 @@ export async function getLogs(slug: string, params?: { category?: string; level?
 }
 
 // Search
+export async function triggerBrainWelcome(slug: string) {
+	return request('POST', `/api/workspaces/${slug}/brain/welcome`);
+}
+
+export async function getBrainPrompt(slug: string, channelId?: string, query?: string) {
+	const params = new URLSearchParams();
+	if (channelId) params.set('channel_id', channelId);
+	if (query) params.set('query', query);
+	const qs = params.toString();
+	return request('GET', `/api/workspaces/${slug}/brain/prompt${qs ? '?' + qs : ''}`);
+}
+
+export async function getBrainTools(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/brain/tools`);
+}
+
+export async function executeBrainTool(slug: string, channelId: string, name: string, args: string) {
+	return request('POST', `/api/workspaces/${slug}/brain/execute-tool`, {
+		name,
+		arguments: args,
+		channel_id: channelId,
+	});
+}
+
+export async function getWebLLMContext(slug: string, message: string, intents: string[], channelId?: string, maxChars?: number) {
+	return request('POST', `/api/workspaces/${slug}/brain/webllm-context`, {
+		message,
+		intents,
+		channel_id: channelId || '',
+		max_chars: maxChars || 6000,
+	});
+}
+
+export async function saveBrainMessage(slug: string, channelId: string, content: string) {
+	return request('POST', `/api/workspaces/${slug}/channels/${channelId}/brain-message`, { content });
+}
+
 export async function searchWorkspace(slug: string, query: string, types?: string) {
 	const params = new URLSearchParams({ q: query });
 	if (types) params.set('type', types);
 	return request('GET', `/api/workspaces/${slug}/search?${params}`);
+}
+
+// Social Pulse
+export async function createSocialPulse(slug: string, topic: string, query?: string) {
+	return request('POST', `/api/workspaces/${slug}/social-pulse`, { topic, query: query || topic });
+}
+
+export async function listSocialPulses(slug: string, topic?: string) {
+	const params = new URLSearchParams();
+	if (topic) params.set('topic', topic);
+	const qs = params.toString();
+	return request('GET', `/api/workspaces/${slug}/social-pulse${qs ? '?' + qs : ''}`);
+}
+
+export async function getSocialPulse(slug: string, pulseId: string) {
+	return request('GET', `/api/workspaces/${slug}/social-pulse/${pulseId}`);
+}
+
+export async function deleteSocialPulse(slug: string, pulseId: string) {
+	return request('DELETE', `/api/workspaces/${slug}/social-pulse/${pulseId}`);
+}
+
+// Portable Workspace
+export function exportWorkspaceUrl(slug: string): string {
+	const token = getToken();
+	return `${BASE}/api/workspaces/${slug}/export?token=${token}`;
+}
+
+export async function importWorkspace(file: File) {
+	const token = getToken();
+	const form = new FormData();
+	form.append('file', file);
+	const res = await fetch(`${BASE}/api/workspaces/import`, {
+		method: 'POST',
+		headers: { 'Authorization': `Bearer ${token}` },
+		body: form,
+	});
+	if (!res.ok) {
+		const err = await res.json().catch(() => ({ error: res.statusText }));
+		throw new Error(err.error || res.statusText);
+	}
+	return res.json();
+}
+
+// Kill Switch
+export async function destroyWorkspace(slug: string, confirm: string) {
+	return request('DELETE', `/api/workspaces/${slug}/destroy`, { confirm });
+}
+
+// Network Transparency
+export async function getNetworkLog(slug: string, mode: 'entries' | 'stats' = 'stats') {
+	return request('GET', `/api/workspaces/${slug}/network-log?mode=${mode}`);
 }

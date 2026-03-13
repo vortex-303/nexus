@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nexus-chat/nexus/internal/auth"
+	"github.com/nexus-chat/nexus/internal/brain"
 	"github.com/nexus-chat/nexus/internal/id"
 )
 
@@ -467,5 +468,93 @@ func (s *Server) handleAdminSetFreeModels(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// Ensure id import is used (for future use)
-var _ = id.New
+// getWorkspaceFreeModels returns workspace-specific free models, falling back to global then defaults.
+func (s *Server) getWorkspaceFreeModels(slug string) []FreeModel {
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return s.getFreeModels()
+	}
+
+	rows, err := wdb.DB.Query("SELECT model_id, display_name, priority FROM free_models ORDER BY priority ASC")
+	if err != nil {
+		return s.getFreeModels()
+	}
+	defer rows.Close()
+
+	var models []FreeModel
+	for rows.Next() {
+		var m FreeModel
+		if err := rows.Scan(&m.ID, &m.Name, &m.Priority); err != nil {
+			continue
+		}
+		models = append(models, m)
+	}
+	if len(models) == 0 {
+		return s.getFreeModels()
+	}
+	return models
+}
+
+// handleGetWorkspaceFreeModels returns the workspace's free model list.
+func (s *Server) handleGetWorkspaceFreeModels(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	claims := auth.GetClaims(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": s.getWorkspaceFreeModels(slug)})
+}
+
+// handleSetWorkspaceFreeModels replaces the workspace's free model list (admin only).
+func (s *Server) handleSetWorkspaceFreeModels(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	claims := auth.GetClaims(r)
+
+	var req struct {
+		Models []FreeModel `json:"models"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	tx, err := wdb.DB.Begin()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "transaction error")
+		return
+	}
+
+	tx.Exec("DELETE FROM free_models")
+	for i, m := range req.Models {
+		tx.Exec(
+			"INSERT INTO free_models (model_id, display_name, priority) VALUES (?, ?, ?)",
+			m.ID, m.Name, i,
+		)
+	}
+
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save free models")
+		return
+	}
+
+	// Log to settings log and action log
+	newVal := "custom list"
+	if len(req.Models) == 0 {
+		newVal = "defaults"
+	}
+	_, _ = wdb.DB.Exec(
+		"INSERT INTO brain_settings_log (id, key, old_value, new_value, changed_by) VALUES (?, ?, ?, ?, ?)",
+		id.New(), "free_models", "", newVal, claims.AccountID,
+	)
+	brain.LogAction(wdb.DB, id.New(), brain.ActionConfigChange, "",
+		"free_models: updated ("+newVal+")", "setting updated", "", nil)
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}

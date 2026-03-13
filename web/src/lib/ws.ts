@@ -125,9 +125,10 @@ export function generateClientId(): string {
 	return `${Date.now()}-${++clientIdCounter}`;
 }
 
-export function sendMessage(channelId: string, content: string, clientId?: string, parentId?: string): boolean {
+export function sendMessage(channelId: string, content: string, clientId?: string, parentId?: string, webllm?: boolean): boolean {
 	const payload: any = { channel_id: channelId, content, client_id: clientId };
 	if (parentId) payload.parent_id = parentId;
+	if (webllm) payload.webllm = true;
 	return send('message.send', payload);
 }
 

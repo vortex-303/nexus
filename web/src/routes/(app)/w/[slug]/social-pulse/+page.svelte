@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount, onDestroy } from 'svelte';
-	import { createSocialPulse, listSocialPulses, getSocialPulse, deleteSocialPulse, createDoc } from '$lib/api';
+	import { createSocialPulse, listSocialPulses, getSocialPulse, deleteSocialPulse, createDoc, createKnowledge } from '$lib/api';
 	import { connect, disconnect, onMessage } from '$lib/ws';
 	import { markdownToHtml } from '$lib/editor/markdown-utils';
 
@@ -15,6 +15,7 @@
 	let showSearch = $state(false);
 	let mobileShowMain = $state(false);
 	let saving = $state(false);
+	let savingKB = $state(false);
 	let unsubWS: (() => void) | null = null;
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -103,52 +104,119 @@
 		try {
 			const p = selectedPulse;
 			const date = new Date(p.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-			const themes = parseJSON(p.themes);
-			const posts = parseJSON(p.key_posts);
-			const sources = parseJSON(p.citations);
-
-			let md = `# Social Pulse: ${p.topic}\n\n`;
-			md += `**Date:** ${date}  \n`;
-			md += `**Sentiment:** ${p.sentiment_score}/100 — ${sentimentLabel(p.sentiment_score)}\n\n`;
-			md += `---\n\n`;
-			md += `## Summary\n\n${p.summary}\n\n`;
-
-			if (themes.length > 0) {
-				md += `## Themes\n\n`;
-				md += `| Theme | Mentions | Sentiment |\n|-------|----------|-----------|\n`;
-				for (const t of themes) {
-					md += `| ${t.name} | ${t.count} | ${t.sentiment} |\n`;
-				}
-				md += `\n`;
-			}
-
-			if (posts.length > 0) {
-				md += `## Key Posts\n\n`;
-				for (const post of posts) {
-					const dot = post.sentiment === 'positive' ? '🟢' : post.sentiment === 'negative' ? '🔴' : '🟡';
-					md += `${dot} ${post.text}`;
-					if (post.author) md += ` — *${post.author}*`;
-					md += `\n\n`;
-				}
-			}
-
-			if (p.recommendations) {
-				md += `## Recommendations\n\n${p.recommendations}\n\n`;
-			}
-
-			if (sources.length > 0) {
-				md += `## Sources\n\n`;
-				for (const url of sources) {
-					md += `- ${url}\n`;
-				}
-			}
-
-			await createDoc(slug, { title: `Pulse: ${p.topic} (${date})`, content: markdownToHtml(md.trim()) });
+			const md = buildReportMarkdown(p);
+			await createDoc(slug, { title: `Pulse: ${p.topic} (${date})`, content: markdownToHtml(md) });
 			alert('Saved to Documents');
 		} catch (e: any) {
 			alert(e.message || 'Failed to save');
 		}
 		saving = false;
+	}
+
+	function buildReportMarkdown(p: any): string {
+		const date = new Date(p.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+		const themes = parseJSON(p.themes);
+		const posts = parseJSON(p.key_posts);
+		const sources = parseJSON(p.citations);
+		const predictions = parseJSON(p.predictions);
+		const risks = parseJSON(p.risks);
+		const competitive = parseJSON(p.competitive_mentions);
+		const audience = parseJSONObj(p.audience_breakdown);
+		const srcBreakdown = parseJSONObj(p.source_breakdown);
+
+		let md = `# Social Pulse: ${p.topic}\n\n`;
+		md += `**Date:** ${date}  \n`;
+		md += `**Sentiment:** ${p.sentiment_score}/100 — ${sentimentLabel(p.sentiment_score)}\n\n`;
+		md += `---\n\n`;
+		md += `## Summary\n\n${p.summary}\n\n`;
+
+		if (themes.length > 0) {
+			md += `## Themes\n\n`;
+			md += `| Theme | Mentions | Sentiment | Description |\n|-------|----------|-----------|-------------|\n`;
+			for (const t of themes) {
+				md += `| ${t.name} | ${t.count} | ${t.sentiment} | ${t.description || ''} |\n`;
+			}
+			md += `\n`;
+		}
+
+		if (posts.length > 0) {
+			md += `## Key Posts\n\n`;
+			for (const post of posts) {
+				const dot = post.sentiment === 'positive' ? '🟢' : post.sentiment === 'negative' ? '🔴' : '🟡';
+				md += `${dot} ${post.text}`;
+				if (post.author) md += ` — *${post.author}*`;
+				if (post.source_type) md += ` [${post.source_type}]`;
+				md += `\n\n`;
+			}
+		}
+
+		if (predictions.length > 0) {
+			md += `## Predictions\n\n`;
+			for (const pred of predictions) {
+				md += `- **${pred.prediction}** (${pred.confidence} confidence, ${pred.timeframe})\n  Basis: ${pred.basis}\n\n`;
+			}
+		}
+
+		if (risks.length > 0) {
+			md += `## Risks & Threats\n\n`;
+			for (const r of risks) {
+				md += `- **${r.risk}** (${r.severity} severity)\n  Evidence: ${r.evidence}\n\n`;
+			}
+		}
+
+		if (competitive.length > 0) {
+			md += `## Competitive Landscape\n\n`;
+			md += `| Competitor | Sentiment | Context |\n|------------|-----------|----------|\n`;
+			for (const c of competitive) {
+				md += `| ${c.competitor} | ${c.sentiment} | ${c.context} |\n`;
+			}
+			md += `\n`;
+		}
+
+		if (audience.advocates || audience.critics || audience.neutral) {
+			md += `## Audience Breakdown\n\n`;
+			if (audience.advocates) md += `**Advocates:** ${audience.advocates}\n\n`;
+			if (audience.critics) md += `**Critics:** ${audience.critics}\n\n`;
+			if (audience.neutral) md += `**Neutral:** ${audience.neutral}\n\n`;
+		}
+
+		if (Object.keys(srcBreakdown).length > 0) {
+			md += `## Source Breakdown\n\n`;
+			if (srcBreakdown.x_posts) md += `- X/Twitter: ${srcBreakdown.x_posts}\n`;
+			if (srcBreakdown.news_articles) md += `- News: ${srcBreakdown.news_articles}\n`;
+			if (srcBreakdown.blogs) md += `- Blogs: ${srcBreakdown.blogs}\n`;
+			if (srcBreakdown.forums) md += `- Forums: ${srcBreakdown.forums}\n`;
+			if (srcBreakdown.other) md += `- Other: ${srcBreakdown.other}\n`;
+			md += `\n`;
+		}
+
+		if (p.recommendations) {
+			md += `## Recommendations\n\n${p.recommendations}\n\n`;
+		}
+
+		if (sources.length > 0) {
+			md += `## Sources\n\n`;
+			for (const url of sources) {
+				md += `- ${url}\n`;
+			}
+		}
+
+		return md.trim();
+	}
+
+	async function saveToKnowledge() {
+		if (!selectedPulse || selectedPulse.status !== 'ready' || savingKB) return;
+		savingKB = true;
+		try {
+			const p = selectedPulse;
+			const date = new Date(p.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+			const md = buildReportMarkdown(p);
+			await createKnowledge(slug, { title: `Pulse: ${p.topic} (${date})`, content: md });
+			alert('Saved to Knowledge Base');
+		} catch (e: any) {
+			alert(e.message || 'Failed to save');
+		}
+		savingKB = false;
 	}
 
 	function sentimentColor(score: number): string {
@@ -165,10 +233,17 @@
 		return 'Very Negative';
 	}
 
+	function parseJSONObj(raw: any): Record<string, any> {
+		if (!raw) return {};
+		if (typeof raw === 'object' && !Array.isArray(raw)) return raw;
+		try { return JSON.parse(raw); } catch { return {}; }
+	}
+
 	function statusLabel(status: string): string {
 		switch (status) {
 			case 'pending': return 'Queued...';
 			case 'searching': return 'Searching X...';
+			case 'searching_web': return 'Searching the web...';
 			case 'analyzing': return 'Analyzing...';
 			case 'ready': return 'Ready';
 			case 'failed': return 'Failed';
@@ -248,9 +323,9 @@
 						</div>
 						<div class="pulse-item-right">
 							{#if pulse.status === 'ready'}
-								<span class="status-dot" style="background: {sentimentColor(pulse.sentiment_score)}"></span>
+								<span class="score-badge" style="background: {sentimentColor(pulse.sentiment_score)}">{pulse.sentiment_score}</span>
 							{:else if pulse.status === 'failed'}
-								<span class="status-dot failed"></span>
+								<span class="failed-icon">!</span>
 							{:else}
 								<span class="spinner small"></span>
 							{/if}
@@ -286,6 +361,13 @@
 							<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 14V2h8l2 2v10H3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M5 2v4h4V2" stroke="currentColor" stroke-width="1.3"/><path d="M5 10h6M5 12h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
 						{/if}
 					</button>
+					<button class="header-action save-btn" onclick={saveToKnowledge} disabled={savingKB} title="Save to Knowledge Base">
+						{#if savingKB}
+							<span class="spinner small"></span>
+						{:else}
+							<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 1.5l1.8 3.7 4.1.6-3 2.9.7 4-3.6-1.9-3.6 1.9.7-4-3-2.9 4.1-.6L8 1.5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/></svg>
+						{/if}
+					</button>
 				{/if}
 				<button class="header-action delete-btn" onclick={(e) => handleDelete(selectedPulse.id, e)} title="Delete report">
 					<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
@@ -304,23 +386,24 @@
 						<p>{selectedPulse.summary || 'Analysis failed'}</p>
 					</div>
 				{:else}
-					<!-- Sentiment score bar -->
-					<div class="pulse-card sentiment-bar-card">
-						<div class="sentiment-score-row">
-							<span class="sentiment-number" style="color: {sentimentColor(selectedPulse.sentiment_score)}">{selectedPulse.sentiment_score}</span>
-							<div class="sentiment-info">
-								<span class="sentiment-label" style="color: {sentimentColor(selectedPulse.sentiment_score)}">{sentimentLabel(selectedPulse.sentiment_score)}</span>
-								<div class="sentiment-track">
-									<div class="sentiment-fill" style="width: {selectedPulse.sentiment_score}%; background: {sentimentColor(selectedPulse.sentiment_score)}"></div>
+					<!-- Sentiment + Summary — side by side -->
+					<div class="pulse-row">
+						<div class="pulse-card sentiment-bar-card">
+							<h3>Sentiment</h3>
+							<div class="sentiment-score-row">
+								<span class="sentiment-number" style="color: {sentimentColor(selectedPulse.sentiment_score)}">{selectedPulse.sentiment_score}</span>
+								<div class="sentiment-info">
+									<span class="sentiment-label" style="color: {sentimentColor(selectedPulse.sentiment_score)}">{sentimentLabel(selectedPulse.sentiment_score)}</span>
+									<div class="sentiment-track">
+										<div class="sentiment-fill" style="width: {selectedPulse.sentiment_score}%; background: {sentimentColor(selectedPulse.sentiment_score)}"></div>
+									</div>
 								</div>
 							</div>
 						</div>
-					</div>
-
-					<!-- Summary -->
-					<div class="pulse-card">
-						<h3>Summary</h3>
-						<p>{selectedPulse.summary}</p>
+						<div class="pulse-card summary-card">
+							<h3>Summary</h3>
+							<p>{selectedPulse.summary}</p>
+						</div>
 					</div>
 
 					<!-- Themes -->
@@ -360,6 +443,127 @@
 										</div>
 									</div>
 								{/each}
+							</div>
+						</div>
+					{/if}
+
+					<!-- Predictions -->
+					{#if parseJSON(selectedPulse.predictions).length > 0}
+						<div class="pulse-card">
+							<h3>Predictions</h3>
+							<div class="predictions-list">
+								{#each parseJSON(selectedPulse.predictions) as pred}
+									<div class="prediction-row">
+										<span class="confidence-badge" class:high={pred.confidence === 'high'} class:medium={pred.confidence === 'medium'} class:low={pred.confidence === 'low'}>{pred.confidence}</span>
+										<div class="prediction-body">
+											<p class="prediction-text">{pred.prediction}</p>
+											<div class="prediction-meta">
+												{#if pred.timeframe}<span class="timeframe-tag">{pred.timeframe}</span>{/if}
+												<span class="prediction-basis">{pred.basis}</span>
+											</div>
+										</div>
+									</div>
+								{/each}
+							</div>
+						</div>
+					{/if}
+
+					<!-- Risks & Threats -->
+					{#if parseJSON(selectedPulse.risks).length > 0}
+						<div class="pulse-card">
+							<h3>Risks & Threats</h3>
+							<div class="risks-list">
+								{#each parseJSON(selectedPulse.risks) as risk}
+									<div class="risk-row">
+										<span class="severity-badge" class:high={risk.severity === 'high'} class:medium={risk.severity === 'medium'} class:low={risk.severity === 'low'}>{risk.severity}</span>
+										<div class="risk-body">
+											<p class="risk-text">{risk.risk}</p>
+											<p class="risk-evidence">{risk.evidence}</p>
+										</div>
+									</div>
+								{/each}
+							</div>
+						</div>
+					{/if}
+
+					<!-- Competitive Landscape -->
+					{#if parseJSON(selectedPulse.competitive_mentions).length > 0}
+						<div class="pulse-card">
+							<h3>Competitive Landscape</h3>
+							<div class="competitive-table">
+								<div class="comp-header">
+									<span>Competitor</span>
+									<span>Sentiment</span>
+									<span>Context</span>
+								</div>
+								{#each parseJSON(selectedPulse.competitive_mentions) as comp}
+									<div class="comp-row">
+										<span class="comp-name">{comp.competitor}</span>
+										<span class="sentiment-dot" style="background: {comp.sentiment === 'positive' ? 'var(--green, #22c55e)' : comp.sentiment === 'negative' ? 'var(--red, #ef4444)' : 'var(--yellow, #eab308)'}"></span>
+										<span class="comp-context">{comp.context}</span>
+									</div>
+								{/each}
+							</div>
+						</div>
+					{/if}
+
+					<!-- Audience Breakdown -->
+					{@const audience = parseJSONObj(selectedPulse.audience_breakdown)}
+					{#if audience.advocates || audience.critics || audience.neutral}
+						<div class="pulse-card">
+							<h3>Audience Breakdown</h3>
+							<div class="audience-grid">
+								{#if audience.advocates}
+									<div class="audience-col advocates">
+										<span class="audience-label">Advocates</span>
+										<p>{audience.advocates}</p>
+									</div>
+								{/if}
+								{#if audience.critics}
+									<div class="audience-col critics">
+										<span class="audience-label">Critics</span>
+										<p>{audience.critics}</p>
+									</div>
+								{/if}
+								{#if audience.neutral}
+									<div class="audience-col neutral-col">
+										<span class="audience-label">Neutral</span>
+										<p>{audience.neutral}</p>
+									</div>
+								{/if}
+							</div>
+						</div>
+					{/if}
+
+					<!-- Source Breakdown -->
+					{@const srcBreakdown = parseJSONObj(selectedPulse.source_breakdown)}
+					{@const srcTotal = (srcBreakdown.x_posts || 0) + (srcBreakdown.news_articles || 0) + (srcBreakdown.blogs || 0) + (srcBreakdown.forums || 0) + (srcBreakdown.other || 0)}
+					{#if srcTotal > 0}
+						<div class="pulse-card">
+							<h3>Source Breakdown</h3>
+							<div class="source-bar">
+								{#if srcBreakdown.x_posts > 0}
+									<div class="source-segment x" style="width: {(srcBreakdown.x_posts / srcTotal) * 100}%" title="X: {srcBreakdown.x_posts}"></div>
+								{/if}
+								{#if srcBreakdown.news_articles > 0}
+									<div class="source-segment news" style="width: {(srcBreakdown.news_articles / srcTotal) * 100}%" title="News: {srcBreakdown.news_articles}"></div>
+								{/if}
+								{#if srcBreakdown.blogs > 0}
+									<div class="source-segment blogs" style="width: {(srcBreakdown.blogs / srcTotal) * 100}%" title="Blogs: {srcBreakdown.blogs}"></div>
+								{/if}
+								{#if srcBreakdown.forums > 0}
+									<div class="source-segment forums" style="width: {(srcBreakdown.forums / srcTotal) * 100}%" title="Forums: {srcBreakdown.forums}"></div>
+								{/if}
+								{#if srcBreakdown.other > 0}
+									<div class="source-segment other" style="width: {(srcBreakdown.other / srcTotal) * 100}%" title="Other: {srcBreakdown.other}"></div>
+								{/if}
+							</div>
+							<div class="source-legend">
+								{#if srcBreakdown.x_posts > 0}<span class="legend-item"><span class="legend-dot x"></span>X ({srcBreakdown.x_posts})</span>{/if}
+								{#if srcBreakdown.news_articles > 0}<span class="legend-item"><span class="legend-dot news"></span>News ({srcBreakdown.news_articles})</span>{/if}
+								{#if srcBreakdown.blogs > 0}<span class="legend-item"><span class="legend-dot blogs"></span>Blogs ({srcBreakdown.blogs})</span>{/if}
+								{#if srcBreakdown.forums > 0}<span class="legend-item"><span class="legend-dot forums"></span>Forums ({srcBreakdown.forums})</span>{/if}
+								{#if srcBreakdown.other > 0}<span class="legend-item"><span class="legend-dot other"></span>Other ({srcBreakdown.other})</span>{/if}
 							</div>
 						</div>
 					{/if}
@@ -553,13 +757,32 @@
 		flex-shrink: 0;
 	}
 
-	.status-dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
+	.score-badge {
+		font-size: 11px;
+		font-weight: 700;
+		min-width: 18px;
+		height: 18px;
+		line-height: 18px;
+		text-align: center;
+		border-radius: 9px;
+		padding: 0 5px;
+		color: var(--bg-root);
 		flex-shrink: 0;
 	}
-	.status-dot.failed { background: var(--red, #ef4444); }
+
+	.failed-icon {
+		font-size: 11px;
+		font-weight: 700;
+		min-width: 18px;
+		height: 18px;
+		line-height: 18px;
+		text-align: center;
+		border-radius: 9px;
+		padding: 0 5px;
+		background: var(--red, #ef4444);
+		color: var(--bg-root);
+		flex-shrink: 0;
+	}
 
 	.delete-x {
 		background: none;
@@ -689,6 +912,22 @@
 	}
 	.error-card p { color: var(--red, #ef4444); }
 
+	/* Side-by-side row */
+	.pulse-row {
+		display: flex;
+		gap: var(--space-md);
+	}
+
+	.pulse-row .sentiment-bar-card {
+		width: 200px;
+		flex-shrink: 0;
+	}
+
+	.pulse-row .summary-card {
+		flex: 1;
+		min-width: 0;
+	}
+
 	/* Sentiment bar */
 	.sentiment-bar-card { padding: var(--space-md) var(--space-lg); }
 
@@ -765,6 +1004,62 @@
 	}
 	.sources-list a:hover { text-decoration: underline; }
 
+	/* Predictions */
+	.predictions-list, .risks-list { display: flex; flex-direction: column; gap: var(--space-sm); }
+	.prediction-row, .risk-row { display: flex; gap: var(--space-sm); align-items: flex-start; padding: var(--space-xs) var(--space-sm); border-radius: var(--radius-md); }
+	.prediction-row:hover, .risk-row:hover { background: var(--bg-raised); }
+	.prediction-body, .risk-body { flex: 1; min-width: 0; }
+	.prediction-text, .risk-text { font-size: var(--text-sm); line-height: 1.5; margin: 0 0 4px 0; color: var(--text-secondary); }
+	.prediction-meta { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; }
+	.timeframe-tag { font-size: var(--text-xs); background: var(--bg-raised); padding: 2px 8px; border-radius: 10px; color: var(--text-tertiary); }
+	.prediction-basis { font-size: var(--text-xs); color: var(--text-tertiary); }
+	.risk-evidence { font-size: var(--text-xs); color: var(--text-tertiary); margin: 0; }
+
+	.confidence-badge, .severity-badge {
+		font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;
+		padding: 2px 8px; border-radius: 10px; flex-shrink: 0; margin-top: 2px;
+		background: var(--bg-raised); color: var(--text-tertiary);
+	}
+	.confidence-badge.high, .severity-badge.high { background: rgba(34,197,94,0.15); color: var(--green, #22c55e); }
+	:global(.severity-badge.high) { background: rgba(239,68,68,0.15); color: var(--red, #ef4444); }
+	.confidence-badge.medium, .severity-badge.medium { background: rgba(234,179,8,0.15); color: var(--yellow, #eab308); }
+	.confidence-badge.low { background: var(--bg-raised); color: var(--text-tertiary); }
+	.severity-badge.low { background: var(--bg-raised); color: var(--text-tertiary); }
+
+	/* Competitive table */
+	.competitive-table { display: flex; flex-direction: column; gap: 2px; }
+	.comp-header { display: grid; grid-template-columns: 140px 32px 1fr; gap: var(--space-sm); padding: var(--space-xs) var(--space-sm); font-size: var(--text-xs); color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.05em; }
+	.comp-row { display: grid; grid-template-columns: 140px 32px 1fr; gap: var(--space-sm); align-items: center; padding: var(--space-xs) var(--space-sm); border-radius: var(--radius-md); }
+	.comp-row:hover { background: var(--bg-raised); }
+	.comp-name { font-size: var(--text-sm); font-weight: 500; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.comp-context { font-size: var(--text-sm); color: var(--text-secondary); }
+
+	/* Audience breakdown */
+	.audience-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--space-md); }
+	.audience-col { padding: var(--space-md); border-radius: var(--radius-md); background: var(--bg-root); }
+	.audience-col p { font-size: var(--text-sm); line-height: 1.5; margin: 0; color: var(--text-secondary); }
+	.audience-label { font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-bottom: var(--space-xs); }
+	.audience-col.advocates .audience-label { color: var(--green, #22c55e); }
+	.audience-col.critics .audience-label { color: var(--red, #ef4444); }
+	.audience-col.neutral-col .audience-label { color: var(--text-tertiary); }
+
+	/* Source breakdown */
+	.source-bar { display: flex; height: 24px; border-radius: 6px; overflow: hidden; margin-bottom: var(--space-sm); }
+	.source-segment { min-width: 4px; transition: width 0.3s ease; }
+	.source-segment.x { background: #1d9bf0; }
+	.source-segment.news { background: var(--accent, #f97316); }
+	.source-segment.blogs { background: var(--green, #22c55e); }
+	.source-segment.forums { background: #a855f7; }
+	.source-segment.other { background: var(--text-tertiary); }
+	.source-legend { display: flex; gap: var(--space-md); flex-wrap: wrap; }
+	.legend-item { display: flex; align-items: center; gap: 4px; font-size: var(--text-xs); color: var(--text-secondary); }
+	.legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+	.legend-dot.x { background: #1d9bf0; }
+	.legend-dot.news { background: var(--accent, #f97316); }
+	.legend-dot.blogs { background: var(--green, #22c55e); }
+	.legend-dot.forums { background: #a855f7; }
+	.legend-dot.other { background: var(--text-tertiary); }
+
 	/* Empty state */
 	.empty-state {
 		flex: 1;
@@ -824,6 +1119,14 @@
 
 		.mobile-back {
 			display: flex;
+		}
+
+		.pulse-row {
+			flex-direction: column;
+		}
+
+		.pulse-row .sentiment-bar-card {
+			width: 100%;
 		}
 	}
 </style>

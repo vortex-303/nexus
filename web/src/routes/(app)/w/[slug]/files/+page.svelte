@@ -7,12 +7,30 @@
 	import TiptapEditor from '$lib/editor/TiptapEditor.svelte';
 	import MarkdownEditor from '$lib/editor/MarkdownEditor.svelte';
 	import { htmlToMarkdown, markdownToHtml } from '$lib/editor/markdown-utils';
+	import { members } from '$lib/stores/workspace';
+	import { onDestroy } from 'svelte';
 
 	let slug = $derived(page.params.slug);
 	let currentUser = $state(getCurrentUser());
 
 	type ViewMode = 'grid' | 'list';
+	type SortMode = 'date_desc' | 'date_asc' | 'name_asc' | 'name_desc' | 'size_desc';
 	let viewMode = $state<ViewMode>('grid');
+	let sortMode = $state<SortMode>('date_desc');
+	let uploaderFilter = $state<'all' | 'my'>('all');
+
+	let membersList: any[] = [];
+	const unsubMembers = members.subscribe(v => membersList = v);
+
+	function getFileMember(id: string) {
+		return membersList.find((m: any) => m.id === id);
+	}
+	function fileMemberInitial(m: any) {
+		return (m?.display_name || '?')[0].toUpperCase();
+	}
+	function fileMemberColor(m: any) {
+		return m?.color || 'var(--text-tertiary)';
+	}
 	let folders = $state<any[]>([]);
 	let files = $state<any[]>([]);
 	let docs = $state<any[]>([]);
@@ -65,8 +83,45 @@
 		if (savedMode === 'markdown') markdownMode = true;
 		const savedWidth = localStorage.getItem('nexus_editor_width');
 		if (savedWidth) editorWidth = Math.max(320, Math.min(900, parseInt(savedWidth)));
+		const savedSort = localStorage.getItem('nexus_files_sort');
+		if (savedSort) sortMode = savedSort as SortMode;
+		const savedFilter = localStorage.getItem('nexus_files_uploader');
+		if (savedFilter === 'my') uploaderFilter = 'my';
 		await loadFolder('');
 	});
+
+	onDestroy(() => {
+		unsubMembers();
+	});
+
+	let displayFiles = $derived(uploaderFilter === 'my' ? files.filter(f => f.uploader_id === currentUser?.uid) : files);
+
+	function toggleUploaderFilter() {
+		uploaderFilter = uploaderFilter === 'all' ? 'my' : 'all';
+		localStorage.setItem('nexus_files_uploader', uploaderFilter);
+	}
+
+	function applySorting() {
+		const cmp = (a: any, b: any): number => {
+			switch (sortMode) {
+				case 'date_desc': return new Date(b.updated_at || b.created_at).getTime() - new Date(a.updated_at || a.created_at).getTime();
+				case 'date_asc': return new Date(a.updated_at || a.created_at).getTime() - new Date(b.updated_at || b.created_at).getTime();
+				case 'name_asc': return (a.name || a.title || '').localeCompare(b.name || b.title || '');
+				case 'name_desc': return (b.name || b.title || '').localeCompare(a.name || a.title || '');
+				case 'size_desc': return (b.size || 0) - (a.size || 0);
+				default: return 0;
+			}
+		};
+		folders = [...folders].sort((a, b) => (a.name || '').localeCompare(b.name || '') || cmp(a, b));
+		docs = [...docs].sort(cmp);
+		files = [...files].sort(cmp);
+	}
+
+	function setSortMode(mode: SortMode) {
+		sortMode = mode;
+		localStorage.setItem('nexus_files_sort', mode);
+		applySorting();
+	}
 
 	async function loadFolder(folderId: string) {
 		try {
@@ -77,6 +132,7 @@
 			currentFolderId = folderId;
 			selectedFile = null;
 			selectedIds = new Set();
+			applySorting();
 		} catch (e: any) {
 			alert(e.message);
 		}
@@ -135,11 +191,8 @@
 			requestAnimationFrame(() => {
 				if (mdEditorRef) mdEditorRef.setContent(markdownContent);
 			});
-		} else {
-			requestAnimationFrame(() => {
-				if (editorRef) editorRef.setContent(editorRef.migrateContent(doc.content || ''));
-			});
 		}
+		// Rich text mode uses initialContent prop + {#key} to re-mount with content
 	}
 
 	function closeNoteEditor() {
@@ -284,7 +337,10 @@
 			for (const id of selectedIds) {
 				const isFolder = folders.some(f => f.id === id);
 				const isDoc = docs.some(d => d.id === id);
-				if (isFolder) await deleteFolder(slug, id);
+				if (isFolder) {
+					try { await deleteFolder(slug, id); }
+					catch { await deleteFolder(slug, id, true); }
+				}
 				else if (isDoc) await deleteDoc(slug, id);
 				else await deleteFile(slug, id);
 			}
@@ -342,8 +398,17 @@
 		if (!confirm(`Delete ${type === 'doc' ? 'note' : type} "${label}"?`)) return;
 		closeMenus();
 		try {
-			if (type === 'folder') await deleteFolder(slug, item.id);
-			else if (type === 'doc') {
+			if (type === 'folder') {
+				try {
+					await deleteFolder(slug, item.id);
+				} catch (err: any) {
+					if (err.message?.includes('contains') && confirm(`Folder "${item.name}" is not empty. Delete everything inside it?`)) {
+						await deleteFolder(slug, item.id, true);
+					} else {
+						throw err;
+					}
+				}
+			} else if (type === 'doc') {
 				await deleteDoc(slug, item.id);
 				if (editingDoc?.id === item.id) { editingDoc = null; docTitle = ''; docContent = ''; }
 			}
@@ -540,6 +605,16 @@
 			{:else}
 				<button class="btn-action btn-select-all" onclick={selectAll}>Select All</button>
 			{/if}
+			<button class="uploader-filter-btn" class:active={uploaderFilter === 'my'} onclick={toggleUploaderFilter}>
+				{uploaderFilter === 'my' ? 'My Uploads' : 'All Files'}
+			</button>
+			<select class="sort-select" value={sortMode} onchange={(e) => setSortMode((e.target as HTMLSelectElement).value as SortMode)}>
+				<option value="date_desc">Newest first</option>
+				<option value="date_asc">Oldest first</option>
+				<option value="name_asc">Name A-Z</option>
+				<option value="name_desc">Name Z-A</option>
+				<option value="size_desc">Largest first</option>
+			</select>
 			<div class="view-toggle">
 				<button class="toggle-btn" class:active={viewMode === 'grid'} onclick={() => setViewMode('grid')} title="Grid view">
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -685,7 +760,7 @@
 							{/if}
 						</div>
 					{/each}
-					{#each files as file}
+					{#each displayFiles as file}
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
 						<div
 							class="grid-item file-item"
@@ -800,7 +875,7 @@
 							</span>
 						</div>
 					{/each}
-					{#each files as file}
+					{#each displayFiles as file}
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
 						<div class="list-row" class:selected={selectedIds.has(file.id) || selectedFile?.id === file.id} draggable="true" ondragstart={(e) => handleItemDragStart(e, 'file', file.id)} ondragend={handleItemDragEnd} onclick={() => { selectedFile = file; editingDoc = null; }} oncontextmenu={(e) => showContext(e, 'file', file)}>
 							<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -808,6 +883,10 @@
 								<input type="checkbox" checked={selectedIds.has(file.id)} tabindex={-1} />
 							</span>
 							<span class="list-name-col">
+								{#if file.uploader_id}
+									{@const uploader = getFileMember(file.uploader_id)}
+									<span class="file-uploader-avatar" style="background: {fileMemberColor(uploader)}" title={uploader?.display_name || 'Unknown'}>{fileMemberInitial(uploader)}</span>
+								{/if}
 								<span class="list-icon">{getIcon(file.mime)}</span>
 								{#if renaming?.id === file.id}
 									<input class="rename-input-inline" type="text" bind:value={renaming.name} onkeydown={(e) => { if (e.key === 'Enter') submitRename(); if (e.key === 'Escape') renaming = null; }} />
@@ -881,11 +960,14 @@
 							}}
 						/>
 					{:else}
-						<TiptapEditor
-							bind:this={editorRef}
-							onsave={handleAutoSave}
-							placeholder="Start writing..."
-						/>
+						{#key editingDoc?.id}
+							<TiptapEditor
+								bind:this={editorRef}
+								onsave={handleAutoSave}
+								placeholder="Start writing..."
+								initialContent={docContent}
+							/>
+						{/key}
 					{/if}
 				</div>
 			</div>
@@ -1022,6 +1104,29 @@
 		color: var(--accent);
 		font-weight: 600;
 	}
+	.uploader-filter-btn {
+		padding: 4px 10px; background: var(--bg-raised); color: var(--text-secondary);
+		border: 1px solid var(--border-default); border-radius: var(--radius-md);
+		font-size: var(--text-xs); cursor: pointer; font-family: inherit; font-weight: 500;
+	}
+	.uploader-filter-btn.active { background: var(--accent); color: var(--text-inverse); border-color: var(--accent); }
+	.file-uploader-avatar {
+		width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+		font-size: 10px; font-weight: 700; color: #fff; flex-shrink: 0; margin-right: 4px; vertical-align: middle;
+	}
+	.sort-select {
+		background: var(--bg-raised);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-md);
+		color: var(--text-secondary);
+		font-size: var(--text-xs);
+		padding: 4px 8px;
+		font-family: inherit;
+		cursor: pointer;
+		outline: none;
+	}
+	.sort-select:focus { border-color: var(--accent); }
+
 	.view-toggle {
 		display: flex;
 		border: 1px solid var(--border-default);

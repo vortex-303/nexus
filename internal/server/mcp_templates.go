@@ -39,7 +39,7 @@ var mcpTemplates = []MCPTemplate{
 		Description: "Search the web via DuckDuckGo — no API key needed",
 		Category:    "web",
 		Transport:   "stdio",
-		Command:     "uvx duckduckgo-mcp serve",
+		Command:     "npx -y duckduckgo-mcp-server",
 		Prefix:      "ddg",
 		Tier:        "free",
 	},
@@ -49,7 +49,7 @@ var mcpTemplates = []MCPTemplate{
 		Description: "Fetch and extract content from any URL on the web",
 		Category:    "web",
 		Transport:   "stdio",
-		Command:     "uvx mcp-server-fetch",
+		Command:     "npx -y mcp-fetch-server",
 		Prefix:      "fetch",
 		Tier:        "free",
 	},
@@ -59,7 +59,7 @@ var mcpTemplates = []MCPTemplate{
 		Description: "Get current time and convert between timezones",
 		Category:    "productivity",
 		Transport:   "stdio",
-		Command:     "uvx mcp-server-time",
+		Command:     "npx -y mcp-time",
 		Prefix:      "time",
 		Tier:        "free",
 	},
@@ -327,6 +327,49 @@ var mcpTemplates = []MCPTemplate{
 func (s *Server) handleListMCPTemplates(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(mcpTemplates)
+}
+
+// fixupMCPCommands patches stale uvx-based MCP server commands to their npx equivalents.
+// This handles existing workspaces that were seeded before the template was fixed.
+func (s *Server) fixupMCPCommands(slug string) {
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return
+	}
+
+	fixes := map[string]struct{ cmd string; args string }{
+		"uvx":  {"", ""},  // marker — we match on command="uvx"
+	}
+	_ = fixes
+
+	// Map old command+args to new command+args
+	type fix struct {
+		oldCmd  string
+		oldArgs string // JSON args containing the old identifier
+		newCmd  string
+		newArgs string
+	}
+	patches := []fix{
+		{"uvx", `["duckduckgo-mcp","serve"]`, "npx", `["-y","duckduckgo-mcp-server"]`},
+		{"uvx", `["mcp-server-fetch"]`, "npx", `["-y","mcp-fetch-server"]`},
+		{"uvx", `["mcp-server-time"]`, "npx", `["-y","mcp-time"]`},
+	}
+
+	for _, p := range patches {
+		wdb.DB.Exec(`UPDATE mcp_servers SET command = ?, args = ? WHERE command = ? AND args = ?`,
+			p.newCmd, p.newArgs, p.oldCmd, p.oldArgs)
+	}
+
+	// Also fix if someone had the broken npx commands from the intermediate deploy
+	intermediateFixes := []fix{
+		{"npx", `["-y","@modelcontextprotocol/server-fetch"]`, "npx", `["-y","mcp-fetch-server"]`},
+		{"npx", `["-y","@modelcontextprotocol/server-time"]`, "npx", `["-y","mcp-time"]`},
+		{"npx", `["-y","@modelcontextprotocol/server-sqlite"]`, "npx", `["-y","mcp-server-sqlite"]`},
+	}
+	for _, p := range intermediateFixes {
+		wdb.DB.Exec(`UPDATE mcp_servers SET command = ?, args = ? WHERE command = ? AND args = ?`,
+			p.newCmd, p.newArgs, p.oldCmd, p.oldArgs)
+	}
 }
 
 // seedFreeMCPServers adds all free-tier MCP server templates to a new workspace.

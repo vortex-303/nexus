@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -257,6 +258,7 @@ func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DisplayName string `json:"display_name"`
 		Email       string `json:"email"`
+		Password    string `json:"password"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -285,6 +287,28 @@ func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Email != "" {
+		if !strings.Contains(req.Email, "@") {
+			writeError(w, http.StatusBadRequest, "invalid email address")
+			return
+		}
+		if req.Password == "" {
+			writeError(w, http.StatusBadRequest, "password required to change email")
+			return
+		}
+		var hash string
+		var isSuperadmin bool
+		if err := s.global.DB.QueryRow("SELECT password_hash, is_superadmin FROM accounts WHERE id = ?", claims.AccountID).Scan(&hash, &isSuperadmin); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to verify account")
+			return
+		}
+		if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
+			writeError(w, http.StatusUnauthorized, "incorrect password")
+			return
+		}
+		if isSuperadmin {
+			writeError(w, http.StatusForbidden, "superadmin email cannot be changed from UI")
+			return
+		}
 		_, err := s.global.DB.Exec("UPDATE accounts SET email = ? WHERE id = ?", req.Email, claims.AccountID)
 		if err != nil {
 			writeError(w, http.StatusConflict, "email already in use")

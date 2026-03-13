@@ -13,6 +13,8 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/qdrant/go-client v1.17.1
 	github.com/robfig/cron/v3 v3.0.1
+	github.com/rs/zerolog v1.34.0
+	github.com/teambition/rrule-go v1.8.2
 	golang.org/x/crypto v0.48.0
 	golang.org/x/net v0.50.0
 	google.golang.org/grpc v1.79.1
@@ -56,11 +58,9 @@ require (
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/redis/go-redis/v9 v9.14.1 // indirect
-	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.3 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
-	github.com/teambition/rrule-go v1.8.2 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.etcd.io/bbolt v1.4.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect

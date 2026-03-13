@@ -11,7 +11,7 @@ INSTALL_DIR="/usr/local/bin"
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 case "$OS" in
   linux)  OS="linux" ;;
-  darwin) OS="darwin" ;;
+  darwin) echo "macOS: use 'brew install nexus', Docker, or build from source."; exit 1 ;;
   *)      echo "Unsupported OS: $OS"; exit 1 ;;
 esac
 

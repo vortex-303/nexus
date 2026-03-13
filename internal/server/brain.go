@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -54,7 +55,7 @@ func (s *Server) ensureBrainMember(slug string) error {
 				max_iterations, constraints, escalation_prompt, trigger_type, is_system, is_active, created_by)
 			VALUES (?, 'Brain', 'System AI agent with full workspace access', '🧠',
 				'System Agent', 'Coordinate the workspace, answer questions, and manage other agents',
-				'', '', '', 0.7, 2048, '["create_task","list_tasks","search_messages","create_document","search_knowledge","delegate_to_agent"]',
+				'', '', '', 0.7, 2048, '["create_task","list_tasks","search_workspace","create_document","search_knowledge","delegate_to_agent"]',
 				'[]', 1, 1, 1, 10, '', '', 'mention', 1, 1, 'system')`,
 			brain.BrainMemberID,
 		)
@@ -148,7 +149,7 @@ func (s *Server) ensureBuiltinAgents(slug string) error {
 func (s *Server) handleBrainMention(slug, channelID, senderName, content string) {
 	go func() {
 		apiKey, model := s.getBrainSettings(slug)
-		if apiKey == "" {
+		if apiKey == "" && s.getXAIKey(slug) == "" {
 			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Msg("no API key configured, ignoring mention")
 			return
 		}
@@ -170,23 +171,31 @@ func (s *Server) handleBrainMention(slug, channelID, senderName, content string)
 			return
 		}
 
+		// Inject North Star context
+		if nsCtx := s.buildNorthStarContext(slug); nsCtx != "" {
+			systemPrompt += "\n\n---\n\n" + nsCtx
+		}
+
+		// Tell Brain who it's talking to
+		systemPrompt += fmt.Sprintf("\n\n## Current Conversation\nYou are talking to: **%s**. Address them by this name.", senderName)
+
 		// Append active memories to system prompt
-		memoryContext := brain.BuildMemoryContext(wdb.DB)
+		memoryContext := brain.BuildMemoryContext(wdb.DB, content)
 		if memoryContext != "" {
 			systemPrompt += "\n\n---\n\n" + memoryContext
 		}
 
 		messages := s.getRecentMessages(wdb, channelID, 20)
 
-		resolvedModel, fallbacks := s.resolveFreeAuto(model)
-		client := brain.NewClient(apiKey, resolvedModel)
-		client.FreeModelFallbacks = fallbacks
-		response, err := client.Complete(systemPrompt, messages)
+		resolvedModel, fallbacks := s.resolveFreeAuto(model, slug)
+		client := s.makeBrainClient(slug, apiKey, resolvedModel, fallbacks)
+		response, usage, err := client.Complete(systemPrompt, messages)
 		if err != nil {
 			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("LLM error")
 			s.sendBrainMessage(slug, channelID, "", "Sorry, I encountered an error. Check that the API key is configured correctly.")
 			return
 		}
+		s.trackUsage(slug, usage, resolvedModel, "mention", channelID, senderName)
 
 		response = strings.TrimSpace(response)
 		if response == "" {
@@ -244,6 +253,59 @@ func (s *Server) sendBrainMessage(slug, channelID, parentID, content string, too
 		ToolsUsed:  toolsUsed,
 		ParentID:   parentID,
 	}), "")
+}
+
+// handleBrainWelcome sends a canned welcome DM from Brain to the requesting user.
+// POST /api/workspaces/{slug}/brain/welcome
+func (s *Server) handleBrainWelcome(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	claims := auth.GetClaims(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	// Find or create Brain DM channel for this user
+	userID := claims.UserID
+	ids := []string{brain.BrainMemberID, userID}
+	if ids[0] > ids[1] {
+		ids[0], ids[1] = ids[1], ids[0]
+	}
+	dmName := "dm-" + ids[0] + "-" + ids[1]
+
+	var channelID string
+	err = wdb.DB.QueryRow("SELECT id FROM channels WHERE name = ? AND type = 'dm'", dmName).Scan(&channelID)
+	if err != nil {
+		// Create the DM channel
+		channelID = id.New()
+		_, err = wdb.DB.Exec(
+			"INSERT INTO channels (id, name, type, created_by) VALUES (?, ?, 'dm', ?)",
+			channelID, dmName, userID,
+		)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to create DM channel")
+			return
+		}
+	}
+
+	welcome := "Hey! I'm **Brain**, your AI assistant for this workspace.\n\n" +
+		"Here are some things I can help with:\n" +
+		"- **@Brain** me in any channel to ask questions or get help\n" +
+		"- Create and manage **tasks** and **documents**\n" +
+		"- Search the web and **fetch URLs**\n" +
+		"- Use **tools** from connected MCP servers\n" +
+		"- Generate **images** with a simple prompt\n\n" +
+		"Try typing something below to get started!"
+
+	s.sendBrainMessage(slug, channelID, "", welcome)
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "channel_id": channelID})
 }
 
 // getRecentMessages fetches recent channel messages formatted for the LLM.
@@ -372,13 +434,82 @@ func (s *Server) getBrainSettings(slug string) (apiKey, model string) {
 	return apiKey, model
 }
 
+// buildNorthStarContext reads North Star settings and returns a formatted markdown section.
+// Returns empty string if no north_star is configured.
+func (s *Server) buildNorthStarContext(slug string) string {
+	goal := s.getBrainSetting(slug, "north_star")
+	if goal == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("## North Star\n")
+	b.WriteString("**Goal:** " + goal + "\n")
+
+	if why := s.getBrainSetting(slug, "north_star_why"); why != "" {
+		b.WriteString("**Why:** " + why + "\n")
+	}
+	if success := s.getBrainSetting(slug, "north_star_success"); success != "" {
+		b.WriteString("**Success looks like:** " + success + "\n")
+	}
+
+	if themesJSON := s.getBrainSetting(slug, "strategic_themes"); themesJSON != "" {
+		var themes []string
+		if json.Unmarshal([]byte(themesJSON), &themes) == nil && len(themes) > 0 {
+			b.WriteString("\n**Strategic Themes:**\n")
+			for _, t := range themes {
+				b.WriteString("- " + t + "\n")
+			}
+		}
+	}
+
+	b.WriteString("\nUse this direction to inform your reasoning. When suggesting tasks, answering strategic questions, or evaluating priorities, consider alignment with these themes.")
+	return b.String()
+}
+
+// getXAIKey returns the xAI API key for a workspace, if configured.
+func (s *Server) getXAIKey(slug string) string {
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return ""
+	}
+	var key string
+	_ = wdb.DB.QueryRow("SELECT value FROM brain_settings WHERE key = 'xai_api_key'").Scan(&key)
+	return key
+}
+
+// makeBrainClient creates the appropriate LLM client for the resolved model.
+// Uses xAI direct when model is grok-* and xai_api_key is set, otherwise OpenRouter.
+func (s *Server) makeBrainClient(slug, apiKey, resolvedModel string, fallbacks []string) *brain.Client {
+	// If Grok engine is enabled (or key exists) with its own model, use xAI directly
+	xaiKey := s.getXAIKey(slug)
+	if xaiKey != "" {
+		enabled := s.getBrainSetting(slug, "xai_enabled")
+		if enabled == "true" || enabled == "" { // auto-enable if key exists
+			if xaiModel := s.getBrainSetting(slug, "xai_model"); xaiModel != "" {
+				return brain.NewXAIClient(xaiKey, xaiModel)
+			}
+		}
+	}
+	// Also route grok-* models selected in OpenRouter picker to xAI if key exists
+	if brain.IsGrokModel(resolvedModel) {
+		if xaiKey := s.getXAIKey(slug); xaiKey != "" {
+			return brain.NewXAIClient(xaiKey, resolvedModel)
+		}
+	}
+	client := brain.NewClient(apiKey, resolvedModel)
+	client.FreeModelFallbacks = fallbacks
+	return client
+}
+
 // resolveFreeAuto resolves the virtual free-auto model ID to a primary model and fallback list.
 // If the model is not free-auto, returns the model unchanged with no fallbacks.
-func (s *Server) resolveFreeAuto(model string) (primaryModel string, fallbacks []string) {
+// Checks workspace-specific free models first, then falls back to global/defaults.
+func (s *Server) resolveFreeAuto(model, slug string) (primaryModel string, fallbacks []string) {
 	if model != FreeAutoModelID {
 		return model, nil
 	}
-	freeModels := s.getFreeModels()
+	freeModels := s.getWorkspaceFreeModels(slug)
 	if len(freeModels) == 0 {
 		return DefaultFreeModels[0].ID, nil
 	}
@@ -413,12 +544,14 @@ func (s *Server) getImageModel(slug string) string {
 	return model
 }
 
-// handleGetBrainSettings returns brain settings (admin only).
+// handleGetBrainSettings returns brain settings.
+// All workspace members can read settings (needed for @Brain to work).
+// Sensitive keys (api_key, gemini_api_key) are redacted for non-admins.
 func (s *Server) handleGetBrainSettings(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	claims := auth.GetClaims(r)
-	if claims == nil || claims.Role != "admin" {
-		writeError(w, http.StatusForbidden, "admin only")
+	if claims == nil || claims.WorkspaceSlug != slug {
+		writeError(w, http.StatusForbidden, "not a member")
 		return
 	}
 
@@ -429,11 +562,14 @@ func (s *Server) handleGetBrainSettings(w http.ResponseWriter, r *http.Request) 
 	}
 
 	settings := map[string]string{
-		"model":                FreeAutoModelID,
-		"image_model":          brain.DefaultGeminiImageModel,
-		"memory_model":         "openai/gpt-4o-mini",
-		"memory_enabled":       "true",
-		"extraction_frequency": "15",
+		"model":                 FreeAutoModelID,
+		"image_model":           brain.DefaultGeminiImageModel,
+		"memory_model":          "openai/gpt-4o-mini",
+		"memory_enabled":        "true",
+		"system_memory_enabled": "true",
+		"extraction_frequency":  "15",
+		"standard_chat_enabled": "true",
+		"llm_enabled":           "true",
 	}
 
 	rows, err := wdb.DB.Query("SELECT key, value FROM brain_settings")
@@ -457,9 +593,44 @@ func (s *Server) handleGetBrainSettings(w http.ResponseWriter, r *http.Request) 
 					settings["gemini_api_key_masked"] = v[:4] + "..." + v[len(v)-4:]
 				}
 				settings["gemini_api_key_set"] = "true"
+			} else if k == "xai_api_key" {
+				if len(v) > 8 {
+					settings["xai_api_key_masked"] = v[:4] + "..." + v[len(v)-4:]
+				}
+				settings["xai_api_key_set"] = "true"
+			} else if k == "openai_api_key" {
+				if len(v) > 8 {
+					settings["openai_api_key_masked"] = v[:4] + "..." + v[len(v)-4:]
+				}
+				settings["openai_api_key_set"] = "true"
+			} else if k == "brave_api_key" {
+				if len(v) > 8 {
+					settings["brave_api_key_masked"] = v[:4] + "..." + v[len(v)-4:]
+				}
+				settings["brave_api_key_set"] = "true"
 			} else {
 				settings[k] = v
 			}
+		}
+	}
+
+	// Include memory stats as extra keys in the flat response
+	counts, _ := brain.CountMemories(wdb.DB)
+	totalMemories := 0
+	for _, c := range counts {
+		totalMemories += c
+	}
+	settings["memory_total"] = fmt.Sprintf("%d", totalMemories)
+
+	var lastExtraction string
+	if wdb.DB.QueryRow("SELECT created_at FROM brain_action_log WHERE action_type = 'extraction' ORDER BY created_at DESC LIMIT 1").Scan(&lastExtraction) == nil {
+		settings["last_extraction"] = lastExtraction
+	}
+
+	// Non-admins: strip API key info entirely
+	if claims.Role != "admin" {
+		for _, k := range []string{"api_key_masked", "api_key_set", "gemini_api_key_masked", "gemini_api_key_set", "openai_api_key_masked", "openai_api_key_set", "brave_api_key_masked", "brave_api_key_set"} {
+			delete(settings, k)
 		}
 	}
 
@@ -488,24 +659,50 @@ func (s *Server) handleUpdateBrainSettings(w http.ResponseWriter, r *http.Reques
 	}
 
 	allowedKeys := map[string]bool{
-		"api_key": true, "gemini_api_key": true, "model": true, "image_model": true,
-		"memory_enabled": true, "extraction_frequency": true, "memory_model": true,
+		"api_key": true, "gemini_api_key": true, "xai_api_key": true, "openai_api_key": true, "xai_model": true, "xai_enabled": true,
+		"model": true, "image_model": true,
+		"memory_enabled": true, "system_memory_enabled": true, "extraction_frequency": true, "memory_model": true, "memory_engine": true,
+		"standard_chat_enabled": true, "llm_enabled": true,
+		"webllm_enabled": true, "webllm_model": true, "webllm_system_prompt": true,
+		"north_star": true, "north_star_why": true, "north_star_success": true, "strategic_themes": true,
+		"reflection_enabled": true, "reflection_time": true,
 		// Integrations
 		"webhook_autonomy": true,
 		"email_enabled": true, "email_autonomy": true, "email_reply_scope": true,
 		"email_outbound_host": true, "email_outbound_port": true,
 		"email_outbound_user": true, "email_outbound_pass": true,
 		"telegram_bot_token": true, "telegram_autonomy": true,
+		"brave_api_key": true,
 	}
 	// Allow built-in agent toggles
 	for _, ba := range brain.BuiltinAgents {
 		allowedKeys["builtin_agent_"+ba.ID+"_enabled"] = true
 	}
 
+	// Sensitive keys — log "set"/"changed"/"cleared" instead of raw values
+	sensitiveKeys := map[string]bool{
+		"api_key": true, "gemini_api_key": true, "xai_api_key": true, "openai_api_key": true, "telegram_bot_token": true,
+		"email_outbound_pass": true, "brave_api_key": true,
+	}
+	// Keys that also get logged to brain_action_log (visible in Activity tab)
+	activityKeys := map[string]bool{
+		"model": true, "image_model": true, "memory_model": true, "memory_enabled": true,
+		"system_memory_enabled": true, "standard_chat_enabled": true, "llm_enabled": true,
+	}
+
 	for k, v := range req {
 		if !allowedKeys[k] {
 			continue
 		}
+
+		// Read old value before writing
+		var oldValue string
+		_ = wdb.DB.QueryRow("SELECT value FROM brain_settings WHERE key = ?", k).Scan(&oldValue)
+
+		if oldValue == v {
+			continue // no actual change
+		}
+
 		_, err = wdb.DB.Exec(
 			"INSERT INTO brain_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
 			k, v, v,
@@ -513,6 +710,31 @@ func (s *Server) handleUpdateBrainSettings(w http.ResponseWriter, r *http.Reques
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to save settings")
 			return
+		}
+
+		// Log to brain_settings_log
+		logOld, logNew := oldValue, v
+		if sensitiveKeys[k] {
+			if oldValue == "" {
+				logOld = ""
+			} else {
+				logOld = "(set)"
+			}
+			if v == "" {
+				logNew = "(cleared)"
+			} else {
+				logNew = "(set)"
+			}
+		}
+		_, _ = wdb.DB.Exec(
+			"INSERT INTO brain_settings_log (id, key, old_value, new_value, changed_by) VALUES (?, ?, ?, ?, ?)",
+			id.New(), k, logOld, logNew, claims.AccountID,
+		)
+
+		// Log model/memory changes to brain_action_log (shows in Activity tab)
+		if activityKeys[k] {
+			triggerText := k + ": " + logOld + " → " + logNew
+			brain.LogAction(wdb.DB, id.New(), brain.ActionConfigChange, "", triggerText, "setting updated", "", nil)
 		}
 
 		// Sync built-in agent active state when toggle changes
@@ -530,6 +752,7 @@ func (s *Server) handleUpdateBrainSettings(w http.ResponseWriter, r *http.Reques
 		if k == "telegram_bot_token" && v != "" {
 			s.onTelegramBotTokenSaved(slug, v)
 		}
+
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -578,7 +801,7 @@ func (s *Server) handleGetBrainDefinition(w http.ResponseWriter, r *http.Request
 
 	allowedFiles := map[string]bool{
 		"SOUL.md": true, "INSTRUCTIONS.md": true,
-		"TEAM.md": true, "MEMORY.md": true, "HEARTBEAT.md": true,
+		"TEAM.md": true, "MEMORY.md": true, "REFLECTIONS.md": true, "HEARTBEAT.md": true,
 	}
 	if !allowedFiles[fileName] {
 		writeError(w, http.StatusBadRequest, "invalid file name")
@@ -608,7 +831,7 @@ func (s *Server) handleUpdateBrainDefinition(w http.ResponseWriter, r *http.Requ
 
 	allowedFiles := map[string]bool{
 		"SOUL.md": true, "INSTRUCTIONS.md": true,
-		"TEAM.md": true, "MEMORY.md": true, "HEARTBEAT.md": true,
+		"TEAM.md": true, "MEMORY.md": true, "REFLECTIONS.md": true, "HEARTBEAT.md": true,
 	}
 	if !allowedFiles[fileName] {
 		writeError(w, http.StatusBadRequest, "invalid file name")
@@ -631,4 +854,206 @@ func (s *Server) handleUpdateBrainDefinition(w http.ResponseWriter, r *http.Requ
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleGetBrainPrompt returns the full system prompt for client-side LLM use.
+// Accepts optional query params: ?channel_id=...&query=... for richer context.
+func (s *Server) handleGetBrainPrompt(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	channelID := r.URL.Query().Get("channel_id")
+	query := r.URL.Query().Get("query")
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+
+	brainDir := brain.BrainDir(s.cfg.DataDir, slug)
+	systemPrompt, err := brain.BuildSystemPrompt(brainDir)
+	if err != nil {
+		systemPrompt = "You are Brain, a helpful AI assistant."
+	}
+
+	// Inject North Star context
+	if nsCtx := s.buildNorthStarContext(slug); nsCtx != "" {
+		systemPrompt += "\n\n---\n\n" + nsCtx
+	}
+
+	// Workspace context
+	if wsContext := brain.BuildWorkspaceContext(wdb.DB); wsContext != "" {
+		systemPrompt += "\n\n---\n\n" + wsContext
+	}
+
+	// Memories
+	if memCtx := brain.BuildMemoryContext(wdb.DB, query); memCtx != "" {
+		systemPrompt += "\n\n---\n\n" + memCtx
+	}
+
+	// Skills context
+	skills := brain.LoadSkills(brainDir)
+	s.applySkillEnabledState(slug, skills)
+	skills = filterEnabledSkills(skills)
+	if skillCtx := brain.BuildSkillContext(skills); skillCtx != "" {
+		systemPrompt += "\n\n---\n\n" + skillCtx
+	}
+
+	// Knowledge base
+	apiKey, _ := s.getBrainSettings(slug)
+	if kbCtx := brain.BuildKnowledgeContext(wdb.DB, query, brain.SemanticOpts{
+		VectorStore: s.vectors, APIKey: apiKey, Slug: slug,
+	}); kbCtx != "" {
+		systemPrompt += "\n\n---\n\n" + kbCtx
+	}
+
+	// Channel history
+	if channelID != "" {
+		if chSummary := brain.BuildSingleChannelContext(wdb.DB, channelID); chSummary != "" {
+			systemPrompt += "\n\n---\n\n" + chSummary
+		}
+		if crossCtx := brain.BuildCrossChannelContext(wdb.DB, channelID); crossCtx != "" {
+			systemPrompt += "\n\n---\n\n" + crossCtx
+		}
+	}
+
+	// Hard cap
+	if len(systemPrompt) > 100000 {
+		systemPrompt = systemPrompt[:100000]
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"prompt": systemPrompt})
+}
+
+// handleSaveBrainMessage saves a message from Brain (sent by client-side LLM) and broadcasts it.
+func (s *Server) handleSaveBrainMessage(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	channelID := r.PathValue("channelId")
+
+	var req struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Content == "" {
+		writeError(w, http.StatusBadRequest, "content required")
+		return
+	}
+
+	s.sendBrainMessage(slug, channelID, "", req.Content)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleWebLLMContext builds a pre-fetched context prompt for client-side WebLLM.
+// Instead of multi-round tool calling, the server fetches all needed data based on
+// client-detected intents and returns a single system prompt the LLM can complete against.
+// POST /api/workspaces/{slug}/brain/webllm-context
+func (s *Server) handleWebLLMContext(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+
+	var req struct {
+		Message  string   `json:"message"`
+		Intents  []string `json:"intents"`
+		Channel  string   `json:"channel_id"`
+		MaxChars int      `json:"max_chars"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Message == "" {
+		writeError(w, http.StatusBadRequest, "message required")
+		return
+	}
+	if req.MaxChars <= 0 {
+		req.MaxChars = 2500 // ~800 tokens, leaves room for messages + response in 4K context
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+
+	var sections []string
+
+	// 1. Identity: use custom WebLLM prompt if set, otherwise a dedicated default
+	const defaultWebLLMPrompt = "You are Brain, the AI assistant for this Nexus workspace. You run locally in the user's browser.\n\n" +
+		"## Your capabilities\n" +
+		"You receive pre-fetched workspace data below: members, channels, tasks, documents, calendar events, memories, and search results. " +
+		"Use this data to answer questions accurately. Cite specific items (task names, member names, dates) from the data.\n\n" +
+		"## Response guidelines\n" +
+		"- Be concise and direct (2-4 sentences for simple questions)\n" +
+		"- When asked about tasks: reference status, assignee, due dates from the data\n" +
+		"- When asked about people: reference their role and activity from the data\n" +
+		"- When asked about events: reference dates, times, descriptions from the data\n" +
+		"- When asked about documents: summarize relevant content from the data\n" +
+		"- For search results: synthesize the key findings, cite sources\n" +
+		"- If the data doesn't contain the answer, say so clearly — don't guess\n" +
+		"- Use markdown formatting: **bold** for emphasis, bullet lists for multiple items\n" +
+		"- Never mention that you're a local model or have limited context"
+	if customPrompt := s.getBrainSetting(slug, "webllm_system_prompt"); customPrompt != "" {
+		sections = append(sections, customPrompt)
+	} else {
+		sections = append(sections, defaultWebLLMPrompt)
+	}
+
+	// 1b. North Star context
+	if nsCtx := s.buildNorthStarContext(slug); nsCtx != "" {
+		sections = append(sections, nsCtx)
+	}
+
+	// 2. Compact workspace snapshot (channels, members, tasks, docs, events)
+	if ws := brain.BuildWorkspaceContext(wdb.DB); ws != "" {
+		if len(ws) > 1500 {
+			ws = ws[:1500] + "\n[...]"
+		}
+		sections = append(sections, ws)
+	}
+
+	// 3. Intent-driven data fetching
+	for _, intent := range req.Intents {
+		var data string
+		switch intent {
+		case "web_search":
+			data = s.toolWebSearch(slug, fmt.Sprintf(`{"query":%q,"num_results":5}`, req.Message))
+		case "tasks":
+			data = s.toolListTasks(slug, "{}")
+		case "calendar":
+			// 14 days ahead
+			end := time.Now().Add(14 * 24 * time.Hour).UTC().Format(time.RFC3339)
+			data = s.toolListCalendarEvents(slug, fmt.Sprintf(`{"end":%q}`, end))
+		case "documents":
+			data = s.toolSearchKnowledge(slug, fmt.Sprintf(`{"query":%q}`, req.Message))
+		case "messages":
+			data = s.toolSearchMessages(slug, req.Channel, fmt.Sprintf(`{"query":%q}`, req.Message))
+		case "general":
+			// For general queries, add recent channel history for conversational context
+			if req.Channel != "" {
+				if chCtx := brain.BuildSingleChannelContext(wdb.DB, req.Channel); chCtx != "" {
+					if len(chCtx) > 600 {
+						chCtx = chCtx[:600] + "\n[...]"
+					}
+					sections = append(sections, chCtx)
+				}
+			}
+			continue
+		default:
+			continue
+		}
+		if data != "" {
+			sections = append(sections, fmt.Sprintf("## %s results\n%s", intent, data))
+		}
+	}
+
+	// 4. Top 10 memories (compact)
+	if memories := brain.BuildMemoryContext(wdb.DB, req.Message); memories != "" {
+		// Take top 10 lines max
+		lines := strings.Split(memories, "\n")
+		if len(lines) > 15 {
+			lines = lines[:15]
+		}
+		sections = append(sections, strings.Join(lines, "\n"))
+	}
+
+	// 5. Assemble and budget-truncate
+	prompt := strings.Join(sections, "\n\n---\n\n")
+	if len(prompt) > req.MaxChars {
+		prompt = prompt[:req.MaxChars] + "\n[...truncated]"
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"prompt": prompt})
 }

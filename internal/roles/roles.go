@@ -4,21 +4,13 @@ package roles
 type Role string
 
 const (
-	RoleAdmin                Role = "admin"
-	RoleMember               Role = "member"
-	RoleDesigner             Role = "designer"
-	RoleMarketingCoordinator Role = "marketing_coordinator"
-	RoleMarketingStrategist  Role = "marketing_strategist"
-	RoleResearcher           Role = "researcher"
-	RoleSales                Role = "sales"
-	RoleGuest                Role = "guest"
-	RoleCustom               Role = "custom"
+	RoleAdmin  Role = "admin"
+	RoleMember Role = "member"
+	RoleGuest  Role = "guest"
 )
 
 var ValidRoles = map[Role]bool{
-	RoleAdmin: true, RoleMember: true, RoleDesigner: true,
-	RoleMarketingCoordinator: true, RoleMarketingStrategist: true,
-	RoleResearcher: true, RoleSales: true, RoleGuest: true, RoleCustom: true,
+	RoleAdmin: true, RoleMember: true, RoleGuest: true,
 }
 
 func IsValid(r string) bool {
@@ -110,75 +102,16 @@ var DefaultPermissions = map[Role]map[Permission]bool{
 		PermChannelCreate,
 		PermTaskCreate, PermTaskAssign, PermTaskEdit,
 		PermEventCreate, PermEventEdit, PermEventDelete,
-		PermContactView,
+		PermContactView, PermContactCreate, PermContactEdit,
 		PermBrainMention, PermBrainDM,
 		PermAgentCreate, PermDocCreate, PermDocEdit, PermFileUpload,
 		PermSkillManage,
 		PermWorkspaceInvite,
 	),
 
-	RoleDesigner: permSet(
-		PermChatSend, PermChatEdit, PermChatDelete, PermChatReact,
-		PermChannelCreate,
-		PermTaskCreate, PermTaskAssign, PermTaskEdit,
-		PermEventCreate, PermEventEdit,
-		PermContactView,
-		PermBrainMention, PermBrainDM,
-		PermAgentCreate, PermDocCreate, PermDocEdit, PermFileUpload,
-		PermWorkspaceInvite,
-	),
-
-	RoleMarketingCoordinator: permSet(
-		PermChatSend, PermChatEdit, PermChatDelete, PermChatReact,
-		PermChannelCreate,
-		PermTaskCreate, PermTaskAssign, PermTaskEdit,
-		PermEventCreate, PermEventEdit, PermEventDelete,
-		PermContactView, PermContactCreate, PermContactEdit,
-		PermBrainMention, PermBrainDM,
-		PermAgentCreate, PermDocCreate, PermDocEdit, PermFileUpload,
-		PermWorkspaceInvite,
-	),
-
-	RoleMarketingStrategist: permSet(
-		PermChatSend, PermChatEdit, PermChatDelete, PermChatReact,
-		PermChannelCreate,
-		PermTaskCreate, PermTaskAssign, PermTaskEdit,
-		PermEventCreate, PermEventEdit, PermEventDelete,
-		PermContactView, PermContactCreate, PermContactEdit,
-		PermBrainMention, PermBrainDM,
-		PermAgentCreate, PermDocCreate, PermDocEdit, PermFileUpload,
-		PermWorkspaceInvite,
-	),
-
-	RoleResearcher: permSet(
-		PermChatSend, PermChatEdit, PermChatDelete, PermChatReact,
-		PermChannelCreate,
-		PermTaskCreate, PermTaskEdit,
-		PermEventCreate, PermEventEdit,
-		PermContactView,
-		PermBrainMention, PermBrainDM,
-		PermDocCreate, PermDocEdit, PermFileUpload,
-	),
-
-	RoleSales: permSet(
-		PermChatSend, PermChatEdit, PermChatDelete, PermChatReact,
-		PermChannelCreate,
-		PermTaskCreate, PermTaskAssign, PermTaskEdit,
-		PermEventCreate, PermEventEdit, PermEventDelete,
-		PermContactView, PermContactCreate, PermContactEdit, PermContactDelete,
-		PermBrainMention, PermBrainDM,
-		PermAgentCreate, PermDocCreate, PermDocEdit, PermFileUpload,
-		PermWorkspaceInvite,
-	),
-
 	RoleGuest: permSet(
 		PermChatSend, PermChatEdit, PermChatReact,
 		PermContactView,
-	),
-
-	RoleCustom: permSet(
-		PermChatSend, PermChatEdit, PermChatReact,
-		PermDocCreate,
 	),
 }
 

@@ -89,6 +89,11 @@ func (s *Server) handleCreateDoc(w http.ResponseWriter, r *http.Request) {
 	h := s.hubs.Get(slug)
 	h.BroadcastAll(hub.MakeEnvelope("doc.created", doc), "")
 
+	s.onPulse(slug, Pulse{
+		Type: "document.created", ActorID: claims.UserID, ActorName: claims.DisplayName,
+		EntityID: doc.ID, Summary: pulseSummary(claims.DisplayName, "created doc", doc.Title),
+	})
+
 	writeJSON(w, http.StatusCreated, doc)
 }
 
@@ -234,6 +239,11 @@ func (s *Server) handleUpdateDoc(w http.ResponseWriter, r *http.Request) {
 
 	h := s.hubs.Get(slug)
 	h.BroadcastAll(hub.MakeEnvelope("doc.updated", d), "")
+
+	s.onPulse(slug, Pulse{
+		Type: "document.updated", ActorID: claims.UserID, ActorName: claims.DisplayName,
+		EntityID: d.ID, Summary: pulseSummary(claims.DisplayName, "updated doc", d.Title),
+	})
 
 	writeJSON(w, http.StatusOK, d)
 }

@@ -18,12 +18,21 @@ type GeminiImageRequest struct {
 }
 
 type GeminiContent struct {
+	Role  string       `json:"role,omitempty"`
 	Parts []GeminiPart `json:"parts"`
 }
 
 type GeminiPart struct {
-	Text       string            `json:"text,omitempty"`
-	InlineData *GeminiInlineData `json:"inlineData,omitempty"`
+	Text             string                `json:"text,omitempty"`
+	InlineData       *GeminiInlineData     `json:"inlineData,omitempty"`
+	FunctionCall     *GeminiFunctionCall   `json:"functionCall,omitempty"`
+	FunctionResponse *GeminiFunctionResp   `json:"functionResponse,omitempty"`
+	ThoughtSignature string                `json:"thoughtSignature,omitempty"`
+}
+
+type GeminiFunctionResp struct {
+	Name     string          `json:"name"`
+	Response json.RawMessage `json:"response"`
 }
 
 type GeminiInlineData struct {
@@ -77,7 +86,7 @@ func GenerateImageGemini(apiKey, model, prompt string) (text string, imageData s
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := newHTTPClient().Do(httpReq)
 	if err != nil {
 		return "", "", "", fmt.Errorf("gemini request: %w", err)
 	}

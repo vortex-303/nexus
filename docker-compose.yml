@@ -1,0 +1,14 @@
+services:
+  nexus:
+    image: ghcr.io/vortex-303/nexus:latest
+    build: .
+    ports:
+      - "80:8080"
+    volumes:
+      - nexus_data:/data
+    environment:
+      DATA_DIR: /data
+    restart: unless-stopped
+
+volumes:
+  nexus_data:

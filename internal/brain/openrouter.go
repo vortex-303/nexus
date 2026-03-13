@@ -14,6 +14,119 @@ import (
 )
 
 const openRouterURL = "https://openrouter.ai/api/v1/chat/completions"
+const xaiURL = "https://api.x.ai/v1/chat/completions"
+const xaiResponsesURL = "https://api.x.ai/v1/responses"
+const openaiURL = "https://api.openai.com/v1/chat/completions"
+
+// ResponsesTool defines a tool for the xAI Responses API (x_search or web_search).
+type ResponsesTool struct {
+	Type            string   `json:"type"` // "x_search" or "web_search"
+	AllowedXHandles []string `json:"allowed_x_handles,omitempty"`
+	FromDate        string   `json:"from_date,omitempty"`
+	ToDate          string   `json:"to_date,omitempty"`
+	AllowedDomains  []string `json:"allowed_domains,omitempty"`
+	ExcludedDomains []string `json:"excluded_domains,omitempty"`
+}
+
+// XSearchTool is an alias for backward compatibility.
+type XSearchTool = ResponsesTool
+
+type xSearchRequest struct {
+	Model string          `json:"model"`
+	Input []Message       `json:"input"`
+	Tools []ResponsesTool `json:"tools"`
+}
+
+type xSearchResponse struct {
+	Output []struct {
+		Type    string `json:"type"`
+		Content []struct {
+			Type        string `json:"type"`
+			Text        string `json:"text"`
+			Annotations []struct {
+				Type  string `json:"type"`
+				Title string `json:"title"`
+				URL   string `json:"url"`
+			} `json:"annotations,omitempty"`
+		} `json:"content,omitempty"`
+	} `json:"output"`
+	Error *APIError `json:"error,omitempty"`
+}
+
+// CompleteXSearch calls the xAI Responses API with search tools.
+// Accepts variadic ResponsesTool; defaults to [{type: "x_search"}] if none provided.
+// Returns the synthesized text and a list of unique citation URLs.
+func (c *Client) CompleteXSearch(query string, tools ...ResponsesTool) (string, []string, error) {
+	start := time.Now()
+	defer func() {
+		metrics.LLMLatency.WithLabelValues(c.Model, "x_search").Observe(time.Since(start).Seconds())
+	}()
+
+	if len(tools) == 0 {
+		tools = []ResponsesTool{{Type: "x_search"}}
+	}
+
+	req := xSearchRequest{
+		Model: c.Model,
+		Input: []Message{{Role: "user", Content: query}},
+		Tools: tools,
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("marshaling x_search request: %w", err)
+	}
+
+	httpReq, err := http.NewRequest("POST", xaiResponsesURL, bytes.NewReader(body))
+	if err != nil {
+		return "", nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+
+	resp, err := c.HTTPClient.Do(httpReq)
+	if err != nil {
+		metrics.LLMCallsTotal.WithLabelValues(c.Model, "x_search", "error").Inc()
+		return "", nil, fmt.Errorf("x_search request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result xSearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		metrics.LLMCallsTotal.WithLabelValues(c.Model, "x_search", "error").Inc()
+		return "", nil, fmt.Errorf("decoding x_search response: %w", err)
+	}
+	if result.Error != nil {
+		metrics.LLMCallsTotal.WithLabelValues(c.Model, "x_search", "error").Inc()
+		return "", nil, fmt.Errorf("x_search: %s", result.Error.Message)
+	}
+
+	var textParts []string
+	seen := map[string]bool{}
+	var citations []string
+
+	for _, out := range result.Output {
+		for _, c := range out.Content {
+			if c.Text != "" {
+				textParts = append(textParts, c.Text)
+			}
+			for _, ann := range c.Annotations {
+				if ann.URL != "" && !seen[ann.URL] {
+					seen[ann.URL] = true
+					citations = append(citations, ann.URL)
+				}
+			}
+		}
+	}
+
+	if len(textParts) == 0 {
+		metrics.LLMCallsTotal.WithLabelValues(c.Model, "x_search", "error").Inc()
+		return "", nil, fmt.Errorf("x_search returned no content")
+	}
+
+	metrics.LLMCallsTotal.WithLabelValues(c.Model, "x_search", "ok").Inc()
+	return strings.Join(textParts, "\n\n"), citations, nil
+}
 
 // MessageImage represents an image in a multimodal response.
 type MessageImage struct {
@@ -53,21 +166,53 @@ type CompletionChoice struct {
 	FinishReason string `json:"finish_reason"`
 }
 
+// CompletionUsage contains token counts and cost from the LLM response.
+type CompletionUsage struct {
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	TotalTokens      int     `json:"total_tokens"`
+	Cost             float64 `json:"cost"`
+}
+
 // CompletionResponse is the non-streaming response from OpenRouter.
 type CompletionResponse struct {
 	Choices []CompletionChoice `json:"choices"`
-	Error   *struct {
-		Message string `json:"message"`
-	} `json:"error,omitempty"`
+	Usage   *CompletionUsage   `json:"usage,omitempty"`
+	Error   *APIError          `json:"error,omitempty"`
 }
 
-// Client talks to the OpenRouter API.
+// Client talks to an OpenAI-compatible chat completions API (OpenRouter, xAI, etc).
 type Client struct {
 	APIKey             string
 	Model              string
+	BaseURL            string // defaults to openRouterURL
 	Multimodal         bool
 	HTTPClient         *http.Client
 	FreeModelFallbacks []string // additional models to try on retryable errors
+}
+
+// endpoint returns the base URL for this client, defaulting to OpenRouter.
+func (c *Client) endpoint() string {
+	if c.BaseURL != "" {
+		return c.BaseURL
+	}
+	return openRouterURL
+}
+
+// globalTransport can be set to intercept all outbound LLM requests.
+var globalTransport http.RoundTripper
+
+// SetGlobalTransport sets a custom transport for all new LLM clients (used for network logging).
+func SetGlobalTransport(t http.RoundTripper) {
+	globalTransport = t
+}
+
+func newHTTPClient() *http.Client {
+	c := &http.Client{Timeout: 120 * time.Second}
+	if globalTransport != nil {
+		c.Transport = globalTransport
+	}
+	return c
 }
 
 // NewClient creates an OpenRouter client.
@@ -75,8 +220,33 @@ func NewClient(apiKey, model string) *Client {
 	return &Client{
 		APIKey:     apiKey,
 		Model:      model,
-		HTTPClient: http.DefaultClient,
+		HTTPClient: newHTTPClient(),
 	}
+}
+
+// NewXAIClient creates a client that talks directly to xAI's API.
+func NewXAIClient(apiKey, model string) *Client {
+	return &Client{
+		APIKey:     apiKey,
+		Model:      model,
+		BaseURL:    xaiURL,
+		HTTPClient: newHTTPClient(),
+	}
+}
+
+// NewOpenAIClient creates a client that talks directly to OpenAI's API.
+func NewOpenAIClient(apiKey, model string) *Client {
+	return &Client{
+		APIKey:     apiKey,
+		Model:      model,
+		BaseURL:    openaiURL,
+		HTTPClient: newHTTPClient(),
+	}
+}
+
+// IsGrokModel returns true if the model ID is a Grok/xAI model.
+func IsGrokModel(model string) bool {
+	return strings.HasPrefix(model, "grok-")
 }
 
 // isRetryableError checks if an error is retryable (rate limit, overloaded, unavailable).
@@ -96,7 +266,7 @@ func isRetryableError(statusCode int, err error) bool {
 
 // Complete sends a non-streaming completion request.
 // If FreeModelFallbacks is set, retries with next model on retryable errors (max 3 attempts).
-func (c *Client) Complete(systemPrompt string, messages []Message) (string, error) {
+func (c *Client) Complete(systemPrompt string, messages []Message) (string, *CompletionUsage, error) {
 	start := time.Now()
 	defer func() {
 		metrics.LLMLatency.WithLabelValues(c.Model, "brain").Observe(time.Since(start).Seconds())
@@ -125,89 +295,10 @@ func (c *Client) Complete(systemPrompt string, messages []Message) (string, erro
 
 		body, err := json.Marshal(req)
 		if err != nil {
-			return "", fmt.Errorf("marshaling request: %w", err)
-		}
-
-		httpReq, err := http.NewRequest("POST", openRouterURL, bytes.NewReader(body))
-		if err != nil {
-			return "", err
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
-		httpReq.Header.Set("HTTP-Referer", "https://nexus.chat")
-
-		resp, err := c.HTTPClient.Do(httpReq)
-		if err != nil {
-			lastErr = fmt.Errorf("openrouter request: %w", err)
-			if len(c.FreeModelFallbacks) > 0 {
-				continue
-			}
-			return "", lastErr
-		}
-
-		statusCode := resp.StatusCode
-		var result CompletionResponse
-		decodeErr := json.NewDecoder(resp.Body).Decode(&result)
-		resp.Body.Close()
-
-		if decodeErr != nil {
-			lastErr = fmt.Errorf("decoding response: %w", decodeErr)
-			if len(c.FreeModelFallbacks) > 0 && isRetryableError(statusCode, lastErr) {
-				continue
-			}
-			return "", lastErr
-		}
-		if result.Error != nil {
-			lastErr = fmt.Errorf("openrouter: %s", result.Error.Message)
-			if len(c.FreeModelFallbacks) > 0 && isRetryableError(statusCode, lastErr) {
-				continue
-			}
-			metrics.LLMCallsTotal.WithLabelValues(model, "brain", "error").Inc()
-			return "", lastErr
-		}
-		if len(result.Choices) == 0 {
-			metrics.LLMCallsTotal.WithLabelValues(model, "brain", "error").Inc()
-			return "", fmt.Errorf("no choices in response")
-		}
-		metrics.LLMCallsTotal.WithLabelValues(model, "brain", "ok").Inc()
-		return result.Choices[0].Message.Content, nil
-	}
-	return "", lastErr
-}
-
-// CompleteMultimodal sends a completion request with multimodal output (text + images).
-// Returns text content, images, and error.
-// If FreeModelFallbacks is set, retries with next model on retryable errors (max 3 attempts).
-func (c *Client) CompleteMultimodal(systemPrompt string, messages []Message) (string, []MessageImage, error) {
-	msgs := make([]Message, 0, len(messages)+1)
-	msgs = append(msgs, Message{Role: "system", Content: systemPrompt})
-	msgs = append(msgs, messages...)
-
-	models := []string{c.Model}
-	models = append(models, c.FreeModelFallbacks...)
-	maxAttempts := 3
-	if len(models) < maxAttempts {
-		maxAttempts = len(models)
-	}
-
-	var lastErr error
-	for i := 0; i < maxAttempts; i++ {
-		model := models[i]
-		req := CompletionRequest{
-			Model:       model,
-			Messages:    msgs,
-			Stream:      false,
-			MaxTokens:   4096,
-			Temperature: 0.7,
-			Modalities:  []string{"text", "image"},
-		}
-
-		body, err := json.Marshal(req)
-		if err != nil {
 			return "", nil, fmt.Errorf("marshaling request: %w", err)
 		}
 
-		httpReq, err := http.NewRequest("POST", openRouterURL, bytes.NewReader(body))
+		httpReq, err := http.NewRequest("POST", c.endpoint(), bytes.NewReader(body))
 		if err != nil {
 			return "", nil, err
 		}
@@ -241,22 +332,101 @@ func (c *Client) CompleteMultimodal(systemPrompt string, messages []Message) (st
 			if len(c.FreeModelFallbacks) > 0 && isRetryableError(statusCode, lastErr) {
 				continue
 			}
+			metrics.LLMCallsTotal.WithLabelValues(model, "brain", "error").Inc()
 			return "", nil, lastErr
 		}
 		if len(result.Choices) == 0 {
+			metrics.LLMCallsTotal.WithLabelValues(model, "brain", "error").Inc()
 			return "", nil, fmt.Errorf("no choices in response")
+		}
+		metrics.LLMCallsTotal.WithLabelValues(model, "brain", "ok").Inc()
+		return result.Choices[0].Message.Content, result.Usage, nil
+	}
+	return "", nil, lastErr
+}
+
+// CompleteMultimodal sends a completion request with multimodal output (text + images).
+// Returns text content, images, and error.
+// If FreeModelFallbacks is set, retries with next model on retryable errors (max 3 attempts).
+func (c *Client) CompleteMultimodal(systemPrompt string, messages []Message) (string, []MessageImage, *CompletionUsage, error) {
+	msgs := make([]Message, 0, len(messages)+1)
+	msgs = append(msgs, Message{Role: "system", Content: systemPrompt})
+	msgs = append(msgs, messages...)
+
+	models := []string{c.Model}
+	models = append(models, c.FreeModelFallbacks...)
+	maxAttempts := 3
+	if len(models) < maxAttempts {
+		maxAttempts = len(models)
+	}
+
+	var lastErr error
+	for i := 0; i < maxAttempts; i++ {
+		model := models[i]
+		req := CompletionRequest{
+			Model:       model,
+			Messages:    msgs,
+			Stream:      false,
+			MaxTokens:   4096,
+			Temperature: 0.7,
+			Modalities:  []string{"text", "image"},
+		}
+
+		body, err := json.Marshal(req)
+		if err != nil {
+			return "", nil, nil, fmt.Errorf("marshaling request: %w", err)
+		}
+
+		httpReq, err := http.NewRequest("POST", c.endpoint(), bytes.NewReader(body))
+		if err != nil {
+			return "", nil, nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+		httpReq.Header.Set("HTTP-Referer", "https://nexus.chat")
+
+		resp, err := c.HTTPClient.Do(httpReq)
+		if err != nil {
+			lastErr = fmt.Errorf("openrouter request: %w", err)
+			if len(c.FreeModelFallbacks) > 0 {
+				continue
+			}
+			return "", nil, nil, lastErr
+		}
+
+		statusCode := resp.StatusCode
+		var result CompletionResponse
+		decodeErr := json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+
+		if decodeErr != nil {
+			lastErr = fmt.Errorf("decoding response: %w", decodeErr)
+			if len(c.FreeModelFallbacks) > 0 && isRetryableError(statusCode, lastErr) {
+				continue
+			}
+			return "", nil, nil, lastErr
+		}
+		if result.Error != nil {
+			lastErr = fmt.Errorf("openrouter: %s", result.Error.Message)
+			if len(c.FreeModelFallbacks) > 0 && isRetryableError(statusCode, lastErr) {
+				continue
+			}
+			return "", nil, nil, lastErr
+		}
+		if len(result.Choices) == 0 {
+			return "", nil, nil, fmt.Errorf("no choices in response")
 		}
 
 		choice := result.Choices[0]
-		return choice.Message.Content, choice.Message.Images, nil
+		return choice.Message.Content, choice.Message.Images, result.Usage, nil
 	}
-	return "", nil, lastErr
+	return "", nil, nil, lastErr
 }
 
 // CompleteWithTools sends a completion request with tool definitions.
 // Returns content, tool calls, and error.
 // If FreeModelFallbacks is set, retries with next model on retryable errors (max 3 attempts).
-func (c *Client) CompleteWithTools(systemPrompt string, messages []Message, tools []ToolDef) (string, []ToolCall, error) {
+func (c *Client) CompleteWithTools(systemPrompt string, messages []Message, tools []ToolDef) (string, []ToolCall, *CompletionUsage, error) {
 	start := time.Now()
 	defer func() {
 		metrics.LLMLatency.WithLabelValues(c.Model, "brain").Observe(time.Since(start).Seconds())
@@ -286,12 +456,12 @@ func (c *Client) CompleteWithTools(systemPrompt string, messages []Message, tool
 
 		body, err := json.Marshal(req)
 		if err != nil {
-			return "", nil, fmt.Errorf("marshaling request: %w", err)
+			return "", nil, nil, fmt.Errorf("marshaling request: %w", err)
 		}
 
-		httpReq, err := http.NewRequest("POST", openRouterURL, bytes.NewReader(body))
+		httpReq, err := http.NewRequest("POST", c.endpoint(), bytes.NewReader(body))
 		if err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
@@ -303,7 +473,7 @@ func (c *Client) CompleteWithTools(systemPrompt string, messages []Message, tool
 			if len(c.FreeModelFallbacks) > 0 {
 				continue
 			}
-			return "", nil, lastErr
+			return "", nil, nil, lastErr
 		}
 
 		statusCode := resp.StatusCode
@@ -316,7 +486,7 @@ func (c *Client) CompleteWithTools(systemPrompt string, messages []Message, tool
 			if len(c.FreeModelFallbacks) > 0 && isRetryableError(statusCode, lastErr) {
 				continue
 			}
-			return "", nil, lastErr
+			return "", nil, nil, lastErr
 		}
 		if result.Error != nil {
 			lastErr = fmt.Errorf("openrouter: %s", result.Error.Message)
@@ -324,22 +494,22 @@ func (c *Client) CompleteWithTools(systemPrompt string, messages []Message, tool
 				continue
 			}
 			metrics.LLMCallsTotal.WithLabelValues(model, "brain", "error").Inc()
-			return "", nil, lastErr
+			return "", nil, nil, lastErr
 		}
 		if len(result.Choices) == 0 {
 			metrics.LLMCallsTotal.WithLabelValues(model, "brain", "error").Inc()
-			return "", nil, fmt.Errorf("no choices in response")
+			return "", nil, nil, fmt.Errorf("no choices in response")
 		}
 		metrics.LLMCallsTotal.WithLabelValues(model, "brain", "ok").Inc()
 
 		choice := result.Choices[0]
-		return choice.Message.Content, choice.Message.ToolCalls, nil
+		return choice.Message.Content, choice.Message.ToolCalls, result.Usage, nil
 	}
-	return "", nil, lastErr
+	return "", nil, nil, lastErr
 }
 
 // CompleteToolResults sends tool results back to the model for a final response.
-func (c *Client) CompleteToolResults(systemPrompt string, messages []Message) (string, error) {
+func (c *Client) CompleteToolResults(systemPrompt string, messages []Message) (string, *CompletionUsage, error) {
 	return c.Complete(systemPrompt, messages)
 }
 
@@ -365,7 +535,7 @@ func (c *Client) CompleteStream(systemPrompt string, messages []Message, cb Stre
 		return fmt.Errorf("marshaling request: %w", err)
 	}
 
-	httpReq, err := http.NewRequest("POST", openRouterURL, bytes.NewReader(body))
+	httpReq, err := http.NewRequest("POST", c.endpoint(), bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -443,9 +613,7 @@ func (c *Client) Embed(text string) ([]float32, error) {
 		Data []struct {
 			Embedding []float32 `json:"embedding"`
 		} `json:"data"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error,omitempty"`
+		Error *APIError `json:"error,omitempty"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decoding embedding response: %w", err)

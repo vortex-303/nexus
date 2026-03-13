@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	writeWait  = 10 * time.Second
-	pongWait   = 60 * time.Second
+	writeWait  = 15 * time.Second
+	pongWait   = 90 * time.Second
 	pingPeriod = 30 * time.Second
 	maxMsgSize = 64 * 1024 // 64KB
 )
@@ -216,10 +216,6 @@ func (s *Server) handleWSMessage(conn *hub.Conn, h *hub.Hub, env *hub.Envelope) 
 	case hub.TypeChannelRead:
 		s.handleWSChannelRead(conn, h, env.Payload)
 	case hub.TypeChannelClear:
-		if conn.Role != "admin" {
-			s.sendError(conn, "admin only")
-			return
-		}
 		s.handleWSClearChannel(conn, h, env.Payload)
 	default:
 		s.sendError(conn, "unknown message type: "+env.Type)
@@ -229,11 +225,12 @@ func (s *Server) handleWSMessage(conn *hub.Conn, h *hub.Hub, env *hub.Envelope) 
 func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.RawMessage) {
 	// Rate limit: max one message per 200ms
 	sendTime := time.Now()
-	if !conn.LastMessageAt.IsZero() && sendTime.Sub(conn.LastMessageAt) < 200*time.Millisecond {
+	lastMsg := conn.LastMessageAt()
+	if !lastMsg.IsZero() && sendTime.Sub(lastMsg) < 200*time.Millisecond {
 		s.sendErrorCode(conn, "sending too fast", "rate_limited")
 		return
 	}
-	conn.LastMessageAt = sendTime
+	conn.SetLastMessageAt(sendTime)
 
 	var p hub.MessageSendPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
@@ -317,24 +314,32 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 
 	metrics.MessagesTotal.WithLabelValues(conn.WorkspaceSlug).Inc()
 
-	// Track for memory extraction
-	s.trackMessageAndMaybeExtract(conn.WorkspaceSlug, p.ChannelID)
+	s.onPulse(conn.WorkspaceSlug, Pulse{
+		Type: "message.sent", ActorID: conn.UserID, ActorName: conn.DisplayName,
+		ChannelID: p.ChannelID, EntityID: msgID,
+		Summary: pulseSummary(conn.DisplayName, "sent a message", ""),
+	})
 
-	// Check for @Brain mention or DM with Brain
-	isBrainDM := false
+	// Track for memory extraction
+	s.trackMessageAndMaybeExtract(conn.WorkspaceSlug, p.ChannelID, msgID, p.Content, conn.DisplayName)
+
+	// Look up DM channel name (used for both Brain and Agent DM detection)
 	var chName string
 	_ = wdb.DB.QueryRow("SELECT name FROM channels WHERE id = ? AND type = 'dm'", p.ChannelID).Scan(&chName)
-	if chName != "" && strings.Contains(chName, brain.BrainMemberID) {
-		isBrainDM = true
-	}
-	if brain.ContainsMention(p.Content) || isBrainDM {
-		s.handleBrainMentionWithTools(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content)
+
+	// Check for @Brain mention or DM with Brain
+	// Skip server-side brain if sender's client is handling via WebLLM
+	if !p.WebLLM {
+		isBrainDM := chName != "" && strings.Contains(chName, brain.BrainMemberID)
+		if brain.ContainsMention(p.Content) || isBrainDM {
+			s.handleBrainMentionWithTools(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
+		}
 	}
 
 	// Check for @Agent mentions
 	mentionedAgents := s.checkAgentMentions(conn.WorkspaceSlug, p.Content)
 	for _, agent := range mentionedAgents {
-		s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent)
+		s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent, time.Now())
 	}
 
 	// Build set of already-triggered agent IDs
@@ -352,7 +357,7 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 			if strings.Contains(chName, ba.MemberID) && !triggered[ba.ID] {
 				if agent := s.loadAgentByID(conn.WorkspaceSlug, ba.ID); agent != nil && agent.IsActive {
 					triggered[ba.ID] = true
-					s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent)
+					s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent, time.Now())
 				}
 			}
 		}
@@ -361,35 +366,12 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 			for _, agent := range customAgents {
 				if !triggered[agent.ID] {
 					triggered[agent.ID] = true
-					s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent)
+					s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent, time.Now())
 				}
 			}
 		}
 	}
 
-	// Conversation-following agents (agents that were @mentioned earlier and are still tracking)
-	followAgents := s.checkFollowingAgents(conn.WorkspaceSlug, p.ChannelID, conn.UserID)
-	for _, agent := range followAgents {
-		if !triggered[agent.ID] {
-			triggered[agent.ID] = true
-			s.handleAgentFollowUp(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent)
-		}
-	}
-
-	// Channel agents — agents assigned to this channel auto-respond
-	channelAgents := s.checkChannelAgents(conn.WorkspaceSlug, p.ChannelID, conn.UserID)
-	for _, agent := range channelAgents {
-		if !triggered[agent.ID] {
-			triggered[agent.ID] = true
-			// Record response for cooldown tracking
-			if s.convTracker != nil {
-				key := ConversationKey{Slug: conn.WorkspaceSlug, ChannelID: p.ChannelID, AgentID: agent.ID}
-				s.convTracker.RecordResponse(key)
-			}
-			// Channel agents in "always" mode get full tool access (like @mention)
-			s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent)
-		}
-	}
 
 	// Auto-follow threads: if user replies to an agent's message, that agent auto-responds
 	if p.ParentID != "" {
@@ -398,7 +380,7 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 		if parentSenderID != "" && !triggered[parentSenderID] {
 			if agent := s.loadAgentByID(conn.WorkspaceSlug, parentSenderID); agent != nil && agent.IsActive && agent.BehaviorConfig.AutoFollowThreads {
 				triggered[parentSenderID] = true
-				s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent)
+				s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent, time.Now())
 			}
 		}
 	}
@@ -555,6 +537,16 @@ func (s *Server) handleWSClearChannel(conn *hub.Conn, h *hub.Hub, payload json.R
 		return
 	}
 
+	// Admins can clear any channel; regular users can only clear their own DMs
+	if conn.Role != "admin" {
+		var chType, chName string
+		err := wdb.DB.QueryRow("SELECT type, name FROM channels WHERE id = ?", p.ChannelID).Scan(&chType, &chName)
+		if err != nil || chType != "dm" || !strings.Contains(chName, conn.UserID) {
+			s.sendError(conn, "permission denied")
+			return
+		}
+	}
+
 	// Soft-delete all messages in the channel
 	_, err = wdb.DB.Exec("UPDATE messages SET deleted = TRUE WHERE channel_id = ?", p.ChannelID)
 	if err != nil {
@@ -615,6 +607,25 @@ func (s *Server) autoSubscribeChannel(conn *hub.Conn, h *hub.Hub, channelID stri
 		if len(parts) == 2 {
 			h.SubscribeUsersByID(channelID, parts)
 			return
+		}
+	}
+
+	if chType == "group" {
+		// Only subscribe channel members
+		rows, err := wdb.DB.Query("SELECT member_id FROM channel_members WHERE channel_id = ?", channelID)
+		if err == nil {
+			defer rows.Close()
+			var memberIDs []string
+			for rows.Next() {
+				var mid string
+				if rows.Scan(&mid) == nil {
+					memberIDs = append(memberIDs, mid)
+				}
+			}
+			if len(memberIDs) > 0 {
+				h.SubscribeUsersByID(channelID, memberIDs)
+				return
+			}
 		}
 	}
 

@@ -206,11 +206,12 @@ Autonomy types:
 User description: ` + req.Description
 
 	client := brain.NewClient(apiKey, model)
-	response, err := client.Complete(metaPrompt, nil)
+	response, skillUsage, err := client.Complete(metaPrompt, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "LLM error: "+err.Error())
 		return
 	}
+	s.trackUsage(slug, skillUsage, model, "agent", "", "")
 
 	// Strip markdown code fences if present
 	response = strings.TrimSpace(response)

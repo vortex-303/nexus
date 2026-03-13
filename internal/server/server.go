@@ -48,6 +48,8 @@ type Server struct {
 	asynqServer *asynq.Server
 	vectors     *vectorstore.VectorStore
 	convTracker *ConversationTracker
+	agentSem    chan struct{} // semaphore to limit concurrent agent/brain goroutines
+	netLog      *NetworkLog
 }
 
 func Run(cfg *config.Config) error {
@@ -68,6 +70,13 @@ func Run(cfg *config.Config) error {
 		return fmt.Errorf("jwt setup: %w", err)
 	}
 
+	netLog := NewNetworkLog(500) // keep last 500 outbound requests
+	brain.SetGlobalTransport(&LoggingTransport{
+		Inner:   http.DefaultTransport,
+		Log:     netLog,
+		Purpose: "LLM",
+	})
+
 	s := &Server{
 		cfg:         cfg,
 		global:      global,
@@ -78,6 +87,8 @@ func Run(cfg *config.Config) error {
 		cron:        cron.New(),
 		search:      search.NewIndexManager(cfg.DataDir),
 		convTracker: NewConversationTracker(),
+		agentSem:    make(chan struct{}, 20), // max 20 concurrent agent/brain goroutines
+		netLog:      netLog,
 	}
 	// Initialize asynq task queue (optional — falls back to goroutines)
 	if err := s.initAsynq(); err != nil {
@@ -96,9 +107,13 @@ func Run(cfg *config.Config) error {
 
 	s.routes()
 	s.scheduleHeartbeats()
+	s.scheduleReflections()
 	s.scheduleCalendarReminders()
 	s.cron.Start()
 	go s.startSMTPServer()
+
+	// Auto-reindex search for all workspaces
+	go s.reindexAllWorkspaces()
 
 	return s.listenAndServe()
 }
@@ -175,6 +190,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	s.mux.HandleFunc("POST /api/auth/login", s.handleLogin)
 	s.mux.HandleFunc("GET /api/auth/config", s.handleAuthConfig)
+	s.mux.HandleFunc("GET /api/briefs/public/{token}", s.handlePublicBrief)
 
 	// Authenticated routes (with permission checks)
 	authed := auth.Middleware(s.jwt)
@@ -184,6 +200,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/auth/me/password", authed(http.HandlerFunc(s.handleChangePassword)))
 	s.mux.Handle("GET /api/auth/workspaces", authed(http.HandlerFunc(s.handleListWorkspaces)))
 	s.mux.Handle("GET /api/workspaces/{slug}", authed(http.HandlerFunc(s.handleGetWorkspace)))
+	s.mux.Handle("GET /api/workspaces/{slug}/info", authed(http.HandlerFunc(s.handleGetWorkspaceInfo)))
 	s.mux.Handle("GET /api/workspaces/{slug}/channels", authed(http.HandlerFunc(s.handleListChannels)))
 	s.mux.Handle("GET /api/workspaces/{slug}/channels/{channelID}/messages", authed(http.HandlerFunc(s.handleMessageHistory)))
 	s.mux.Handle("GET /api/workspaces/{slug}/channels/{channelID}/messages/{messageID}/thread", authed(http.HandlerFunc(s.handleGetThread)))
@@ -195,6 +212,8 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/workspaces/{slug}/invite", authed(http.HandlerFunc(s.requirePerm(roles.PermWorkspaceInvite, s.handleCreateInvite))))
 	s.mux.Handle("POST /api/workspaces/{slug}/invite/email", authed(http.HandlerFunc(s.requirePerm(roles.PermWorkspaceInvite, s.handleInviteByEmail))))
 	s.mux.Handle("POST /api/workspaces/{slug}/channels", authed(http.HandlerFunc(s.requirePerm(roles.PermChannelCreate, s.handleCreateChannel))))
+	s.mux.Handle("DELETE /api/workspaces/{slug}/channels/{channelID}", authed(http.HandlerFunc(s.handleDeleteChannel)))
+	s.mux.Handle("DELETE /api/workspaces/{slug}/channels/{channelID}/members/{memberID}", authed(http.HandlerFunc(s.requireAdmin(s.handleKickChannelMember))))
 
 	// Admin-only: role & member management
 	s.mux.Handle("GET /api/roles", authed(http.HandlerFunc(s.handleListRoles)))
@@ -234,6 +253,12 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/workspaces/{slug}/files/{fileID}/duplicate", authed(http.HandlerFunc(s.requirePerm(roles.PermFileUpload, s.handleDuplicateFile))))
 
 	// Brain
+	s.mux.Handle("GET /api/workspaces/{slug}/brain/prompt", authed(http.HandlerFunc(s.handleGetBrainPrompt)))
+	s.mux.Handle("POST /api/workspaces/{slug}/channels/{channelId}/brain-message", authed(http.HandlerFunc(s.requirePerm(roles.PermChatSend, s.handleSaveBrainMessage))))
+	s.mux.Handle("POST /api/workspaces/{slug}/brain/execute-tool", authed(http.HandlerFunc(s.requirePerm(roles.PermBrainDM, s.handleExecuteTool))))
+	s.mux.Handle("GET /api/workspaces/{slug}/brain/tools", authed(http.HandlerFunc(s.requirePerm(roles.PermBrainDM, s.handleGetBrainTools))))
+	s.mux.Handle("POST /api/workspaces/{slug}/brain/webllm-context", authed(http.HandlerFunc(s.requirePerm(roles.PermBrainDM, s.handleWebLLMContext))))
+	s.mux.Handle("POST /api/workspaces/{slug}/brain/welcome", authed(http.HandlerFunc(s.requireAdmin(s.handleBrainWelcome))))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/settings", authed(http.HandlerFunc(s.handleGetBrainSettings)))
 	s.mux.Handle("PUT /api/workspaces/{slug}/brain/settings", authed(http.HandlerFunc(s.handleUpdateBrainSettings)))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/definitions/{file}", authed(http.HandlerFunc(s.handleGetBrainDefinition)))
@@ -241,6 +266,31 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/memories", authed(http.HandlerFunc(s.handleListMemories)))
 	s.mux.Handle("DELETE /api/workspaces/{slug}/brain/memories/{memoryID}", authed(http.HandlerFunc(s.handleDeleteMemory)))
 	s.mux.Handle("DELETE /api/workspaces/{slug}/brain/memories", authed(http.HandlerFunc(s.handleClearMemories)))
+	s.mux.Handle("POST /api/workspaces/{slug}/brain/memories/pin", authed(http.HandlerFunc(s.handlePinMemory)))
+	s.mux.Handle("POST /api/workspaces/{slug}/brain/memories/extract", authed(http.HandlerFunc(s.requireAdmin(s.handleExtractNow))))
+	s.mux.Handle("POST /api/workspaces/{slug}/brain/reflect", authed(http.HandlerFunc(s.requireAdmin(s.handleReflectNow))))
+	s.mux.Handle("GET /api/workspaces/{slug}/usage", authed(http.HandlerFunc(s.requireAdmin(s.handleGetUsage))))
+
+	// Living Briefs
+	s.mux.Handle("GET /api/workspaces/{slug}/briefs", authed(http.HandlerFunc(s.handleListBriefs)))
+	s.mux.Handle("GET /api/workspaces/{slug}/briefs/templates", authed(http.HandlerFunc(s.handleListBriefTemplates)))
+	s.mux.Handle("GET /api/workspaces/{slug}/briefs/{briefID}", authed(http.HandlerFunc(s.handleGetBrief)))
+	s.mux.Handle("POST /api/workspaces/{slug}/briefs", authed(http.HandlerFunc(s.requireAdmin(s.handleCreateBrief))))
+	s.mux.Handle("DELETE /api/workspaces/{slug}/briefs/{briefID}", authed(http.HandlerFunc(s.requireAdmin(s.handleDeleteBrief))))
+	s.mux.Handle("POST /api/workspaces/{slug}/briefs/{briefID}/generate", authed(http.HandlerFunc(s.requireAdmin(s.handleGenerateBrief))))
+	s.mux.Handle("POST /api/workspaces/{slug}/briefs/{briefID}/share", authed(http.HandlerFunc(s.requireAdmin(s.handleShareBrief))))
+	s.mux.Handle("DELETE /api/workspaces/{slug}/briefs/{briefID}/share", authed(http.HandlerFunc(s.requireAdmin(s.handleUnshareBrief))))
+
+	// Portable workspace
+	s.mux.Handle("GET /api/workspaces/{slug}/export", authed(http.HandlerFunc(s.requireAdmin(s.handleExportWorkspace))))
+	s.mux.Handle("POST /api/workspaces/import", authed(http.HandlerFunc(s.handleImportWorkspace)))
+
+	// Workspace destroy (kill switch)
+	s.mux.Handle("DELETE /api/workspaces/{slug}/destroy", authed(http.HandlerFunc(s.requireAdmin(s.handleDestroyWorkspace))))
+
+	// Network transparency
+	s.mux.Handle("GET /api/workspaces/{slug}/network-log", authed(http.HandlerFunc(s.requireAdmin(s.handleNetworkLog))))
+
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/actions", authed(http.HandlerFunc(s.handleListActions)))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/skills", authed(http.HandlerFunc(s.handleListSkills)))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/skills/templates", authed(http.HandlerFunc(s.handleListSkillTemplates)))
@@ -299,6 +349,8 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/workspaces/{slug}/models", authed(http.HandlerFunc(s.handleAddWorkspaceModel)))
 	s.mux.Handle("DELETE /api/workspaces/{slug}/models/{modelID}", authed(http.HandlerFunc(s.requireAdmin(s.handleRemoveWorkspaceModel))))
 	s.mux.Handle("GET /api/workspaces/{slug}/models/check", authed(http.HandlerFunc(s.handleCheckModelAvailability)))
+	s.mux.Handle("GET /api/workspaces/{slug}/models/free", authed(http.HandlerFunc(s.handleGetWorkspaceFreeModels)))
+	s.mux.Handle("PUT /api/workspaces/{slug}/models/free", authed(http.HandlerFunc(s.requireAdmin(s.handleSetWorkspaceFreeModels))))
 
 	// Announcements (public)
 	s.mux.HandleFunc("GET /api/announcements", s.handleGetAnnouncement)
@@ -357,6 +409,18 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/workspaces/{slug}/calendar/events/{eventID}", authed(http.HandlerFunc(s.handleGetEvent)))
 	s.mux.Handle("PUT /api/workspaces/{slug}/calendar/events/{eventID}", authed(http.HandlerFunc(s.requirePerm(roles.PermEventEdit, s.handleUpdateEvent))))
 	s.mux.Handle("DELETE /api/workspaces/{slug}/calendar/events/{eventID}", authed(http.HandlerFunc(s.requirePerm(roles.PermEventDelete, s.handleDeleteEvent))))
+	s.mux.Handle("GET /api/workspaces/{slug}/calendar/events/{eventID}/outcome", authed(http.HandlerFunc(s.handleEventOutcome)))
+	s.mux.Handle("DELETE /api/workspaces/{slug}/calendar/events/clear-past-agent", authed(http.HandlerFunc(s.handleClearPastAgentEvents)))
+
+	// Activity
+	s.mux.Handle("GET /api/workspaces/{slug}/activity", authed(http.HandlerFunc(s.handleListActivity)))
+	s.mux.Handle("GET /api/workspaces/{slug}/activity/stats", authed(http.HandlerFunc(s.handleActivityStats)))
+
+	// Social Pulse
+	s.mux.Handle("POST /api/workspaces/{slug}/social-pulse", authed(http.HandlerFunc(s.handleCreateSocialPulse)))
+	s.mux.Handle("GET /api/workspaces/{slug}/social-pulse", authed(http.HandlerFunc(s.handleListSocialPulses)))
+	s.mux.Handle("GET /api/workspaces/{slug}/social-pulse/{pulseID}", authed(http.HandlerFunc(s.handleGetSocialPulse)))
+	s.mux.Handle("DELETE /api/workspaces/{slug}/social-pulse/{pulseID}", authed(http.HandlerFunc(s.handleDeleteSocialPulse)))
 
 	// Logs
 	s.mux.Handle("GET /api/workspaces/{slug}/logs", authed(http.HandlerFunc(s.handleGetLogs)))
@@ -382,6 +446,13 @@ func spaHandler(fsys fs.FS) http.Handler {
 		}
 
 		if path == "/" {
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+		// Serve brief.html for /brief/{token} paths
+		if strings.HasPrefix(path, "/brief/") {
+			w.Header().Set("Cache-Control", "no-cache")
+			r.URL.Path = "/brief.html"
 			fileServer.ServeHTTP(w, r)
 			return
 		}
@@ -427,6 +498,8 @@ func (s *Server) getMCPManager(slug string) *mcp.Manager {
 
 // initMCPServers loads and connects all enabled MCP servers for a workspace.
 func (s *Server) initMCPServers(slug string, mgr *mcp.Manager) {
+	s.fixupMCPCommands(slug)
+
 	wdb, err := s.ws.Open(slug)
 	if err != nil {
 		return
@@ -479,14 +552,53 @@ func (s *Server) getAllTools(slug string) []brain.ToolDef {
 	mgr := s.getMCPManager(slug)
 	mcpTools := mgr.AllTools()
 
+	// When Grok/xAI is active, skip DuckDuckGo tools (Grok has native web/X search)
+	xaiOn := s.getBrainSetting(slug, "xai_enabled") == "true"
+
 	if len(mcpTools) == 0 {
 		return brain.Tools
 	}
 
 	all := make([]brain.ToolDef, len(brain.Tools), len(brain.Tools)+len(mcpTools))
 	copy(all, brain.Tools)
-	all = append(all, mcp.ToToolDefs(mcpTools)...)
+
+	// Deduplicate MCP tools by function name (multiple servers may expose the same tool)
+	seen := make(map[string]bool, len(all))
+	for _, t := range all {
+		seen[t.Function.Name] = true
+	}
+	for _, t := range mcp.ToToolDefs(mcpTools) {
+		if seen[t.Function.Name] {
+			continue
+		}
+		if xaiOn && strings.HasPrefix(t.Function.Name, "ddg__") {
+			continue
+		}
+		seen[t.Function.Name] = true
+		all = append(all, t)
+	}
 	return all
+}
+
+// reindexAllWorkspaces triggers a background reindex for each workspace that needs it.
+func (s *Server) reindexAllWorkspaces() {
+	rows, err := s.global.DB.Query("SELECT slug FROM workspaces")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var slug string
+		rows.Scan(&slug)
+		if s.search.NeedsReindex(slug) {
+			wdb, err := s.ws.Open(slug)
+			if err != nil {
+				continue
+			}
+			s.search.Reindex(slug, wdb.DB)
+		}
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

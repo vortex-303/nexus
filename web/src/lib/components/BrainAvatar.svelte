@@ -1,8 +1,8 @@
 <script lang="ts">
-	let { state = 'idle' }: { state?: 'idle' | 'thinking' | 'speaking' } = $props();
+	let { state = 'idle', size = 48 }: { state?: 'idle' | 'thinking' | 'speaking', size?: number } = $props();
 </script>
 
-<div class="brain-avatar" data-state={state}>
+<div class="brain-avatar" data-state={state} style="width: {size}px; height: {size}px;">
 	<svg viewBox="0 0 64 64" fill="none" class="brain-svg">
 		<!-- Outer ring -->
 		<circle cx="32" cy="32" r="28" stroke="var(--accent)" stroke-width="1" opacity="0.3" class="ring ring-outer"/>
@@ -36,8 +36,6 @@
 
 <style>
 	.brain-avatar {
-		width: 48px;
-		height: 48px;
 		flex-shrink: 0;
 	}
 	.brain-svg {

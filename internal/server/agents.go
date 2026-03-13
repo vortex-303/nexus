@@ -47,6 +47,7 @@ type Agent struct {
 	Instructions string `json:"instructions"`
 
 	Model       string  `json:"model"`
+	ImageModel  string  `json:"image_model"`
 	Temperature float64 `json:"temperature"`
 	MaxTokens   int     `json:"max_tokens"`
 
@@ -91,6 +92,7 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		Backstory        string   `json:"backstory"`
 		Instructions     string   `json:"instructions"`
 		Model            string   `json:"model"`
+		ImageModel       string   `json:"image_model"`
 		Temperature      *float64 `json:"temperature"`
 		MaxTokens        *int     `json:"max_tokens"`
 		Tools            []string `json:"tools"`
@@ -154,11 +156,11 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 
 	_, err = wdb.DB.Exec(`
 		INSERT INTO agents (id, name, description, avatar, role, goal, backstory, instructions,
-			model, temperature, max_tokens, tools, channels, knowledge_access, memory_access, can_delegate,
+			model, image_model, temperature, max_tokens, tools, channels, knowledge_access, memory_access, can_delegate,
 			max_iterations, constraints, escalation_prompt, trigger_type, behavior_config, template_id, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		agentID, req.Name, req.Description, req.Avatar, req.Role, req.Goal, req.Backstory, req.Instructions,
-		req.Model, temp, maxTok, string(toolsJSON), string(channelsJSON), req.KnowledgeAccess, req.MemoryAccess, req.CanDelegate,
+		req.Model, req.ImageModel, temp, maxTok, string(toolsJSON), string(channelsJSON), req.KnowledgeAccess, req.MemoryAccess, req.CanDelegate,
 		maxIter, req.Constraints, req.EscalationPrompt, req.TriggerType, behaviorJSON, req.TemplateID, claims.UserID, now, now,
 	)
 	if err != nil {
@@ -195,7 +197,7 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := wdb.DB.Query(`
 		SELECT id, name, description, avatar, role, goal, backstory, instructions,
-			model, temperature, max_tokens, tools, channels, knowledge_access, memory_access, can_delegate,
+			model, image_model, temperature, max_tokens, tools, channels, knowledge_access, memory_access, can_delegate,
 			max_iterations, requires_approval, constraints, escalation_prompt,
 			trigger_type, trigger_config, behavior_config, is_system, is_active, COALESCE(template_id,''), created_by, created_at, updated_at
 		FROM agents ORDER BY is_system DESC, created_at ASC`)
@@ -210,7 +212,7 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		var a Agent
 		var toolsStr, channelsStr, reqApprovalStr, behaviorStr string
 		if err := rows.Scan(&a.ID, &a.Name, &a.Description, &a.Avatar, &a.Role, &a.Goal, &a.Backstory, &a.Instructions,
-			&a.Model, &a.Temperature, &a.MaxTokens, &toolsStr, &channelsStr, &a.KnowledgeAccess, &a.MemoryAccess, &a.CanDelegate,
+			&a.Model, &a.ImageModel, &a.Temperature, &a.MaxTokens, &toolsStr, &channelsStr, &a.KnowledgeAccess, &a.MemoryAccess, &a.CanDelegate,
 			&a.MaxIterations, &reqApprovalStr, &a.Constraints, &a.EscalationPrompt,
 			&a.TriggerType, &a.TriggerConfig, &behaviorStr, &a.IsSystem, &a.IsActive, &a.TemplateID, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt,
 		); err != nil {
@@ -276,7 +278,7 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 	allowed := map[string]string{
 		"name": "name", "description": "description", "avatar": "avatar",
 		"role": "role", "goal": "goal", "backstory": "backstory", "instructions": "instructions",
-		"model": "model", "temperature": "temperature", "max_tokens": "max_tokens",
+		"model": "model", "image_model": "image_model", "temperature": "temperature", "max_tokens": "max_tokens",
 		"knowledge_access": "knowledge_access", "memory_access": "memory_access", "can_delegate": "can_delegate",
 		"max_iterations": "max_iterations", "constraints": "constraints", "escalation_prompt": "escalation_prompt",
 		"trigger_type": "trigger_type", "trigger_config": "trigger_config", "is_active": "is_active",
@@ -402,16 +404,17 @@ Return ONLY valid JSON with these fields:
   "memory_access": true/false
 }
 
-Available tools: create_task, list_tasks, search_messages, create_document, search_knowledge
+Available tools: create_task, list_tasks, search_workspace, create_document, search_knowledge
 
 User description: ` + req.Description
 
 	client := brain.NewClient(apiKey, model)
-	response, err := client.Complete(metaPrompt, nil)
+	response, agentUsage, err := client.Complete(metaPrompt, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "LLM error: "+err.Error())
 		return
 	}
+	s.trackUsage(slug, agentUsage, model, "agent", "", "")
 
 	// Try to parse as JSON, return raw if valid
 	response = strings.TrimSpace(response)
@@ -487,7 +490,7 @@ Return ONLY valid JSON with these fields:
   "trigger_type": "mention"
 }
 
-Available tools: create_task, list_tasks, search_messages, create_document, search_knowledge, generate_image, web_search, fetch_url, delegate_to_agent
+Available tools: create_task, list_tasks, search_workspace, create_document, search_knowledge, generate_image, web_search, fetch_url, delegate_to_agent
 
 Current agent config:
 ` + string(currentJSON) + `
@@ -495,11 +498,12 @@ Current agent config:
 User instruction: ` + req.Instruction
 
 	client := brain.NewClient(apiKey, model)
-	response, err := client.Complete(metaPrompt, nil)
+	response, agentUsage2, err := client.Complete(metaPrompt, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "LLM error: "+err.Error())
 		return
 	}
+	s.trackUsage(slug, agentUsage2, model, "agent", "", "")
 
 	response = strings.TrimSpace(response)
 	if strings.HasPrefix(response, "```") {
@@ -602,12 +606,12 @@ func (s *Server) loadAgentByID(slug, agentID string) *Agent {
 	var toolsStr, channelsStr, reqApprovalStr, behaviorStr string
 	err = wdb.DB.QueryRow(`
 		SELECT id, name, description, avatar, role, goal, backstory, instructions,
-			model, temperature, max_tokens, tools, channels, knowledge_access, memory_access, can_delegate,
+			model, image_model, temperature, max_tokens, tools, channels, knowledge_access, memory_access, can_delegate,
 			max_iterations, requires_approval, constraints, escalation_prompt,
 			trigger_type, trigger_config, behavior_config, is_system, is_active, COALESCE(template_id,''), created_by, created_at, updated_at
 		FROM agents WHERE id = ?`, agentID,
 	).Scan(&a.ID, &a.Name, &a.Description, &a.Avatar, &a.Role, &a.Goal, &a.Backstory, &a.Instructions,
-		&a.Model, &a.Temperature, &a.MaxTokens, &toolsStr, &channelsStr, &a.KnowledgeAccess, &a.MemoryAccess, &a.CanDelegate,
+		&a.Model, &a.ImageModel, &a.Temperature, &a.MaxTokens, &toolsStr, &channelsStr, &a.KnowledgeAccess, &a.MemoryAccess, &a.CanDelegate,
 		&a.MaxIterations, &reqApprovalStr, &a.Constraints, &a.EscalationPrompt,
 		&a.TriggerType, &a.TriggerConfig, &behaviorStr, &a.IsSystem, &a.IsActive, &a.TemplateID, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt,
 	)
@@ -857,19 +861,11 @@ func (s *Server) sendAgentMessage(slug, channelID, parentID string, agent *Agent
 		ParentID:   parentID,
 	}), "")
 
-	// Trigger agent-to-agent responses: only on top-level channel messages from human-triggered agents
-	if parentID == "" && !fromAgent {
-		channelAgents := s.checkChannelAgents(slug, channelID, agent.ID)
-		for _, other := range channelAgents {
-			if other.BehaviorConfig.RespondToAgents {
-				if s.convTracker != nil {
-					key := ConversationKey{Slug: slug, ChannelID: channelID, AgentID: other.ID}
-					s.convTracker.RecordResponse(key)
-				}
-				s.handleAgentMention(slug, channelID, "", agent.Name, content, other, true)
-			}
-		}
-	}
+	s.onPulse(slug, Pulse{
+		Type: "agent.responded", ActorID: agent.ID, ActorName: agent.Name,
+		ChannelID: channelID, EntityID: msgID, Source: "agent",
+		Summary: agent.Name + " responded in channel",
+	})
 }
 
 // --- Agent Skills CRUD ---

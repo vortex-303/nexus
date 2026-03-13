@@ -66,7 +66,7 @@ func (s *Server) runHeartbeat(slug string, sched brain.HeartbeatSchedule, apiKey
 	}
 
 	// Add memory context
-	memoryContext := brain.BuildMemoryContext(wdb.DB)
+	memoryContext := brain.BuildMemoryContext(wdb.DB, "")
 	if memoryContext != "" {
 		systemPrompt += "\n\n---\n\n" + memoryContext
 	}
@@ -89,12 +89,14 @@ func (s *Server) runHeartbeat(slug string, sched brain.HeartbeatSchedule, apiKey
 		{Role: "user", Content: userMessage},
 	}
 
-	client := brain.NewClient(apiKey, model)
-	response, err := client.Complete(systemPrompt, messages)
+	resolvedModel, fallbacks := s.resolveFreeAuto(model, slug)
+	client := s.makeBrainClient(slug, apiKey, resolvedModel, fallbacks)
+	response, usage, err := client.Complete(systemPrompt, messages)
 	if err != nil {
 		logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("heartbeat LLM error")
 		return
 	}
+	s.trackUsage(slug, usage, resolvedModel, "heartbeat", channelID, "")
 
 	response = strings.TrimSpace(response)
 	if response == "" {

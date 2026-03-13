@@ -2,7 +2,7 @@
 
 # Build everything
 build: web
-	go build -o nexus ./cmd/nexus/
+	go build -tags "sqlite_fts5" -o nexus ./cmd/nexus/
 
 # Build SvelteKit
 web:
