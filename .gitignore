@@ -1,6 +1,6 @@
 # Binary
-nexus
-nexus-server
+/nexus
+/nexus-server
 *.exe
 
 # Data
