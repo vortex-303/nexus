@@ -39,6 +39,10 @@ func (s *Server) ensureBrainMember(slug string) error {
 		if err != nil {
 			return err
 		}
+	} else {
+		// Fix Brain's role if it was corrupted (e.g., by migration v34 simplify_roles)
+		_, _ = wdb.DB.Exec("UPDATE members SET role = ? WHERE id = ? AND role != ?",
+			brain.BrainRole, brain.BrainMemberID, brain.BrainRole)
 	}
 
 	// Ensure Brain system agent row exists
@@ -149,7 +153,8 @@ func (s *Server) ensureBuiltinAgents(slug string) error {
 func (s *Server) handleBrainMention(slug, channelID, senderName, content string) {
 	go func() {
 		apiKey, model := s.getBrainSettings(slug)
-		if apiKey == "" && s.getXAIKey(slug) == "" {
+		ollamaEnabled := s.getBrainSetting(slug, "ollama_enabled") == "true"
+		if apiKey == "" && s.getXAIKey(slug) == "" && !ollamaEnabled {
 			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Msg("no API key configured, ignoring mention")
 			return
 		}
@@ -253,6 +258,99 @@ func (s *Server) sendBrainMessage(slug, channelID, parentID, content string, too
 		ToolsUsed:  toolsUsed,
 		ParentID:   parentID,
 	}), "")
+}
+
+// ensureThreadContext creates or updates the thread_context row for a thread.
+// Called before Brain/agent responds in a thread. No LLM call — just uses root message.
+func (s *Server) ensureThreadContext(wdb *db.WorkspaceDB, channelID, parentID string) {
+	if parentID == "" {
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Check if row exists
+	var exists int
+	_ = wdb.DB.QueryRow("SELECT 1 FROM thread_context WHERE parent_id = ?", parentID).Scan(&exists)
+
+	if exists == 0 {
+		// Generate topic from root message (first sentence, max 120 chars)
+		var senderName, rootContent string
+		_ = wdb.DB.QueryRow(`
+			SELECT COALESCE(mem.display_name, m.sender_id), m.content
+			FROM messages m
+			LEFT JOIN members mem ON mem.id = m.sender_id
+			WHERE m.id = ?`, parentID).Scan(&senderName, &rootContent)
+
+		topic := generateThreadTopic(senderName, rootContent)
+
+		// Count participants and messages
+		var participantCount, messageCount int
+		_ = wdb.DB.QueryRow(
+			"SELECT COUNT(DISTINCT sender_id) FROM messages WHERE (id = ? OR parent_id = ?) AND deleted = FALSE",
+			parentID, parentID,
+		).Scan(&participantCount)
+		_ = wdb.DB.QueryRow(
+			"SELECT COUNT(*) FROM messages WHERE (id = ? OR parent_id = ?) AND deleted = FALSE",
+			parentID, parentID,
+		).Scan(&messageCount)
+
+		_, _ = wdb.DB.Exec(`
+			INSERT INTO thread_context (parent_id, channel_id, topic, participant_count, message_count, last_activity_at, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			parentID, channelID, topic, participantCount, messageCount, now, now,
+		)
+	} else {
+		// Update activity and counts
+		s.updateThreadActivity(wdb, channelID, parentID)
+	}
+}
+
+// generateThreadTopic creates a topic line from the root message content.
+// Uses "sender: first sentence" format, truncated to 120 chars.
+func generateThreadTopic(senderName, content string) string {
+	// Strip @mentions for cleaner topic
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return senderName + ": (empty message)"
+	}
+
+	// Take first sentence (up to first period, newline, or 120 chars)
+	firstLine := content
+	if idx := strings.IndexAny(content, ".\n"); idx > 0 && idx < 120 {
+		firstLine = content[:idx+1]
+	}
+
+	topic := senderName + ": " + firstLine
+	if len(topic) > 120 {
+		topic = topic[:117] + "..."
+	}
+	return topic
+}
+
+// updateThreadActivity updates last_activity_at and counts for a thread.
+// Lightweight — called on every thread reply.
+func (s *Server) updateThreadActivity(wdb *db.WorkspaceDB, channelID, parentID string) {
+	if parentID == "" {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	var participantCount, messageCount int
+	_ = wdb.DB.QueryRow(
+		"SELECT COUNT(DISTINCT sender_id) FROM messages WHERE (id = ? OR parent_id = ?) AND deleted = FALSE",
+		parentID, parentID,
+	).Scan(&participantCount)
+	_ = wdb.DB.QueryRow(
+		"SELECT COUNT(*) FROM messages WHERE (id = ? OR parent_id = ?) AND deleted = FALSE",
+		parentID, parentID,
+	).Scan(&messageCount)
+
+	_, _ = wdb.DB.Exec(`
+		UPDATE thread_context SET last_activity_at = ?, participant_count = ?, message_count = ?
+		WHERE parent_id = ?`,
+		now, participantCount, messageCount, parentID,
+	)
 }
 
 // handleBrainWelcome sends a canned welcome DM from Brain to the requesting user.
@@ -478,9 +576,31 @@ func (s *Server) getXAIKey(slug string) string {
 	return key
 }
 
+// brainCompleter is the interface that both brain.Client and brain.BridgeClient satisfy.
+type brainCompleter interface {
+	Complete(systemPrompt string, messages []brain.Message) (string, *brain.CompletionUsage, error)
+	CompleteWithTools(systemPrompt string, messages []brain.Message, tools []brain.ToolDef) (string, []brain.ToolCall, *brain.CompletionUsage, error)
+}
+
 // makeBrainClient creates the appropriate LLM client for the resolved model.
-// Uses xAI direct when model is grok-* and xai_api_key is set, otherwise OpenRouter.
-func (s *Server) makeBrainClient(slug, apiKey, resolvedModel string, fallbacks []string) *brain.Client {
+// Priority: Ollama (bridge or direct) → xAI → OpenRouter.
+func (s *Server) makeBrainClient(slug, apiKey, resolvedModel string, fallbacks []string) brainCompleter {
+	// Check for Ollama mode first
+	if s.getBrainSetting(slug, "ollama_enabled") == "true" {
+		ollamaModel := s.getBrainSetting(slug, "ollama_model")
+		if ollamaModel == "" {
+			ollamaModel = "llama3.2"
+		}
+		// Check if bridge is connected (cloud-hosted)
+		if v, ok := s.bridges.Load(slug); ok {
+			bc := v.(*BridgeConn)
+			return brain.NewBridgeClientFromConn(ollamaModel, bc.Forward)
+		}
+		// Direct mode (self-hosted, Ollama on same machine)
+		ollamaURL := s.getBrainSetting(slug, "ollama_url", "http://localhost:11434")
+		return brain.NewOllamaClient(ollamaURL, ollamaModel)
+	}
+
 	// If Grok engine is enabled (or key exists) with its own model, use xAI directly
 	xaiKey := s.getXAIKey(slug)
 	if xaiKey != "" {
@@ -627,6 +747,19 @@ func (s *Server) handleGetBrainSettings(w http.ResponseWriter, r *http.Request) 
 		settings["last_extraction"] = lastExtraction
 	}
 
+	// Include bridge status
+	if v, ok := s.bridges.Load(slug); ok {
+		bc := v.(*BridgeConn)
+		settings["bridge_connected"] = "true"
+		if models := bc.Models(); len(models) > 0 {
+			if b, err := json.Marshal(models); err == nil {
+				settings["bridge_models"] = string(b)
+			}
+		}
+	} else {
+		settings["bridge_connected"] = "false"
+	}
+
 	// Non-admins: strip API key info entirely
 	if claims.Role != "admin" {
 		for _, k := range []string{"api_key_masked", "api_key_set", "gemini_api_key_masked", "gemini_api_key_set", "openai_api_key_masked", "openai_api_key_set", "brave_api_key_masked", "brave_api_key_set"} {
@@ -664,6 +797,7 @@ func (s *Server) handleUpdateBrainSettings(w http.ResponseWriter, r *http.Reques
 		"memory_enabled": true, "system_memory_enabled": true, "extraction_frequency": true, "memory_model": true, "memory_engine": true,
 		"standard_chat_enabled": true, "llm_enabled": true,
 		"webllm_enabled": true, "webllm_model": true, "webllm_system_prompt": true,
+		"ollama_enabled": true, "ollama_model": true, "ollama_url": true,
 		"north_star": true, "north_star_why": true, "north_star_success": true, "strategic_themes": true,
 		"reflection_enabled": true, "reflection_time": true,
 		// Integrations

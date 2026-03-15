@@ -95,7 +95,7 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 		}
 
 		// Skip stale messages that waited too long on the semaphore
-		if time.Since(messageTime) > maxMessageAge {
+		if time.Since(messageTime) > maxBrainChannelAge {
 			logger.WithCategory(logger.CatBrain).Info().Dur("age", time.Since(messageTime)).Msg("skipping stale ingest message")
 			return
 		}
@@ -131,7 +131,8 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 		// LLM-disabled gate removed — makeBrainClient handles xAI/OpenRouter routing
 
 		apiKey, model := s.getBrainSettings(slug)
-		if apiKey == "" && s.getXAIKey(slug) == "" {
+		ollamaEnabled := s.getBrainSetting(slug, "ollama_enabled") == "true"
+		if apiKey == "" && s.getXAIKey(slug) == "" && !ollamaEnabled {
 			s.sendBrainMessage(slug, channelID, "",
 				"I can answer search and stats queries without an API key. Try: \"search for X\", \"how many messages\", \"who is online\". For general questions, configure an API key in Settings.")
 			return

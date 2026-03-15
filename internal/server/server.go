@@ -50,6 +50,8 @@ type Server struct {
 	convTracker *ConversationTracker
 	agentSem    chan struct{} // semaphore to limit concurrent agent/brain goroutines
 	netLog      *NetworkLog
+	bridges     sync.Map // map[slug]*BridgeConn — one Ollama bridge per workspace
+	bootedAt    time.Time
 }
 
 func Run(cfg *config.Config) error {
@@ -89,6 +91,7 @@ func Run(cfg *config.Config) error {
 		convTracker: NewConversationTracker(),
 		agentSem:    make(chan struct{}, 20), // max 20 concurrent agent/brain goroutines
 		netLog:      netLog,
+		bootedAt:    time.Now(),
 	}
 	// Initialize asynq task queue (optional — falls back to goroutines)
 	if err := s.initAsynq(); err != nil {
@@ -121,8 +124,8 @@ func Run(cfg *config.Config) error {
 // loggingMiddleware wraps the mux to log every HTTP request.
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip noisy endpoints
-		if r.URL.Path == "/health" || r.URL.Path == "/metrics" || r.URL.Path == "/ws" {
+		// Skip noisy endpoints and WebSocket endpoints (statusWriter breaks http.Hijacker)
+		if r.URL.Path == "/health" || r.URL.Path == "/metrics" || r.URL.Path == "/ws" || strings.HasSuffix(r.URL.Path, "/bridge") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -190,6 +193,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	s.mux.HandleFunc("POST /api/auth/login", s.handleLogin)
 	s.mux.HandleFunc("GET /api/auth/config", s.handleAuthConfig)
+	s.mux.HandleFunc("POST /api/auth/forgot", s.handleForgotPassword)
+	s.mux.HandleFunc("POST /api/auth/reset", s.handleResetPassword)
+	s.mux.HandleFunc("POST /api/auth/verify", s.handleVerifyEmail)
 	s.mux.HandleFunc("GET /api/briefs/public/{token}", s.handlePublicBrief)
 
 	// Authenticated routes (with permission checks)
@@ -261,6 +267,11 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/workspaces/{slug}/brain/welcome", authed(http.HandlerFunc(s.requireAdmin(s.handleBrainWelcome))))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/settings", authed(http.HandlerFunc(s.handleGetBrainSettings)))
 	s.mux.Handle("PUT /api/workspaces/{slug}/brain/settings", authed(http.HandlerFunc(s.handleUpdateBrainSettings)))
+
+	// Ollama Bridge (WebSocket — auth via query param like /ws, no middleware wrapping)
+	s.mux.HandleFunc("GET /api/workspaces/{slug}/bridge", s.handleBridge)
+	s.mux.Handle("GET /api/workspaces/{slug}/bridge/status", authed(http.HandlerFunc(s.handleBridgeStatus)))
+	s.mux.Handle("GET /api/workspaces/{slug}/ollama/models", authed(http.HandlerFunc(s.requireAdmin(s.handleOllamaModels))))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/definitions/{file}", authed(http.HandlerFunc(s.handleGetBrainDefinition)))
 	s.mux.Handle("PUT /api/workspaces/{slug}/brain/definitions/{file}", authed(http.HandlerFunc(s.handleUpdateBrainDefinition)))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/memories", authed(http.HandlerFunc(s.handleListMemories)))
@@ -269,6 +280,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/workspaces/{slug}/brain/memories/pin", authed(http.HandlerFunc(s.handlePinMemory)))
 	s.mux.Handle("POST /api/workspaces/{slug}/brain/memories/extract", authed(http.HandlerFunc(s.requireAdmin(s.handleExtractNow))))
 	s.mux.Handle("POST /api/workspaces/{slug}/brain/reflect", authed(http.HandlerFunc(s.requireAdmin(s.handleReflectNow))))
+	s.mux.Handle("GET /api/workspaces/{slug}/brain/reflections", authed(http.HandlerFunc(s.requireAdmin(s.handleReflectionHistory))))
 	s.mux.Handle("GET /api/workspaces/{slug}/usage", authed(http.HandlerFunc(s.requireAdmin(s.handleGetUsage))))
 
 	// Living Briefs
@@ -309,6 +321,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/knowledge/{id}", authed(http.HandlerFunc(s.handleGetKnowledge)))
 	s.mux.Handle("PUT /api/workspaces/{slug}/brain/knowledge/{id}", authed(http.HandlerFunc(s.requirePerm(roles.PermKnowledgeManage, s.handleUpdateKnowledge))))
 	s.mux.Handle("DELETE /api/workspaces/{slug}/brain/knowledge/{id}", authed(http.HandlerFunc(s.requirePerm(roles.PermKnowledgeManage, s.handleDeleteKnowledge))))
+	s.mux.Handle("POST /api/workspaces/{slug}/brain/reindex", authed(http.HandlerFunc(s.requireAdmin(s.handleReindexEmbeddings))))
 
 	// Agents
 	s.mux.Handle("POST /api/workspaces/{slug}/agents", authed(http.HandlerFunc(s.requirePerm(roles.PermAgentCreate, s.handleCreateAgent))))
@@ -352,6 +365,9 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/workspaces/{slug}/models/free", authed(http.HandlerFunc(s.handleGetWorkspaceFreeModels)))
 	s.mux.Handle("PUT /api/workspaces/{slug}/models/free", authed(http.HandlerFunc(s.requireAdmin(s.handleSetWorkspaceFreeModels))))
 
+	// Waitlist (public)
+	s.mux.HandleFunc("POST /api/waitlist", s.handleWaitlist)
+
 	// Announcements (public)
 	s.mux.HandleFunc("GET /api/announcements", s.handleGetAnnouncement)
 
@@ -373,6 +389,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/admin/models", authed(http.HandlerFunc(s.requireSuperadmin(s.handleAdminGetModels))))
 	s.mux.Handle("PUT /api/admin/models", authed(http.HandlerFunc(s.requireSuperadmin(s.handleAdminSetModels))))
 	s.mux.Handle("PUT /api/admin/models/free", authed(http.HandlerFunc(s.requireSuperadmin(s.handleAdminSetFreeModels))))
+	s.mux.Handle("GET /api/admin/waitlist", authed(http.HandlerFunc(s.requireSuperadmin(s.handleListWaitlist))))
 
 	// Webhooks (public ingestion endpoint)
 	s.mux.HandleFunc("POST /w/{slug}/hook/{token}", s.handleIncomingWebhook)
@@ -446,6 +463,8 @@ func spaHandler(fsys fs.FS) http.Handler {
 		}
 
 		if path == "/" {
+			w.Header().Set("Cache-Control", "no-cache")
+			r.URL.Path = "/landing.html"
 			fileServer.ServeHTTP(w, r)
 			return
 		}

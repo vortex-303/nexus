@@ -117,6 +117,35 @@ var globalMigrations = []migration{
 			CREATE INDEX IF NOT EXISTS idx_email_verifications_email ON email_verifications(email, verified);
 		`,
 	},
+	{
+		version: 5,
+		name:    "password_resets and email_verified",
+		sql: `
+			CREATE TABLE IF NOT EXISTS password_resets (
+				id TEXT PRIMARY KEY,
+				email TEXT NOT NULL,
+				token TEXT NOT NULL UNIQUE,
+				expires_at TEXT NOT NULL,
+				used BOOLEAN NOT NULL DEFAULT FALSE,
+				created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+			);
+			CREATE INDEX idx_password_resets_token ON password_resets(token);
+			ALTER TABLE accounts ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT TRUE;
+		`,
+	},
+	{
+		version: 6,
+		name:    "workspace member limits and waitlist",
+		sql: `
+			ALTER TABLE workspaces ADD COLUMN max_members INTEGER NOT NULL DEFAULT 5;
+			CREATE TABLE IF NOT EXISTS waitlist (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				email TEXT UNIQUE NOT NULL,
+				plan TEXT NOT NULL DEFAULT 'pro',
+				created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+			);
+		`,
+	},
 }
 
 var workspaceMigrations = []migration{
@@ -881,6 +910,50 @@ var workspaceMigrations = []migration{
 			CREATE INDEX idx_llm_usage_action ON llm_usage(action_type);
 		`,
 	},
+}
+
+var workspaceMigrations46 = migration{
+	version: 46,
+	name:    "reflection_history",
+	sql: `
+		CREATE TABLE IF NOT EXISTS reflection_history (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			period TEXT NOT NULL DEFAULT 'daily',
+			content TEXT NOT NULL,
+			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		);
+		CREATE INDEX idx_reflection_history_created ON reflection_history(created_at);
+	`,
+}
+
+var workspaceMigrations47 = migration{
+	version: 47,
+	name:    "knowledge provenance",
+	sql: `
+		ALTER TABLE brain_knowledge ADD COLUMN source_url TEXT DEFAULT '';
+		ALTER TABLE brain_memories ADD COLUMN confidence_reason TEXT DEFAULT '';
+	`,
+}
+
+var workspaceMigrations48 = migration{
+	version: 48,
+	name:    "thread_context",
+	sql: `
+		CREATE TABLE IF NOT EXISTS thread_context (
+			parent_id TEXT PRIMARY KEY REFERENCES messages(id),
+			channel_id TEXT NOT NULL,
+			topic TEXT NOT NULL DEFAULT '',
+			summary TEXT NOT NULL DEFAULT '',
+			participant_count INTEGER NOT NULL DEFAULT 0,
+			message_count INTEGER NOT NULL DEFAULT 0,
+			last_activity_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		);
+	`,
+}
+
+func init() {
+	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48)
 }
 
 func RunGlobal(db *sql.DB) error {

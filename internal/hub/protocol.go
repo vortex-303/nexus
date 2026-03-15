@@ -45,6 +45,7 @@ const (
 	TypeSocialPulseCreated = "social_pulse.created"
 	TypeSocialPulseUpdated = "social_pulse.updated"
 	TypeSocialPulseDeleted = "social_pulse.deleted"
+	TypeBridgeStatus       = "bridge.status"
 )
 
 // Payload types for messages
@@ -170,6 +171,7 @@ type AgentStatePayload struct {
 	AgentID   string `json:"agent_id"`
 	AgentName string `json:"agent_name"`
 	ChannelID string `json:"channel_id"`
+	ParentID  string `json:"parent_id,omitempty"`
 	State     string `json:"state"`               // "thinking", "tool_executing", "idle"
 	ToolName  string `json:"tool_name,omitempty"`
 }

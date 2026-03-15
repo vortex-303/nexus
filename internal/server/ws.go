@@ -320,6 +320,11 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 		Summary: pulseSummary(conn.DisplayName, "sent a message", ""),
 	})
 
+	// Track thread activity (lightweight UPDATE, no LLM)
+	if p.ParentID != "" {
+		s.updateThreadActivity(wdb, p.ChannelID, p.ParentID)
+	}
+
 	// Track for memory extraction
 	s.trackMessageAndMaybeExtract(conn.WorkspaceSlug, p.ChannelID, msgID, p.Content, conn.DisplayName)
 
@@ -329,9 +334,11 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 
 	// Check for @Brain mention or DM with Brain
 	// Skip server-side brain if sender's client is handling via WebLLM
+	isBrainDM := chName != "" && strings.Contains(chName, brain.BrainMemberID)
+	brainTriggered := false
 	if !p.WebLLM {
-		isBrainDM := chName != "" && strings.Contains(chName, brain.BrainMemberID)
 		if brain.ContainsMention(p.Content) || isBrainDM {
+			brainTriggered = true
 			s.handleBrainMentionWithTools(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
 		}
 	}
@@ -373,15 +380,55 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 	}
 
 
-	// Auto-follow threads: if user replies to an agent's message, that agent auto-responds
-	if p.ParentID != "" {
-		var parentSenderID string
-		_ = wdb.DB.QueryRow("SELECT sender_id FROM messages WHERE id = ? AND deleted = FALSE", p.ParentID).Scan(&parentSenderID)
-		if parentSenderID != "" && !triggered[parentSenderID] {
-			if agent := s.loadAgentByID(conn.WorkspaceSlug, parentSenderID); agent != nil && agent.IsActive && agent.BehaviorConfig.AutoFollowThreads {
-				triggered[parentSenderID] = true
-				s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent, time.Now())
+	// Brain auto-follow: if Brain posted in this thread, auto-respond
+	// Thread attention decays after 30 minutes of inactivity — require explicit @Brain
+	if p.ParentID != "" && !p.WebLLM && !brainTriggered && !isBrainDM {
+		if !brain.ContainsMention(p.Content) {
+			var brainInThread int
+			_ = wdb.DB.QueryRow(
+				"SELECT COUNT(*) FROM messages WHERE (id = ? OR parent_id = ?) AND sender_id = ? AND deleted = FALSE",
+				p.ParentID, p.ParentID, brain.BrainMemberID,
+			).Scan(&brainInThread)
+			if brainInThread > 0 {
+				// Check thread freshness — don't auto-follow stale threads
+				threadStale := false
+				var lastActivity string
+				if wdb.DB.QueryRow(
+					"SELECT last_activity_at FROM thread_context WHERE parent_id = ?", p.ParentID,
+				).Scan(&lastActivity) == nil && lastActivity != "" {
+					if t, err := time.Parse(time.RFC3339, lastActivity); err == nil {
+						if time.Since(t) > 30*time.Minute {
+							threadStale = true
+						}
+					}
+				}
+				if !threadStale {
+					triggered[brain.BrainMemberID] = true
+					s.handleBrainMentionWithTools(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
+				}
 			}
+		}
+	}
+
+	// Auto-follow threads: if any agent posted in this thread, that agent auto-responds
+	if p.ParentID != "" {
+		rows, err := wdb.DB.Query(
+			"SELECT DISTINCT sender_id FROM messages WHERE (id = ? OR parent_id = ?) AND sender_id != ? AND deleted = FALSE",
+			p.ParentID, p.ParentID, conn.UserID,
+		)
+		if err == nil {
+			for rows.Next() {
+				var senderID string
+				rows.Scan(&senderID)
+				if triggered[senderID] || senderID == brain.BrainMemberID {
+					continue
+				}
+				if agent := s.loadAgentByID(conn.WorkspaceSlug, senderID); agent != nil && agent.IsActive && agent.BehaviorConfig.AutoFollowThreads {
+					triggered[senderID] = true
+					s.handleAgentMention(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, agent, time.Now())
+				}
+			}
+			rows.Close()
 		}
 	}
 }

@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, createWebhook, listWebhooks, deleteWebhook, listWebhookEvents, listEmailThreads, deleteEmailThread, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, triggerBrainWelcome, extractMemoriesNow, triggerReflection, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage } from '$lib/api';
+	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings } from '$lib/api';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { connect, disconnect, onMessage, sendMessage, sendTyping, sendReaction, removeReaction, clearChannel, markChannelRead, connectionStatus, generateClientId } from '$lib/ws';
 	import { channels, members, messages, activeChannel, typingUsers, onlineUsers } from '$lib/stores/workspace';
@@ -38,6 +38,9 @@
 	let inviteCode = $state('');
 	let showInviteModal = $state(false);
 	let inviteCopied = $state('');
+	let showUpgradeModal = $state(false);
+	let waitlistEmail = $state('');
+	let waitlistStatus = $state<'idle' | 'sending' | 'done'>('idle');
 	let lastTypingSent = 0;
 
 	// Invite join state
@@ -55,6 +58,9 @@
 	let memberDetail = $state<any>(null);
 	let showImageViewer = $state(false);
 	let showSearch = $state(false);
+	let hasMoreMessages = $state(false);
+	let loadingMore = $state(false);
+	let highlightedMessageId = $state<string | null>(null);
 	let viewerImage = $state<{url: string; alt: string; sender?: string; timestamp?: string; prompt?: string; fileName?: string; fileSize?: number; mime?: string} | null>(null);
 
 	// DM helpers
@@ -280,6 +286,7 @@
 	let threadRoot = $state<any>(null);
 	let threadInput = $state('');
 	let threadMessagesEl: HTMLElement;
+	let threadParticipants = $derived([...new Map(threadMessages.map(m => [m.sender_id, m.sender_name])).entries()]);
 
 	// Emoji picker state
 	let emojiPickerMsgId = $state<string | null>(null);
@@ -351,6 +358,22 @@
 	let reflectionEnabled = $state(true);
 	let reflectionTime = $state('3:00');
 	let reflectingNow = $state(false);
+	let showBrainSettings = $state(false);
+	let showSystemLogs = $state(false);
+	let logEntries = $state<any[]>([]);
+	let logCategories = $state<string[]>([]);
+	let logTotal = $state(0);
+	let logLoading = $state(false);
+	let logCategory = $state('');
+	let logLevel = $state('');
+	let logRange = $state('1h');
+	let logAutoRefresh = $state(false);
+	let logRefreshInterval: ReturnType<typeof setInterval> | null = null;
+	let logExpandedIds = $state<Set<number>>(new Set());
+	let showReflectionHistory = $state(false);
+	let reflectionHistory = $state<any[]>([]);
+	let selectedReflection = $state<any>(null);
+	let reflectionHistoryLoading = $state(false);
 	let destroyConfirm = $state('');
 	let destroyingWorkspace = $state(false);
 	let networkStats = $state<any>(null);
@@ -361,6 +384,11 @@
 	let brainLLMEnabled = $state(_cachedBrain?.llm_enabled ?? true);
 	let brainWebLLMEnabled = $state(_cachedBrain?.webllm_enabled ?? false);
 	let brainWebLLMModel = $state(_cachedBrain?.webllm_model || '');
+	let brainOllamaEnabled = $state(_cachedBrain?.ollama_enabled ?? false);
+	let brainOllamaModel = $state(_cachedBrain?.ollama_model || '');
+	let brainOllamaURL = $state(_cachedBrain?.ollama_url || 'http://localhost:11434');
+	let bridgeConnected = $state(false);
+	let bridgeModels = $state<any[]>([]);
 	const DEFAULT_WEBLLM_PROMPT = `You are Brain, the AI assistant for this Nexus workspace. You run locally in the user's browser.
 
 ## Your capabilities
@@ -395,7 +423,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 	let brainActiveFile = $state('');
 	let brainFileContent = $state('');
 	let brainSaving = $state(false);
-	let brainTab = $state<'settings' | 'north_star' | 'definitions' | 'memory' | 'activity' | 'skills' | 'knowledge' | 'integrations' | 'roles' | 'tools' | 'info' | 'network' | 'portability' | 'costs'>('settings');
+	let brainTab = $state<'settings' | 'north_star' | 'definitions' | 'memory' | 'activity' | 'skills' | 'knowledge' | 'integrations' | 'roles' | 'tools' | 'info' | 'network' | 'portability' | 'costs' | 'bridge'>('settings');
 	let usageData = $state<any>(null);
 	let usagePeriod = $state('month');
 	async function loadUsage() {
@@ -441,20 +469,23 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			const name = recommendedModelNames[brainWebLLMModel] || brainWebLLMModel.replace(/-/g, ' ');
 			return `Local: ${name}`;
 		}
+		if (brainOllamaEnabled) return `Ollama: ${brainOllamaModel || 'not configured'}`;
 		if (brainLLMEnabled && !userWebLLMEnabled) return `OpenRouter: ${brainModel.split('/').pop()}`;
 		if (brainXAIEnabled && !userWebLLMEnabled) return `Grok: ${brainXAIModel || 'not configured'}`;
 		return 'Brain: Off';
 	});
 	let modelStatusColor = $derived.by(() => {
 		if ((brainWebLLMEnabled || userWebLLMEnabled) && brainWebLLMModel) return 'var(--accent)';
+		if (brainOllamaEnabled) return 'var(--green, #22c55e)';
 		if (brainLLMEnabled && !userWebLLMEnabled) return '#3b82f6';
 		if (brainXAIEnabled && !userWebLLMEnabled) return '#e44d26';
 		return '#6b7280';
 	});
 
 	// Engine mode derived from the 3 booleans
-	type EngineMode = 'cloud' | 'grok' | 'local' | 'standard';
+	type EngineMode = 'cloud' | 'grok' | 'ollama' | 'local' | 'standard';
 	let engineMode = $derived.by((): EngineMode => {
+		if (brainOllamaEnabled && !brainLLMEnabled) return 'ollama';
 		if (brainWebLLMEnabled && !brainLLMEnabled) return 'local';
 		if (brainXAIEnabled && !brainLLMEnabled && !brainWebLLMEnabled) return 'grok';
 		if (!brainLLMEnabled && brainStandardChatEnabled) return 'standard';
@@ -467,24 +498,35 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 				brainLLMEnabled = true;
 				brainWebLLMEnabled = false;
 				brainXAIEnabled = false;
+				brainOllamaEnabled = false;
 				break;
 			case 'grok':
 				brainStandardChatEnabled = true;
 				brainLLMEnabled = false;
 				brainWebLLMEnabled = false;
 				brainXAIEnabled = true;
+				brainOllamaEnabled = false;
+				break;
+			case 'ollama':
+				brainStandardChatEnabled = true;
+				brainLLMEnabled = false;
+				brainWebLLMEnabled = false;
+				brainXAIEnabled = false;
+				brainOllamaEnabled = true;
 				break;
 			case 'local':
 				brainStandardChatEnabled = false;
 				brainLLMEnabled = false;
 				brainWebLLMEnabled = true;
 				brainXAIEnabled = false;
+				brainOllamaEnabled = false;
 				break;
 			case 'standard':
 				brainStandardChatEnabled = true;
 				brainLLMEnabled = false;
 				brainWebLLMEnabled = false;
 				brainXAIEnabled = false;
+				brainOllamaEnabled = false;
 				break;
 		}
 	}
@@ -505,11 +547,6 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 	let urlPreview = $state<any>(null);
 
 	// Integrations state
-	let webhooks = $state<any[]>([]);
-	let webhookEvents = $state<Record<string, any[]>>({});
-	let newWebhookChannel = $state('');
-	let newWebhookDesc = $state('');
-	let emailThreads = $state<any[]>([]);
 	let telegramChats = $state<any[]>([]);
 
 	// MCP Servers state
@@ -581,7 +618,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 	let allRoles = $derived([...ROLES, ...orgRoles.map((r: any) => r.title.toLowerCase().replace(/\s+/g, '_')).filter((r: string) => !ROLES.includes(r))]);
 
 	// Agent state indicators
-	let agentStates = $state<Map<string, {state: string, toolName: string, channelID: string, agentName: string}>>(new Map());
+	let agentStates = $state<Map<string, {state: string, toolName: string, channelID: string, parentID: string, agentName: string}>>(new Map());
 
 	// WebLLM tool calling cache + action cards
 	let cachedToolDefs: any[] | null = null;
@@ -623,31 +660,48 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 	const KNOWN_AGENT_MODELS = ['', 'google/gemini-3.1-pro-preview', 'google/gemini-3-flash-preview', 'google/gemini-3.1-flash-lite-preview', 'google/gemini-3.1-flash-image-preview', 'google/gemini-3-pro-image-preview', 'google/gemini-2.5-flash', 'google/gemini-2.5-pro', 'nexus/free-auto'];
 	let allAgentTools = $derived([...BUILTIN_AGENT_TOOLS, ...mcpServers.flatMap((s: any) => (s.tools || []).map((t: any) => t.qual_name))]);
 
-	// Slash commands — built from available tools + common actions
+	// Slash commands — role-aware, categorized
 	let slashCommands = $derived(() => {
-		const cmds: {name: string, description: string, action: string}[] = [
-			{ name: 'search', description: 'Search the web', action: '@Brain search the web for ' },
-			{ name: 'fetch', description: 'Fetch a URL', action: '@Brain fetch ' },
-			{ name: 'time', description: 'Get current time', action: '@Brain what time is it' },
-			{ name: 'task', description: 'Create a new task', action: '@Brain create a task: ' },
-			{ name: 'tasks', description: 'List all tasks', action: '@Brain list all tasks' },
-			{ name: 'doc', description: 'Create a document', action: '@Brain create a document about ' },
-			{ name: 'summarize', description: 'Summarize the conversation', action: '@Brain summarize this conversation' },
-			{ name: 'image', description: 'Generate an image', action: '@Brain generate an image of ' },
-			{ name: 'knowledge', description: 'Search the knowledge base', action: '@Brain search knowledge for ' },
-			{ name: 'memory', description: 'What do you remember?', action: '@Brain what do you remember about me?' },
+		const role = currentUser?.role || 'guest';
+		const isMember = role !== 'guest' && role !== 'viewer';
+		const isAdminRole = role === 'admin' || role === 'owner';
+		const cmds: {name: string, description: string, action: string, category: string}[] = [
+			// Everyone
+			{ name: 'search', description: 'Search the web', action: '@Brain search the web for ', category: 'Search' },
+			{ name: 'fetch', description: 'Fetch a URL', action: '@Brain fetch ', category: 'Search' },
+			{ name: 'knowledge', description: 'Search the knowledge base', action: '@Brain search knowledge for ', category: 'Search' },
+			{ name: 'time', description: 'Get current time', action: '@Brain what time is it', category: 'General' },
+			{ name: 'summarize', description: 'Summarize the conversation', action: '@Brain summarize this conversation', category: 'General' },
+			{ name: 'memory', description: 'What do you remember?', action: '@Brain what do you remember about me?', category: 'General' },
 		];
+		// Members+
+		if (isMember) {
+			cmds.push(
+				{ name: 'task', description: 'Create a new task', action: '@Brain create a task: ', category: 'Work' },
+				{ name: 'tasks', description: 'List all tasks', action: '@Brain list all tasks', category: 'Work' },
+				{ name: 'doc', description: 'Create a document', action: '@Brain create a document about ', category: 'Work' },
+				{ name: 'image', description: 'Generate an image', action: '@Brain generate an image of ', category: 'Work' },
+				{ name: 'calendar', description: 'View calendar events', action: '@Brain list upcoming calendar events', category: 'Work' },
+				{ name: 'event', description: 'Create a calendar event', action: '@Brain create a calendar event for ', category: 'Work' },
+			);
+		}
+		// Admin only
+		if (isAdminRole) {
+			cmds.push(
+				{ name: 'email', description: 'Send an email', action: '@Brain send an email to ', category: 'Admin' },
+			);
+		}
 		// Add MCP tool commands
 		for (const server of mcpServers) {
 			if (!server.tools) continue;
 			for (const tool of server.tools) {
 				const shortName = tool.qual_name.includes('__') ? tool.qual_name.split('__')[1] : tool.qual_name;
-				// Skip if we already have a similar built-in command
 				if (cmds.some(c => c.name === shortName)) continue;
 				cmds.push({
 					name: shortName,
 					description: tool.description?.substring(0, 60) || tool.qual_name,
 					action: `@Brain use ${tool.qual_name} to `,
+					category: 'Tools',
 				});
 			}
 		}
@@ -704,6 +758,9 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			// Load agents for sidebar built-in agents
 			loadAgents().catch(() => {});
 
+			// Load plan info for sidebar banner
+			loadWorkspaceInfo().catch(() => {});
+
 			// Load brain settings for status bar + WebLLM inference + onboarding check
 			loadBrainSettings().then(() => {
 				if (isAdmin && brainSettings.onboarding_complete !== 'true' && brainSettings.api_key_set !== 'true') {
@@ -746,11 +803,47 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 		}
 	});
 
-	async function selectChannel(ch: Channel) {
+	async function loadMoreMessages() {
+		if (loadingMore || !hasMoreMessages) return;
+		let current: Channel | null = null;
+		activeChannel.subscribe(v => current = v)();
+		if (!current) return;
+		const msgs = $messages;
+		if (msgs.length === 0) return;
+		const oldestId = msgs[0].id;
+		loadingMore = true;
+		try {
+			const scrollEl = messagesEl;
+			const prevScrollHeight = scrollEl?.scrollHeight || 0;
+			const prevScrollTop = scrollEl?.scrollTop || 0;
+			const data = await getMessages(slug, current.id, oldestId);
+			if (data.messages?.length > 0) {
+				messages.update(existing => [...data.messages, ...existing]);
+				hasMoreMessages = !!data.has_more;
+				// Preserve scroll position
+				requestAnimationFrame(() => {
+					if (scrollEl) {
+						scrollEl.scrollTop = scrollEl.scrollHeight - prevScrollHeight + prevScrollTop;
+					}
+				});
+			} else {
+				hasMoreMessages = false;
+			}
+		} catch {} finally {
+			loadingMore = false;
+		}
+	}
+
+	async function selectChannel(ch: Channel, targetMessageId?: string) {
 		activeChannel.set(ch);
 		const data = await getMessages(slug, ch.id);
 		messages.set(data.messages);
-		scrollToBottom();
+		hasMoreMessages = !!data.has_more;
+		if (targetMessageId) {
+			scrollToMessage(targetMessageId);
+		} else {
+			scrollToBottom();
+		}
 		// Mark channel as read
 		markChannelRead(ch.id);
 		channels.update(chs => chs.map(c => c.id === ch.id ? { ...c, unread: 0 } : c));
@@ -762,6 +855,17 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 		history.replaceState(history.state, '', url.toString());
 	}
 
+	function scrollToMessage(messageId: string) {
+		highlightedMessageId = messageId;
+		requestAnimationFrame(() => {
+			const el = messagesEl?.querySelector(`[data-message-id="${messageId}"]`);
+			if (el) {
+				el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+			}
+			setTimeout(() => { highlightedMessageId = null; }, 2000);
+		});
+	}
+
 	let lastRefresh = 0;
 	function refreshCurrentView() {
 		if (Date.now() - lastRefresh < 5000) return;
@@ -771,6 +875,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 		if (current) {
 			getMessages(slug, current.id).then(data => {
 				messages.set(data.messages);
+				hasMoreMessages = !!data.has_more;
 				scrollToBottom();
 			}).catch(() => {});
 		}
@@ -1015,6 +1120,9 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			members.update(mems => mems.map(m =>
 				m.id === payload.user_id ? { ...m, online: payload.status === 'online' } : m
 			));
+		} else if (type === 'bridge.status') {
+			bridgeConnected = payload.connected;
+			bridgeModels = payload.models || [];
 		} else if (type === 'agent.state') {
 			const next = new Map(agentStates);
 			if (payload.state === 'idle') {
@@ -1024,6 +1132,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 					state: payload.state,
 					toolName: payload.tool_name || '',
 					channelID: payload.channel_id,
+					parentID: payload.parent_id || '',
 					agentName: payload.agent_name
 				});
 				// Safety timeout: auto-clear after 120s (image generation can be slow)
@@ -1500,14 +1609,17 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			const data = await joinByCode(inviteToken, inviteJoinName.trim(), inviteJoinEmail.trim() || undefined, inviteJoinPassword || undefined);
 			window.location.href = `/w/${data.slug}`;
 		} catch (e: any) {
-			inviteError = e.message;
+			if (e.message && e.message.includes('free plan limit')) {
+				showUpgradeModal = true;
+			} else {
+				inviteError = e.message;
+			}
 		} finally {
 			inviteJoining = false;
 		}
 	}
 
 	async function handleInvite() {
-		showInviteModal = true;
 		inviteUrl = '';
 		inviteCode = '';
 		inviteCopied = '';
@@ -1515,8 +1627,13 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			const data = await createInvite(slug);
 			inviteUrl = data.invite_url.startsWith('http') ? data.invite_url : location.origin + data.invite_url;
 			inviteCode = data.invite_code;
+			showInviteModal = true;
 		} catch (e: any) {
-			alert(e.message);
+			if (e.message && e.message.includes('free plan limit')) {
+				showUpgradeModal = true;
+			} else {
+				alert(e.message);
+			}
 		}
 	}
 
@@ -1600,10 +1717,77 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 		if ((activeView === 'board' || activeView === 'list') && tasks.length === 0) {
 			await loadTasks();
 		}
-		if (activeView === 'brain') {
-			await loadBrainSettings();
+		// Brain settings is now a modal, loaded via showBrainSettings
+	}
+
+	// System Logs helpers
+	const LOG_LEVELS = ['', 'info', 'warn', 'error'] as const;
+	const LOG_RANGES = [
+		{ label: '1h', value: '1h' },
+		{ label: '24h', value: '24h' },
+		{ label: '7d', value: '7d' },
+	];
+	const LOG_CATEGORY_COLORS: Record<string, string> = {
+		security: '#ef4444', api: '#3b82f6', brain: '#8b5cf6', agent: '#10b981',
+		calendar: '#f59e0b', email: '#06b6d4', system: '#6366f1', websocket: '#ec4899',
+	};
+	function logLevelColor(level: string): string {
+		if (level === 'error') return '#ef4444';
+		if (level === 'warn') return '#f59e0b';
+		return 'var(--text-tertiary)';
+	}
+	async function fetchLogs() {
+		logLoading = true;
+		try {
+			const data = await getLogs(slug, {
+				category: logCategory || undefined,
+				level: logLevel || undefined,
+				since: logRange,
+				limit: 200,
+			});
+			logEntries = data.entries || [];
+			logCategories = data.categories || [];
+			logTotal = data.total || 0;
+		} catch (e: any) {
+			console.error('Failed to load logs:', e);
+		}
+		logLoading = false;
+	}
+	function toggleLogExpand(idx: number) {
+		const next = new Set(logExpandedIds);
+		if (next.has(idx)) next.delete(idx);
+		else next.add(idx);
+		logExpandedIds = next;
+	}
+	function formatLogTime(ts: string): string {
+		try {
+			const d = new Date(ts);
+			return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+		} catch { return ts; }
+	}
+	function toggleLogAutoRefresh() {
+		logAutoRefresh = !logAutoRefresh;
+		if (logAutoRefresh) {
+			logRefreshInterval = setInterval(fetchLogs, 5000);
+		} else if (logRefreshInterval) {
+			clearInterval(logRefreshInterval);
+			logRefreshInterval = null;
 		}
 	}
+	function closeSystemLogs() {
+		showSystemLogs = false;
+		if (logRefreshInterval) {
+			clearInterval(logRefreshInterval);
+			logRefreshInterval = null;
+			logAutoRefresh = false;
+		}
+	}
+	$effect(() => {
+		if (showSystemLogs) {
+			logCategory; logLevel; logRange;
+			fetchLogs();
+		}
+	});
 
 	async function loadTasks() {
 		try {
@@ -1705,22 +1889,27 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 		}
 	}
 
-	function handleSearchNavigate(type: string, resultId: string) {
+	function handleSearchNavigate(type: string, resultId: string, result?: any) {
 		if (type === 'document') {
 			goto(`/w/${slug}/files`);
 			return;
 		} else if (type === 'task') {
 			activeView = 'board';
 		} else if (type === 'knowledge') {
-			activeView = 'brain';
+			showBrainSettings = true;
+			brainTab = 'knowledge';
+			loadBrainSettings();
+			loadKnowledge();
 		} else if (type === 'member') {
 			const member = $members.find((m: any) => m.id === resultId);
 			if (member) handleManageMember(member);
 		} else if (type === 'channel') {
 			const ch = $channels.find((c: any) => c.id === resultId);
 			if (ch) selectChannel(ch);
+		} else if (type === 'message' && result?.channel_id) {
+			const ch = $channels.find((c: any) => c.id === result.channel_id);
+			if (ch) selectChannel(ch, resultId);
 		}
-		// For messages, stay in chat view (default)
 	}
 
 	function getMemberName(memberId: string): string {
@@ -1826,6 +2015,11 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			brainWebLLMEnabled = brainSettings.webllm_enabled === 'true';
 			brainWebLLMModel = brainSettings.webllm_model || '';
 			brainWebLLMPrompt = brainSettings.webllm_system_prompt || DEFAULT_WEBLLM_PROMPT;
+			brainOllamaEnabled = brainSettings.ollama_enabled === 'true';
+			brainOllamaModel = brainSettings.ollama_model || '';
+			brainOllamaURL = brainSettings.ollama_url || 'http://localhost:11434';
+			bridgeConnected = brainSettings.bridge_connected === 'true';
+			try { bridgeModels = JSON.parse(brainSettings.bridge_models || '[]'); } catch { bridgeModels = []; }
 			brainSystemMemoryEnabled = brainSettings.system_memory_enabled !== 'false';
 			brainMemoryEnabled = brainSettings.memory_enabled !== 'false';
 			brainExtractFreq = parseInt(brainSettings.extraction_frequency) || 30;
@@ -1851,6 +2045,9 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 					llm_enabled: brainLLMEnabled,
 					webllm_enabled: brainWebLLMEnabled,
 					webllm_model: brainWebLLMModel,
+					ollama_enabled: brainOllamaEnabled,
+					ollama_model: brainOllamaModel,
+					ollama_url: brainOllamaURL,
 				}));
 			} catch {}
 			await loadPinnedModels();
@@ -1930,6 +2127,9 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 				webllm_enabled: String(brainWebLLMEnabled),
 				webllm_model: brainWebLLMModel,
 				webllm_system_prompt: brainWebLLMPrompt,
+				ollama_enabled: String(brainOllamaEnabled),
+				ollama_model: brainOllamaModel,
+				ollama_url: brainOllamaURL,
 				system_memory_enabled: String(brainSystemMemoryEnabled),
 				memory_engine: brainMemoryEngine,
 				memory_model: brainMemoryModel,
@@ -2320,58 +2520,9 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 
 	async function loadIntegrations() {
 		try {
-			const [wh, et, tc] = await Promise.all([
-				listWebhooks(slug).catch(() => []),
-				listEmailThreads(slug).catch(() => []),
-				listTelegramChats(slug).catch(() => []),
-			]);
-			webhooks = wh;
-			emailThreads = et;
-			telegramChats = tc;
+			telegramChats = await listTelegramChats(slug).catch(() => []);
 		} catch (e: any) {
 			console.error('Failed to load integrations:', e);
-		}
-	}
-
-	async function handleCreateWebhook() {
-		if (!newWebhookChannel) return;
-		try {
-			const result = await createWebhook(slug, newWebhookChannel, newWebhookDesc);
-			newWebhookChannel = '';
-			newWebhookDesc = '';
-			await loadIntegrations();
-			alert(`Webhook created!\nURL: ${result.url}`);
-		} catch (e: any) {
-			alert(e.message);
-		}
-	}
-
-	async function handleDeleteWebhook(id: string) {
-		if (!confirm('Delete this webhook?')) return;
-		try {
-			await deleteWebhook(slug, id);
-			await loadIntegrations();
-		} catch (e: any) {
-			alert(e.message);
-		}
-	}
-
-	async function loadEventsForHook(hookId: string) {
-		try {
-			const events = await listWebhookEvents(slug, hookId);
-			webhookEvents = { ...webhookEvents, [hookId]: events };
-		} catch (e: any) {
-			console.error('Failed to load events:', e);
-		}
-	}
-
-	async function handleDeleteEmailThread(id: string) {
-		if (!confirm('Delete this email thread?')) return;
-		try {
-			await deleteEmailThread(slug, id);
-			await loadIntegrations();
-		} catch (e: any) {
-			alert(e.message);
 		}
 	}
 
@@ -3289,7 +3440,7 @@ autonomy: reactive
 {:else}
 
 {#if showSearch}
-<SearchModal {slug} onclose={() => showSearch = false} onnavigate={handleSearchNavigate} />
+<SearchModal {slug} onclose={() => showSearch = false} onnavigate={(type, id, result) => handleSearchNavigate(type, id, result)} />
 {/if}
 
 {#if announcement && !announcementDismissed}
@@ -3308,7 +3459,7 @@ autonomy: reactive
 
 <div class="workspace">
 	<!-- Sidebar -->
-	<aside class="sidebar" class:hidden={activeView === 'brain'}>
+	<aside class="sidebar">
 		<div class="sidebar-header">
 			<button class="logo-row" onclick={() => {
 				const brainDM = $channels.find(ch => ch.type === 'dm' && ch.name.includes('brain'));
@@ -3510,6 +3661,21 @@ autonomy: reactive
 			<span class="model-label">{modelStatusLabel}</span>
 		</div>
 
+		{#if isAdmin && workspaceInfo}
+		<div class="plan-banner" class:plan-banner-warning={workspaceInfo.plan !== 'pro' && workspaceInfo.max_members > 0 && (workspaceInfo.counts?.members ?? 0) >= workspaceInfo.max_members - 1}>
+			<span class="plan-banner-text">
+				{#if workspaceInfo.plan === 'pro'}
+					Pro · Unlimited
+				{:else}
+					Free · {workspaceInfo.counts?.members ?? 0}/{workspaceInfo.max_members ?? 5} members
+				{/if}
+			</span>
+			{#if workspaceInfo.plan !== 'pro'}
+				<button class="plan-banner-upgrade" onclick={() => showUpgradeModal = true}>Upgrade</button>
+			{/if}
+		</div>
+		{/if}
+
 		<div class="user-menu-wrap">
 			<button class="user-menu-trigger" onclick={() => showUserMenu = !showUserMenu}>
 				<span class="user-avatar">{userInitial}</span>
@@ -3558,7 +3724,7 @@ autonomy: reactive
 					</button>
 				{/if}
 					{#if isAdmin}
-						<button class="user-menu-item" onclick={() => { activeView = 'brain'; onViewChange(); showUserMenu = false; }}>
+						<button class="user-menu-item" onclick={() => { showBrainSettings = true; loadBrainSettings(); showUserMenu = false; }}>
 							<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
 								<circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.2"/>
 								<circle cx="7" cy="7" r="1.5" fill="currentColor"/>
@@ -3566,7 +3732,7 @@ autonomy: reactive
 							</svg>
 							Brain Settings
 						</button>
-						<button class="user-menu-item" onclick={() => { goto(`/w/${slug}/logs`); showUserMenu = false; }}>
+						<button class="user-menu-item" onclick={() => { showSystemLogs = true; fetchLogs(); showUserMenu = false; }}>
 							<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
 								<rect x="2" y="2" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
 								<path d="M4.5 5h5M4.5 7h3.5M4.5 9h4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
@@ -3651,6 +3817,13 @@ autonomy: reactive
 
 			<!-- Messages -->
 			<div class="messages-area" class:drag-over={dragOver} bind:this={messagesEl} ondragover={handleDragOver} ondragleave={() => dragOver = false} ondrop={handleDrop}>
+				{#if hasMoreMessages}
+					<div class="load-more-bar">
+						<button class="load-more-btn" onclick={loadMoreMessages} disabled={loadingMore}>
+							{loadingMore ? 'Loading...' : 'Load older messages'}
+						</button>
+					</div>
+				{/if}
 				{#if $messages.length === 0}
 					<div class="empty-state">
 						<div class="empty-icon">
@@ -3672,7 +3845,7 @@ autonomy: reactive
 				{/if}
 
 				{#each $messages as msg (msg.clientId || msg.id)}
-					<div class="message-row" class:pending={msg.status === 'pending'} class:failed={msg.status === 'failed'}>
+					<div class="message-row" class:pending={msg.status === 'pending'} class:failed={msg.status === 'failed'} class:message-highlight={highlightedMessageId === msg.id} data-message-id={msg.id}>
 						<div class="avatar clickable" onclick={() => openProfile(msg.sender_id)}>
 							{msg.sender_name.charAt(0).toUpperCase()}
 						</div>
@@ -3790,9 +3963,9 @@ autonomy: reactive
 				</div>
 			{/if}
 
-			<!-- Agent state indicators -->
+			<!-- Agent state indicators (only for channel-level, not thread-scoped) -->
 			{#each [...agentStates.entries()] as [agentId, agentState]}
-				{#if agentState.channelID === $activeChannel?.id}
+				{#if agentState.channelID === $activeChannel?.id && !agentState.parentID}
 					<div class="agent-working-indicator">
 						<div class="agent-working-dot-group">
 							<span class="agent-working-dot"></span>
@@ -3825,6 +3998,9 @@ autonomy: reactive
 			{#if slashActive && slashResults.length > 0}
 				<div class="mention-popup slash-popup">
 					{#each slashResults as cmd, i}
+						{#if i === 0 || cmd.category !== slashResults[i-1]?.category}
+							<div class="slash-category">{cmd.category}</div>
+						{/if}
 						<button
 							class="mention-item"
 							class:active={i === slashIndex}
@@ -3991,7 +4167,19 @@ autonomy: reactive
 	{#if threadId}
 		<aside class="thread-panel">
 			<div class="thread-header">
-				<h3>Thread</h3>
+				<div class="thread-header-left">
+					<h3>Thread</h3>
+					{#if threadParticipants.length > 0}
+						<div class="thread-participant-avatars">
+							{#each threadParticipants.slice(0, 5) as [, name]}
+								<div class="thread-participant-avatar" title={name}>{name.charAt(0).toUpperCase()}</div>
+							{/each}
+							{#if threadParticipants.length > 5}
+								<span class="thread-participant-more">+{threadParticipants.length - 5}</span>
+							{/if}
+						</div>
+					{/if}
+				</div>
 				<button class="drawer-close" onclick={closeThread}>
 					<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
 						<path d="M2 2L12 12M12 2L2 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -4028,6 +4216,25 @@ autonomy: reactive
 					{/if}
 				{/each}
 			</div>
+			<!-- Agent state indicators for this thread -->
+			{#each [...agentStates.entries()] as [agentId, agentState]}
+				{#if agentState.channelID === $activeChannel?.id && agentState.parentID === threadId}
+					<div class="agent-working-indicator">
+						<div class="agent-working-dot-group">
+							<span class="agent-working-dot"></span>
+							<span class="agent-working-dot"></span>
+							<span class="agent-working-dot"></span>
+						</div>
+						<span class="agent-working-text">
+							{#if agentState.state === 'thinking'}
+								{agentState.agentName} is thinking...
+							{:else if agentState.state === 'tool_executing'}
+								{agentState.agentName} is using {agentState.toolName}...
+							{/if}
+						</span>
+					</div>
+				{/if}
+			{/each}
 			<div class="thread-input">
 				<input
 					type="text"
@@ -4180,1674 +4387,6 @@ autonomy: reactive
 		</div>
 	</main>
 
-	{:else if activeView === 'brain'}
-	<!-- Brain Settings View -->
-	<main class="brain-main">
-		<div class="brain-settings">
-			<div class="brain-header-row">
-				<button class="brain-back" onclick={() => { activeView = 'chat'; onViewChange(); }} title="Back to chat">
-					<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-						<path d="M12 4L6 10L12 16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-					</svg>
-				</button>
-				<h2 class="brain-heading">Brain Configuration</h2>
-			</div>
-
-			<div class="brain-tabs">
-				<button class="brain-tab" class:active={brainTab === 'settings'} onclick={() => brainTab = 'settings'}>Settings</button>
-				{#if isAdmin}
-					<button class="brain-tab" class:active={brainTab === 'north_star'} onclick={() => brainTab = 'north_star'}>North Star</button>
-					<button class="brain-tab" class:active={brainTab === 'definitions'} onclick={() => brainTab = 'definitions'}>Personality</button>
-					<button class="brain-tab" class:active={brainTab === 'memory'} onclick={() => { brainTab = 'memory'; loadMemories(); }}>Memory</button>
-					<button class="brain-tab" class:active={brainTab === 'activity'} onclick={() => { brainTab = 'activity'; loadActions(); }}>Activity</button>
-					<button class="brain-tab" class:active={brainTab === 'skills'} onclick={() => { brainTab = 'skills'; loadSkills(); }}>Skills</button>
-					<button class="brain-tab" class:active={brainTab === 'knowledge'} onclick={() => { brainTab = 'knowledge'; loadKnowledge(); }}>Knowledge</button>
-					<button class="brain-tab" class:active={brainTab === 'integrations'} onclick={() => { brainTab = 'integrations'; loadIntegrations(); }}>Integrations</button>
-					<button class="brain-tab" class:active={brainTab === 'tools'} onclick={() => { brainTab = 'tools'; loadMCPServersData(); loadMCPTemplates(); }}>Tools</button>
-					<button class="brain-tab" class:active={brainTab === 'roles'} onclick={() => { brainTab = 'roles'; loadRoles(); }}>Roles</button>
-					<button class="brain-tab" class:active={brainTab === 'info'} onclick={() => { brainTab = 'info'; loadWorkspaceInfo(); }}>Info</button>
-					<button class="brain-tab" class:active={brainTab === 'network'} onclick={() => { brainTab = 'network'; getNetworkLog(slug, 'stats').then(s => networkStats = s); }}>Network</button>
-					<button class="brain-tab" class:active={brainTab === 'portability'} onclick={() => brainTab = 'portability'}>Portability</button>
-					<button class="brain-tab" class:active={brainTab === 'costs'} onclick={() => { brainTab = 'costs'; loadUsage(); }}>Costs</button>
-				{/if}
-			</div>
-
-			{#if brainTab === 'north_star'}
-			{#if isAdmin}
-			<div class="brain-section">
-				<h3 class="brain-section-title">North Star</h3>
-				<p class="brain-hint" style="margin-bottom: var(--space-sm);">Set the mission that guides Brain and all agents in this workspace.</p>
-				<label class="brain-hint" style="display:block;margin-top:var(--space-xs)">Goal — What are we trying to achieve?</label>
-				<textarea class="brain-input" rows="2" bind:value={northStar} placeholder="e.g. Build the best AI workspace for teams"></textarea>
-				<label class="brain-hint" style="display:block;margin-top:var(--space-sm)">Why — Why does it matter?</label>
-				<textarea class="brain-input" rows="2" bind:value={northStarWhy} placeholder="e.g. Teams waste too much time switching tools"></textarea>
-				<label class="brain-hint" style="display:block;margin-top:var(--space-sm)">Success — What does success look like?</label>
-				<textarea class="brain-input" rows="2" bind:value={northStarSuccess} placeholder="e.g. 10,000 teams collaborating with AI agents"></textarea>
-				<label class="brain-hint" style="display:block;margin-top:var(--space-sm)">Strategic Themes (comma-separated)</label>
-				<input class="brain-input" type="text" bind:value={strategicThemesInput} placeholder="e.g. AI agents, Seamless collaboration, Developer extensibility" />
-				<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveBrainSettings} disabled={brainSaving}>
-					{brainSaving ? 'Saving...' : 'Save North Star'}
-				</button>
-			</div>
-
-			<div class="brain-section">
-				<h3 class="brain-section-title">Self-Reflection</h3>
-				<p class="brain-hint" style="margin-bottom: var(--space-sm);">Brain periodically reflects on workspace activity, team patterns, and North Star alignment. Findings are saved to REFLECTIONS.md and influence all future responses.</p>
-				<label class="brain-toggle-row">
-					<input type="checkbox" bind:checked={reflectionEnabled} />
-					<div>
-						<strong>Enable daily reflection</strong>
-						<span class="brain-hint" style="display: block; margin-top: 2px;">Brain analyzes activity, updates its self-awareness journal</span>
-					</div>
-				</label>
-				{#if reflectionEnabled}
-				<label class="brain-hint" style="display:block;margin-top:var(--space-sm)">Reflection time (UTC, HH:MM)</label>
-				<input class="brain-input" type="text" bind:value={reflectionTime} placeholder="3:00" style="max-width: 120px;" />
-				{/if}
-				<div style="display:flex;gap:var(--space-sm);margin-top:var(--space-md);">
-					<button class="btn btn-primary btn-sm" onclick={saveBrainSettings} disabled={brainSaving}>
-						{brainSaving ? 'Saving...' : 'Save'}
-					</button>
-					<button class="btn btn-sm" style="border:1px solid var(--border-subtle);" onclick={async () => {
-						reflectingNow = true;
-						try {
-							await triggerReflection(slug);
-							setTimeout(() => { reflectingNow = false; }, 15000);
-						} catch (e) {
-							reflectingNow = false;
-							alert(e);
-						}
-					}} disabled={reflectingNow}>
-						{reflectingNow ? 'Reflecting...' : 'Reflect Now'}
-					</button>
-				</div>
-			</div>
-			{/if}
-			{/if}
-
-			{#if brainTab === 'settings'}
-			{#if isAdmin}
-			<div class="brain-section">
-				<h3 class="brain-section-title">Engine Mode</h3>
-				<label class="brain-toggle-row">
-					<input type="radio" name="engine-mode" checked={engineMode === 'cloud'} onchange={() => setEngineMode('cloud')} />
-					<div>
-						<strong>OpenRouter</strong>
-						<span class="brain-hint" style="display: block; margin-top: 2px;">300+ models via OpenRouter</span>
-					</div>
-				</label>
-				<label class="brain-toggle-row">
-					<input type="radio" name="engine-mode" checked={engineMode === 'grok'} onchange={() => setEngineMode('grok')} />
-					<div>
-						<strong>Grok / xAI</strong>
-						<span class="brain-hint" style="display: block; margin-top: 2px;">Direct xAI access with native X/Twitter search</span>
-					</div>
-				</label>
-				<label class="brain-toggle-row">
-					<input type="radio" name="engine-mode" checked={engineMode === 'local'} onchange={() => setEngineMode('local')} />
-					<div>
-						<strong>Local LLM</strong>
-						<span class="brain-hint" style="display: block; margin-top: 2px;">Inference runs in your browser via WebGPU — no API key needed</span>
-					</div>
-				</label>
-				<label class="brain-toggle-row" style="opacity: 0.5; pointer-events: none;">
-					<input type="radio" name="engine-mode" disabled checked={engineMode === 'standard'} />
-					<div>
-						<strong>Standard Chat Only</strong>
-						<span class="brain-hint" style="display: block; margin-top: 2px;">Pattern-matching responses — coming soon</span>
-					</div>
-				</label>
-				<div class="engine-status">
-					{#if engineMode === 'cloud'}
-						Active: <strong>OpenRouter</strong> — all messages routed to LLM
-					{:else if engineMode === 'grok'}
-						Active: <strong>Grok / xAI</strong> — all messages routed to xAI
-					{:else if engineMode === 'local'}
-						Active: <strong>Local LLM</strong> — all inference runs in your browser
-					{:else}
-						Active: <strong>Standard Chat</strong> — pattern-matching only, no AI
-					{/if}
-				</div>
-			</div>
-			{:else}
-			<div class="brain-section">
-				<h3 class="brain-section-title">Engine</h3>
-				<div class="engine-status">
-					Workspace engine: <strong>{engineMode === 'cloud' ? 'OpenRouter' : engineMode === 'grok' ? 'Grok / xAI' : engineMode === 'local' ? 'Local LLM' : 'Standard Chat'}</strong>
-				</div>
-				{#if typeof navigator !== 'undefined' && (navigator as any).gpu}
-					<label class="brain-toggle-row" style="margin-top: 8px;">
-						<input type="checkbox" checked={userWebLLMEnabled} onchange={(e: Event) => {
-							userWebLLMEnabled = (e.target as HTMLInputElement).checked;
-							try { localStorage.setItem('nexus_user_webllm_' + slug, String(userWebLLMEnabled)); } catch {}
-						}} />
-						<div>
-							<strong>Use Local Model</strong>
-							<span class="brain-hint" style="display: block; margin-top: 2px;">Run AI in your browser instead of using the workspace engine</span>
-						</div>
-					</label>
-				{/if}
-			</div>
-			{/if}
-
-			<div class="brain-section">
-				<h3 class="brain-section-title">Local Model (WebLLM)</h3>
-				{#if typeof navigator !== 'undefined' && !(navigator as any).gpu}
-					<div class="engine-status engine-warning">
-						WebGPU is not available in this browser. Try Chrome 113+ or Edge 113+.
-					</div>
-				{:else}
-					{#if brainWebLLMEnabled || userWebLLMEnabled}
-						{#await import('$lib/webllm.svelte.ts') then webllm}
-							{@const recommended = webllm.getRecommendedModels()}
-							{@const allModels = webllm.getAvailableModels()}
-							{@const state = webllm.getState()}
-
-							<!-- Installed Models List -->
-							{#if state.installedModels.length > 0}
-								<div class="brain-field">
-									<label>Installed Models ({state.installedModels.length}/{webllm.MAX_INSTALLED})</label>
-									<div class="webllm-installed-list">
-										{#each state.installedModels as modelId}
-											{@const isActive = state.isLoaded && state.currentModel === modelId}
-											{@const displayName = webllm.getModelDisplayName(modelId)}
-											{@const hasTools = webllm.isToolCallingModel(modelId)}
-											{@const rec = recommended.find(m => m.model_id === modelId)}
-											<div class="webllm-model-row" class:active={isActive}>
-												<span class="webllm-model-dot" class:loaded={isActive}></span>
-												<div class="webllm-model-info">
-													<span class="webllm-model-name">{displayName}</span>
-													{#if rec}<span class="webllm-model-size">{rec.size}</span>{/if}
-													{#if hasTools}<span class="webllm-model-badge">Tools</span>{/if}
-												</div>
-												<div class="webllm-model-actions">
-													{#if state.isDownloading}
-														<!-- no actions while downloading -->
-													{:else if isActive}
-														<button class="btn btn-secondary btn-xs" onclick={() => webllm.unloadEngine()}>Unload</button>
-													{:else}
-														<button class="btn btn-primary btn-xs" onclick={() => { brainWebLLMModel = modelId; webllm.loadEngine(modelId); }}>Load</button>
-														<button class="btn btn-danger btn-xs" onclick={() => webllm.deleteModelCache(modelId)} title="Delete from cache">&#128465;</button>
-													{/if}
-												</div>
-											</div>
-										{/each}
-									</div>
-								</div>
-							{:else}
-								<div class="brain-hint" style="margin-bottom: 8px;">No models installed yet. Download one below.</div>
-								<!-- Auto-refresh installed models on first render -->
-								{#await webllm.refreshInstalledModels() then}{/await}
-							{/if}
-
-							<!-- Download progress -->
-							{#if state.isDownloading}
-								<div class="brain-field">
-									<div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 4px;">{state.downloadStatus}</div>
-									<div style="background: var(--bg-tertiary); border-radius: 4px; height: 8px; overflow: hidden;">
-										<div style="background: var(--accent); height: 100%; width: {state.downloadProgress * 100}%; transition: width 0.3s;"></div>
-									</div>
-								</div>
-							{/if}
-
-							<!-- Add Model (admin or user opt-in: full selector, member: download workspace model) -->
-							{#if !state.isDownloading}
-								{#if isAdmin || userWebLLMEnabled}
-									<div class="brain-field" style="margin-top: 8px;">
-										<label>Add Model</label>
-										<div style="display: flex; gap: 8px; align-items: center;">
-											<select class="brain-input" style="flex: 1;" bind:value={brainWebLLMModel} disabled={state.installedModels.length >= webllm.MAX_INSTALLED}>
-												<option value="">Select a model...</option>
-												<optgroup label="Recommended">
-													{#each recommended.filter(m => !state.installedModels.includes(m.model_id)) as m}
-														<option value={m.model_id}>{m.label} ({m.size}){m.hasTools ? ' — Tools' : ''}</option>
-													{/each}
-												</optgroup>
-												<optgroup label="All Models">
-													{#each allModels.filter(m => !state.installedModels.includes(m.model_id)) as m}
-														<option value={m.model_id}>{m.display_name} {m.vram_required_MB ? `(${Math.round(m.vram_required_MB / 1024 * 10) / 10} GB)` : ''}{m.hasTools ? ' — Tools' : ''}</option>
-													{/each}
-												</optgroup>
-											</select>
-											<button class="btn btn-primary btn-sm" disabled={!brainWebLLMModel || state.installedModels.length >= webllm.MAX_INSTALLED} onclick={() => webllm.loadEngine(brainWebLLMModel)}>Download</button>
-										</div>
-										{#if state.installedModels.length >= webllm.MAX_INSTALLED}
-											<div class="brain-hint" style="margin-top: 4px; color: var(--text-warning);">Maximum {webllm.MAX_INSTALLED} models. Delete one to add another.</div>
-										{/if}
-									</div>
-								{:else if brainWebLLMModel && !state.installedModels.includes(brainWebLLMModel)}
-									<div class="brain-field" style="margin-top: 8px;">
-										<label>Workspace Model</label>
-										<div style="display: flex; gap: 8px; align-items: center;">
-											<span style="flex: 1; font-size: var(--text-sm); color: var(--text-secondary);">{webllm.getModelDisplayName(brainWebLLMModel)}</span>
-											<button class="btn btn-primary btn-sm" onclick={() => webllm.loadEngine(brainWebLLMModel)}>Download</button>
-										</div>
-										<span class="brain-hint">Download once to enable @Brain in your browser</span>
-									</div>
-								{/if}
-							{/if}
-
-							<!-- Active model status -->
-							{#if state.isLoaded}
-								<div class="engine-status" style="margin-top: 8px;">
-									Active: <strong>{webllm.getModelDisplayName(state.currentModel)}</strong>
-									{#if webllm.isToolCallingModel(state.currentModel)}
-										<span style="color: var(--accent);"> &#9889; Tools enabled</span>
-									{/if}
-								</div>
-							{/if}
-						{/await}
-					{/if}
-					{#if brainWebLLMEnabled && !userWebLLMEnabled}
-						<div class="engine-status" style="margin-top: 8px; background: rgba(234,88,12,0.1); border: 1px solid rgba(234,88,12,0.3);">
-							Local LLM active — Standard Chat and Cloud LLM are bypassed. All responses come from your browser.
-						</div>
-					{:else if userWebLLMEnabled}
-						<div class="engine-status" style="margin-top: 8px; background: rgba(234,88,12,0.1); border: 1px solid rgba(234,88,12,0.3);">
-							Personal Local LLM active — your messages use local inference instead of the workspace engine.
-						</div>
-					{/if}
-				{/if}
-			</div>
-
-			{#if isAdmin}
-			<div class="brain-section">
-				<h3 class="brain-section-title">LLM Provider</h3>
-				<div class="service-cards">
-					<!-- OpenRouter -->
-					<div class="service-card" class:service-active={brainSettings.api_key_set === 'true'}>
-						<div class="service-header">
-							<div class="service-status-dot" class:active={brainSettings.api_key_set === 'true'}></div>
-							<div class="service-title-area">
-								<span class="service-name">OpenRouter</span>
-								<span class="service-badge">{brainSettings.api_key_set === 'true' ? 'Connected' : 'Not configured'}</span>
-							</div>
-						</div>
-						<div class="service-desc">
-							{#if brainSettings.api_key_set === 'true'}
-								Model: <strong>{brainModel === 'nexus/free-auto' ? 'Free Auto' : brainModel.split('/').pop()}</strong>
-								{#if brainSettings.api_key_masked}&middot; Key: {brainSettings.api_key_masked}{/if}
-							{:else}
-								Cloud LLM via 300+ models. Powers chat, tools, and agents.
-							{/if}
-						</div>
-						<details class="service-details">
-							<summary>Configure</summary>
-							<div class="service-fields">
-								<div class="brain-field">
-									<label>API Key</label>
-									{#if brainSettings.api_key_set === 'true'}
-										<div class="brain-key-status">Active ({brainSettings.api_key_masked})</div>
-									{/if}
-									<input type="password" class="brain-input" placeholder="sk-or-v1-..." bind:value={brainApiKey} />
-									<span class="brain-hint">Get a key at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a></span>
-								</div>
-								<div class="brain-field">
-									<label>Model</label>
-									<div style="display: flex; gap: 0.5rem; align-items: center;">
-										<select class="brain-input" bind:value={brainModel} style="flex:1">
-											<option value="nexus/free-auto">Free Auto (Nexus)</option>
-											{#if pinnedModels.length > 0}
-												{#each pinnedModels as m}
-													<option value={m.id}>{m.display_name}</option>
-												{/each}
-											{:else}
-												<option value="anthropic/claude-sonnet-4">Claude Sonnet 4</option>
-												<option value="anthropic/claude-haiku-4">Claude Haiku 4</option>
-												<option value="openai/gpt-4o">GPT-4o</option>
-												<option value="openai/gpt-4o-mini">GPT-4o Mini</option>
-												<option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
-												<option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
-											{/if}
-											{#each addedModels.filter(am => !pinnedModels.some(pm => pm.id === am.id)) as m}
-												<option value={m.id}>{m.display_name}</option>
-											{/each}
-										</select>
-										<button class="btn btn-ghost btn-sm" onclick={openModelBrowser}>Browse</button>
-									</div>
-									{#if modelAvailability && !modelAvailability.model_available}
-										<div class="model-fallback-warning">
-											Model <strong>{modelAvailability.model}</strong> unavailable — falling back to <strong>{modelAvailability.fallback_model}</strong>
-										</div>
-									{/if}
-								</div>
-
-								{#if brainModel === 'nexus/free-auto'}
-								<div class="brain-field">
-									<label>Free Auto Router</label>
-									<span class="brain-hint" style="margin-bottom: 0.5rem">Models are tried in order. First available model responds.</span>
-									{#if workspaceFreeModels.length > 0}
-									<div class="free-model-list">
-										{#each workspaceFreeModels as model, i}
-										<div class="free-model-row">
-											<span class="free-model-priority">{i + 1}</span>
-											<span class="free-model-id">{model.id}</span>
-											<span class="free-model-name">{model.name}</span>
-											<div class="free-model-actions">
-												<button class="btn btn-ghost btn-xs" onclick={() => moveWorkspaceFreeModel(i, -1)} disabled={i === 0}>&#9650;</button>
-												<button class="btn btn-ghost btn-xs" onclick={() => moveWorkspaceFreeModel(i, 1)} disabled={i === workspaceFreeModels.length - 1}>&#9660;</button>
-												<button class="btn btn-ghost btn-xs danger" onclick={() => removeWorkspaceFreeModel(model.id)}>&times;</button>
-											</div>
-										</div>
-										{/each}
-									</div>
-									{:else}
-									<span class="brain-hint" style="font-style: italic">Using global defaults</span>
-									{/if}
-									<div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; align-items: flex-end;">
-										<div style="flex: 1;">
-											<input class="brain-input" bind:value={newFreeId} placeholder="provider/model:free" style="font-size: 0.8rem; font-family: var(--font-mono);" />
-										</div>
-										<div style="flex: 0.6;">
-											<input class="brain-input" bind:value={newFreeName} placeholder="Name" style="font-size: 0.8rem;" />
-										</div>
-										<button class="btn btn-primary btn-sm" onclick={addWorkspaceFreeModel} disabled={!newFreeId.trim()}>Add</button>
-									</div>
-									{#if workspaceFreeModels.length > 0}
-									<button class="btn btn-ghost btn-xs" style="margin-top: 0.5rem; color: var(--text-tertiary);" onclick={resetWorkspaceFreeModels}>Reset to defaults</button>
-									{/if}
-								</div>
-								{/if}
-							</div>
-						</details>
-					</div>
-
-					<!-- Grok / xAI -->
-					<div class="service-card" class:service-active={brainSettings.xai_api_key_set === 'true' && !!brainXAIModel}>
-						<div class="service-header">
-							<div class="service-status-dot" class:active={brainSettings.xai_api_key_set === 'true' && !!brainXAIModel}></div>
-							<div class="service-title-area">
-								<span class="service-name">Grok / xAI</span>
-								<span class="service-badge">
-									{#if brainSettings.xai_api_key_set === 'true' && brainXAIModel}
-										Active &middot; {brainXAIModel}
-									{:else if brainSettings.xai_api_key_set === 'true'}
-										Key set &middot; Select a model
-									{:else}
-										Not configured
-									{/if}
-								</span>
-							</div>
-						</div>
-						<div class="service-desc">
-							{#if brainSettings.xai_api_key_set === 'true' && brainXAIModel}
-								Brain routes all requests via xAI &mdash; lower latency, native X/Twitter search.
-							{:else}
-								Direct access to Grok models with native X/Twitter search. No OpenRouter needed.
-							{/if}
-						</div>
-						<details class="service-details" open={!brainSettings.xai_api_key_set || !brainXAIModel}>
-							<summary>Configure</summary>
-							<div class="service-fields">
-								<div class="brain-field">
-									<label>API Key</label>
-									{#if brainSettings.xai_api_key_set === 'true'}
-										<div class="brain-key-status">Active ({brainSettings.xai_api_key_masked})</div>
-									{/if}
-									<input type="password" class="brain-input" placeholder="xai-..." bind:value={brainXAIKey} />
-									<span class="brain-hint">Get a key at <a href="https://console.x.ai" target="_blank" rel="noopener">console.x.ai</a> &mdash; includes free credits</span>
-								</div>
-								<div class="brain-field">
-									<label>Model</label>
-									<select class="brain-input" bind:value={brainXAIModel}>
-										<option value="">Select a model...</option>
-										<option value="grok-4-1-fast-non-reasoning">Grok 4.1 Fast — $0.20/$0.50/M, 2M context</option>
-										<option value="grok-4-0709">Grok 4 — $3/$15/M</option>
-										<option value="grok-3-fast">Grok 3 Fast</option>
-										<option value="grok-3-mini-fast">Grok 3 Mini Fast</option>
-										<option value="grok-3">Grok 3</option>
-										<option value="grok-3-mini">Grok 3 Mini</option>
-									</select>
-								</div>
-							</div>
-						</details>
-					</div>
-				</div>
-
-				<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveBrainSettings} disabled={brainSaving}>
-					{brainSaving ? 'Saving...' : 'Save Settings'}
-				</button>
-			</div>
-
-			<div class="brain-section">
-				<h3 class="brain-section-title">Services</h3>
-				<div class="service-cards">
-					<!-- Gemini -->
-					<div class="service-card" class:service-active={brainSettings.gemini_api_key_set === 'true'}>
-						<div class="service-header">
-							<div class="service-status-dot" class:active={brainSettings.gemini_api_key_set === 'true'}></div>
-							<div class="service-title-area">
-								<span class="service-name">Google Gemini</span>
-								<span class="service-badge">{brainSettings.gemini_api_key_set === 'true' ? 'Connected' : 'Not configured'}</span>
-							</div>
-						</div>
-						<div class="service-desc">
-							{#if brainSettings.gemini_api_key_set === 'true'}
-								Image model: <strong>{brainImageModel.replace('gemini-', '').replace('-image', '').replace('-preview', '')}</strong>
-								{#if brainSettings.gemini_api_key_masked}&middot; Key: {brainSettings.gemini_api_key_masked}{/if}
-							{:else}
-								Powers image generation for agents. Free tier available.
-							{/if}
-						</div>
-						<details class="service-details">
-							<summary>Configure</summary>
-							<div class="service-fields">
-								<div class="brain-field">
-									<label>API Key</label>
-									{#if brainSettings.gemini_api_key_set === 'true'}
-										<div class="brain-key-status">Active ({brainSettings.gemini_api_key_masked})</div>
-									{/if}
-									<input type="password" class="brain-input" placeholder="AIza..." bind:value={brainGeminiKey} />
-									<span class="brain-hint">Get a key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com</a></span>
-								</div>
-								<div class="brain-field">
-									<label>Image Model</label>
-									<select class="brain-input" bind:value={brainImageModel}>
-										<option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image</option>
-										<option value="gemini-3-pro-image-preview">Gemini 3 Pro Image</option>
-										<option value="gemini-3.1-flash-image-preview">Gemini 3.1 Flash Image</option>
-									</select>
-								</div>
-							</div>
-						</details>
-					</div>
-
-					<!-- OpenAI -->
-					<div class="service-card" class:service-active={brainSettings.openai_api_key_set === 'true'}>
-						<div class="service-header">
-							<div class="service-status-dot" class:active={brainSettings.openai_api_key_set === 'true'}></div>
-							<div class="service-title-area">
-								<span class="service-name">OpenAI</span>
-								<span class="service-badge">{brainSettings.openai_api_key_set === 'true' ? 'Connected' : 'Not configured'}</span>
-							</div>
-						</div>
-						<div class="service-desc">
-							{#if brainSettings.openai_api_key_set === 'true'}
-								Available for memory extraction.
-								{#if brainSettings.openai_api_key_masked}Key: {brainSettings.openai_api_key_masked}{/if}
-							{:else}
-								Use OpenAI models directly for memory extraction. GPT-4o Mini is $0.15/M input.
-							{/if}
-						</div>
-						<details class="service-details">
-							<summary>Configure</summary>
-							<div class="service-fields">
-								<div class="brain-field">
-									<label>API Key</label>
-									{#if brainSettings.openai_api_key_set === 'true'}
-										<div class="brain-key-status">Active ({brainSettings.openai_api_key_masked})</div>
-									{/if}
-									<input type="password" class="brain-input" placeholder="sk-..." bind:value={brainOpenAIKey} />
-									<span class="brain-hint">Get a key at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com</a></span>
-								</div>
-							</div>
-						</details>
-					</div>
-
-					<!-- Brave Search -->
-					<div class="service-card" class:service-active={brainSettings.brave_api_key_set === 'true'}>
-						<div class="service-header">
-							<div class="service-status-dot" class:active={brainSettings.brave_api_key_set === 'true'}></div>
-							<div class="service-title-area">
-								<span class="service-name">Brave Search</span>
-								<span class="service-badge">{brainSettings.brave_api_key_set === 'true' ? 'Connected' : 'Not configured'}</span>
-							</div>
-						</div>
-						<div class="service-desc">
-							{#if brainSettings.brave_api_key_set === 'true'}
-								Web search enabled for Brain tools.
-								{#if brainSettings.brave_api_key_masked}Key: {brainSettings.brave_api_key_masked}{/if}
-							{:else}
-								Enables the web_search Brain tool. Free 2,000 queries/month.
-							{/if}
-						</div>
-						<details class="service-details">
-							<summary>Configure</summary>
-							<div class="service-fields">
-								<div class="brain-field">
-									<label>API Key</label>
-									{#if brainSettings.brave_api_key_set === 'true'}
-										<div class="brain-key-status">Active ({brainSettings.brave_api_key_masked})</div>
-									{/if}
-									<input type="password" class="brain-input" placeholder="BSA..." bind:value={brainBraveKey} />
-									<span class="brain-hint">Get a key at <a href="https://brave.com/search/api/" target="_blank" rel="noopener">brave.com/search/api</a></span>
-								</div>
-							</div>
-						</details>
-					</div>
-				</div>
-
-				<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveBrainSettings} disabled={brainSaving}>
-					{brainSaving ? 'Saving...' : 'Save Settings'}
-				</button>
-			</div>
-
-			<div class="brain-section">
-				<h3 class="brain-section-title">Organizational Memory</h3>
-				{#if brainMemoryTotal > 0}
-				<div class="memory-stats-bar">
-					<span>{brainMemoryTotal} memories stored</span>
-					{#if brainLastExtraction}
-						<span class="memory-stats-sep">&middot;</span>
-						<span>Last extraction: {new Date(brainLastExtraction).toLocaleDateString()}</span>
-					{/if}
-					{#if brainLastConsolidation}
-						<span class="memory-stats-sep">&middot;</span>
-						<span>Last consolidation: {new Date(brainLastConsolidation).toLocaleDateString()}</span>
-					{/if}
-				</div>
-				{/if}
-
-				<div class="memory-config-card">
-					<div class="memory-config-header">
-						<div class="memory-config-title-row">
-							<label class="brain-toggle-row" style="margin: 0;">
-								<input type="checkbox" bind:checked={brainSystemMemoryEnabled} />
-								<strong>System Memory</strong>
-							</label>
-						</div>
-						<span class="brain-hint">Captures decisions and commitments using pattern matching. Enables pinning messages to memory. No API cost.</span>
-					</div>
-				</div>
-
-				<div class="memory-config-card">
-					<div class="memory-config-header">
-						<div class="memory-config-title-row">
-							<label class="brain-toggle-row" style="margin: 0;">
-								<input type="checkbox" bind:checked={brainMemoryEnabled} />
-								<strong>LLM Memory</strong>
-							</label>
-						</div>
-						<span class="brain-hint">Uses an LLM to extract organizational decisions, commitments, and policies. Discards creative content, casual chat, and noise. Costs API credits.</span>
-					</div>
-
-					{#if brainMemoryEnabled}
-					<div class="memory-config-body">
-						<div class="brain-field" style="margin-bottom: 0.5rem;">
-							<label>Memory Engine</label>
-							<select class="brain-input" bind:value={brainMemoryEngine} onchange={() => {
-								// Auto-select cheapest model for the engine
-								if (brainMemoryEngine === 'openrouter') brainMemoryModel = 'openai/gpt-4o-mini';
-								else if (brainMemoryEngine === 'gemini') brainMemoryModel = 'gemini-2.5-flash-lite';
-								else if (brainMemoryEngine === 'grok') brainMemoryModel = 'grok-4.1-fast';
-								else if (brainMemoryEngine === 'openai') brainMemoryModel = 'gpt-4o-mini';
-							}}>
-								<option value="openrouter">OpenRouter {brainSettings.api_key_set !== 'true' ? '(free models)' : ''}</option>
-								<option value="gemini" disabled={brainSettings.gemini_api_key_set !== 'true'}>Gemini {brainSettings.gemini_api_key_set !== 'true' ? '— requires API key' : ''}</option>
-								<option value="grok" disabled={brainSettings.xai_api_key_set !== 'true'}>Grok / xAI {brainSettings.xai_api_key_set !== 'true' ? '— requires API key' : ''}</option>
-								<option value="openai" disabled={brainSettings.openai_api_key_set !== 'true'}>OpenAI {brainSettings.openai_api_key_set !== 'true' ? '— requires API key' : ''}</option>
-							</select>
-							<span class="brain-hint">Which provider to use for memory extraction, summaries, and consolidation.</span>
-						</div>
-
-						<div class="brain-field" style="margin-bottom: 0.5rem;">
-							<label>Memory Model</label>
-							<select class="brain-input" bind:value={brainMemoryModel}>
-								{#if brainMemoryEngine === 'openrouter'}
-									<option value="openai/gpt-4o-mini">GPT-4o Mini — $0.15/$0.60/M</option>
-									<option value="google/gemini-2.5-flash">Gemini 2.5 Flash — $0.15/$0.60/M</option>
-									<option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B (free)</option>
-								{:else if brainMemoryEngine === 'gemini'}
-									<option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite — $0.10/$0.40/M</option>
-									<option value="gemini-2.5-flash">Gemini 2.5 Flash — $0.30/$2.50/M</option>
-								{:else if brainMemoryEngine === 'grok'}
-									<option value="grok-4.1-fast">Grok 4.1 Fast — $0.20/$0.50/M</option>
-									<option value="grok-3-mini">Grok 3 Mini — $0.30/$0.50/M</option>
-								{:else if brainMemoryEngine === 'openai'}
-									<option value="gpt-4o-mini">GPT-4o Mini — $0.15/$0.60/M</option>
-								{/if}
-							</select>
-							<span class="brain-hint">Cheaper models work well for extraction.</span>
-						</div>
-
-						<div class="brain-field" style="margin-bottom: 0;">
-							<label>Extraction frequency</label>
-							<div class="brain-freq-row">
-								<input type="range" min="20" max="100" step="10" bind:value={brainExtractFreq} class="brain-range" />
-								<span class="brain-freq-val">Every {brainExtractFreq} messages</span>
-							</div>
-							<span class="brain-hint">Higher = fewer, better extractions. Default is 30. Target: 3-10 memories per week.</span>
-						</div>
-
-						{#if isAdmin && $activeChannel}
-						<div class="brain-field" style="margin-bottom: 0; margin-top: 0.75rem; border-top: 1px solid var(--border); padding-top: 0.75rem;">
-							<button class="btn btn-sm" disabled={extractingMemories} onclick={async () => {
-								extractingMemories = true;
-								extractMsg = '';
-								try {
-									const res = await extractMemoriesNow(slug, $activeChannel.id);
-									const n = res.extracted || 0;
-									extractMsg = n > 0 ? `Extracted ${n} memor${n === 1 ? 'y' : 'ies'} from #${$activeChannel.name}` : 'No memories extracted — messages may not contain decisions, commitments, or policies';
-								} catch (e) {
-									extractMsg = e.message;
-								}
-								extractingMemories = false;
-							}}>
-								{extractingMemories ? 'Extracting...' : 'Extract Now'}
-							</button>
-							{#if extractMsg}
-								<span class="brain-hint" style="color: var(--accent)">{extractMsg}</span>
-							{:else}
-								<span class="brain-hint">Run extraction on #{$activeChannel.name} without waiting for the message threshold.</span>
-							{/if}
-						</div>
-						{/if}
-					</div>
-					{/if}
-				</div>
-			</div>
-
-			{/if}
-
-			<div class="brain-section">
-				<h3 class="brain-section-title">Usage</h3>
-				<p class="brain-hint">Mention <strong>@Brain</strong> in any channel to get a response. Brain can create tasks, search messages, and write documents. It reads the last 20 messages plus stored memories for context.</p>
-			</div>
-
-			{#if isAdmin}
-			<div class="brain-section">
-				<h3 class="brain-section-title">Built-in Agents</h3>
-				<p class="brain-hint" style="margin-bottom: 0.75rem">Toggle built-in agents on or off. Brain is always active.</p>
-				{#each agentsList.filter((a: any) => a.is_system && a.id !== 'brain') as agent}
-					<label class="brain-toggle-row">
-						<input type="checkbox" checked={agent.is_active}
-							onchange={(e) => {
-								const enabled = (e.target as HTMLInputElement).checked;
-								updateBrainSettings(slug, { [`builtin_agent_${agent.id}_enabled`]: enabled ? 'true' : 'false' })
-									.then(() => loadAgents())
-									.catch(() => {});
-							}}
-						/>
-						<span>{agent.avatar} {agent.name}</span>
-						<span class="brain-hint" style="margin-left: auto; font-size: 0.75rem">{agent.role}</span>
-					</label>
-				{/each}
-			</div>
-			{/if}
-
-			{:else if brainTab === 'definitions'}
-			<div class="brain-section">
-				<h3 class="brain-section-title">Brain System Prompts</h3>
-				<p class="brain-hint" style="margin-bottom: 0.75rem">These files shape Brain's personality and behavior. Edit them to customize how Brain acts in your workspace.</p>
-
-				<div class="brain-files">
-					{#each brainDefFiles as file}
-						<button
-							class="brain-file-btn"
-							class:active={brainActiveFile === file}
-							onclick={() => selectBrainFile(file)}
-						>
-							{file}
-						</button>
-					{/each}
-				</div>
-
-				{#if brainActiveFile}
-					<div class="brain-editor">
-						<div class="brain-editor-header">
-							<span class="brain-file-name">{brainActiveFile}</span>
-							<button class="btn btn-primary btn-sm" onclick={saveBrainFile} disabled={brainSaving}>
-								{brainSaving ? 'Saving...' : 'Save'}
-							</button>
-						</div>
-						<textarea
-							class="brain-file-content"
-							bind:value={brainFileContent}
-						></textarea>
-					</div>
-				{/if}
-			</div>
-
-			<div class="brain-section" style="margin-top: 1rem;">
-				<h3 class="brain-section-title">WebLLM System Prompt</h3>
-				<p class="brain-hint" style="margin-bottom: 0.5rem">System prompt for the local WebLLM model. Keep it short — the local model has a ~4K token context window.</p>
-				<textarea
-					class="brain-file-content"
-					style="min-height: 120px;"
-					bind:value={brainWebLLMPrompt}
-				></textarea>
-				<div style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.5rem;">
-					<button class="btn btn-secondary btn-sm" onclick={() => { brainWebLLMPrompt = DEFAULT_WEBLLM_PROMPT; }} disabled={brainWebLLMPrompt === DEFAULT_WEBLLM_PROMPT}>
-						Reset to Default
-					</button>
-					<button class="btn btn-primary btn-sm" onclick={saveBrainSettings} disabled={brainSaving}>
-						{brainSaving ? 'Saving...' : 'Save'}
-					</button>
-				</div>
-			</div>
-
-			{:else if brainTab === 'memory'}
-			<div class="brain-section">
-				{#if currentMemories.length > 0}
-				<div class="memory-month-stats">
-					{#if monthDecisions > 0}<span>{monthDecisions} decision{monthDecisions !== 1 ? 's' : ''}</span>{/if}
-					{#if monthCommitments > 0}<span>{monthCommitments} commitment{monthCommitments !== 1 ? 's' : ''}</span>{/if}
-					{#if monthPolicies > 0}<span>{monthPolicies} {monthPolicies !== 1 ? 'policies' : 'policy'}</span>{/if}
-					{#if monthDecisions === 0 && monthCommitments === 0 && monthPolicies === 0}<span class="brain-hint">No organizational memories this month</span>{/if}
-					<span class="memory-month-stats-label">this month</span>
-				</div>
-				{/if}
-
-				{#if memories.length === 0}
-					<p class="brain-hint">No memories yet. Brain extracts organizational decisions, commitments, and policies as conversations happen.</p>
-				{:else}
-					<div class="memory-actions">
-						<div class="memory-source-filter">
-							{#each ['all', 'decision', 'commitment', 'policy', 'person', 'insight'] as typeFilter}
-								<button class="memory-filter-btn" class:active={memoryTypeFilter === typeFilter} onclick={() => memoryTypeFilter = typeFilter}>
-									{typeFilter === 'all' ? 'All' : typeFilter === 'decision' ? 'Decisions' : typeFilter === 'commitment' ? 'Commitments' : typeFilter === 'policy' ? 'Policies' : typeFilter === 'person' ? 'People' : 'Insights'}
-								</button>
-							{/each}
-						</div>
-						<button class="btn btn-ghost btn-sm memory-clear-btn" onclick={handleClearMemories}>Clear All</button>
-					</div>
-
-					<div class="memory-timeline">
-						{#each Object.entries(groupedMemories) as [month, mems]}
-							<div class="memory-month-group">
-								<div class="memory-month-header">{month}</div>
-								{#each mems as mem}
-									<div class="memory-timeline-item" class:superseded={!!mem.superseded_by || !!mem.valid_until}>
-										<div class="memory-timeline-left">
-											<span class="memory-type-icon" data-type={mem.type}>●</span>
-											<span class="memory-type-badge" data-type={mem.type}>{mem.type.toUpperCase()}</span>
-											<span class="memory-date">{new Date(mem.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
-										</div>
-										<div class="memory-timeline-right">
-											<div class="memory-summary" class:struck={!!mem.superseded_by}>{mem.summary || mem.content}</div>
-											{#if mem.participants}
-												<span class="memory-participants">{mem.participants}</span>
-											{/if}
-											{#if mem.channel_name}
-												<span class="memory-channel">#{mem.channel_name}</span>
-											{/if}
-											{#if mem.confidence && mem.confidence < 1}
-												<span class="memory-confidence" title="Confidence: {(mem.confidence * 100).toFixed(0)}%">
-													<span class="confidence-dot" style="opacity: {mem.confidence}"></span>
-												</span>
-											{/if}
-											<span class="memory-source-badge" data-source={mem.source || 'llm'}>{mem.source === 'rule' ? 'rule' : mem.source === 'pin' ? 'pin' : 'auto'}</span>
-										</div>
-										<button class="memory-delete" onclick={() => handleDeleteMemory(mem.id)} title="Delete">
-											<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-												<path d="M2 2L10 10M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-											</svg>
-										</button>
-									</div>
-								{/each}
-							</div>
-						{/each}
-					</div>
-				{/if}
-			</div>
-
-			{:else if brainTab === 'activity'}
-			<div class="brain-section">
-				<p class="brain-hint" style="margin-bottom: 0.75rem">{brainActionsTotal} total actions logged</p>
-
-				{#if brainActions.length === 0}
-					<p class="brain-hint">No activity yet. Brain logs actions when responding to mentions.</p>
-				{:else}
-					<div class="action-list">
-						{#each brainActions as action}
-							<div class="action-item">
-								<div class="action-header">
-									<span class="action-type-badge" data-type={action.action_type}>{action.action_type}</span>
-									<span class="action-model">{action.model}</span>
-									<span class="action-time">{new Date(action.created_at).toLocaleString()}</span>
-								</div>
-								{#if action.trigger_text}
-									<div class="action-trigger">{action.trigger_text}</div>
-								{/if}
-								{#if action.tools_used?.length > 0}
-									<div class="action-tools">
-										{#each action.tools_used as tool}
-											<span class="action-tool-badge">{tool}</span>
-										{/each}
-									</div>
-								{/if}
-								{#if action.response_text}
-									<div class="action-response">{action.response_text}</div>
-								{/if}
-							</div>
-						{/each}
-					</div>
-				{/if}
-			</div>
-
-			{:else if brainTab === 'skills'}
-			<div class="brain-section">
-				<p class="brain-hint" style="margin-bottom: 0.75rem">Skills define specialized behaviors Brain can perform.</p>
-
-				{#if isAdmin}
-					<div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
-						<button class="btn btn-primary btn-sm" onclick={() => { showNewSkillForm = !showNewSkillForm; showTemplates = false; }}>New Skill</button>
-						<button class="btn btn-ghost btn-sm" onclick={() => { showTemplates = !showTemplates; showNewSkillForm = false; if (showTemplates && skillTemplates.length === 0) loadSkillTemplates(); }}>Browse Built-in</button>
-					</div>
-				{/if}
-
-				{#if showNewSkillForm}
-					<div class="skill-form" style="border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; background: var(--bg-surface);">
-						<div style="display: flex; flex-direction: column; gap: 0.5rem;">
-							<div style="display: flex; gap: 0.5rem; align-items: flex-end;">
-								<textarea class="brain-input" bind:value={newSkillDescription} placeholder="Describe what this skill should do..." style="flex: 1; min-height: 40px; resize: vertical;"></textarea>
-								<button class="btn btn-ghost btn-sm" onclick={handleGenerateSkill} disabled={generatingSkill || !newSkillDescription.trim()} title={!brainSettings?.api_key ? 'Configure API key first' : 'Generate skill config with AI'}>
-									{generatingSkill ? 'Generating...' : 'Generate with AI'}
-								</button>
-							</div>
-							<input class="brain-input" type="text" placeholder="Skill name" bind:value={newSkillName} />
-							<div style="display: flex; gap: 0.5rem;">
-								<select class="brain-input" bind:value={newSkillTrigger} style="flex: 1">
-									<option value="mention">Trigger: Mention</option>
-									<option value="schedule">Trigger: Schedule</option>
-									<option value="keyword">Trigger: Keyword</option>
-								</select>
-								<select class="brain-input" bind:value={newSkillAutonomy} style="flex: 1">
-									<option value="reactive">Reactive</option>
-									<option value="proactive">Proactive</option>
-								</select>
-							</div>
-							<textarea class="brain-file-content" bind:value={newSkillPrompt} placeholder="Skill instructions..." style="min-height: 100px;"></textarea>
-							<div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
-								<button class="btn btn-ghost btn-sm" onclick={() => showNewSkillForm = false}>Cancel</button>
-								<button class="btn btn-primary btn-sm" onclick={handleCreateSkill} disabled={!newSkillName.trim()}>Create</button>
-							</div>
-						</div>
-					</div>
-				{/if}
-
-				<div class="skill-list">
-					<div class="new-dm-section-label" style="margin-bottom: 0.5rem;">Active Skills ({brainSkills.length})</div>
-					{#each brainSkills as skill}
-						<div class="skill-item" class:active={activeSkill?.file_name === skill.file_name} style={skill.enabled ? '' : 'opacity: 0.5'}>
-							<button class="skill-select" onclick={() => selectSkill(skill)}>
-								<span class="skill-name">{skill.name}</span>
-								<span class="skill-desc">{skill.description}</span>
-								<span class="skill-meta">{skill.trigger} &middot; {skill.autonomy}{#if !skill.enabled} &middot; disabled{/if}</span>
-							</button>
-							{#if isAdmin}
-								<button class="skill-toggle" onclick={() => handleToggleSkill(skill)} title={skill.enabled ? 'Disable' : 'Enable'} style="background: none; border: none; cursor: pointer; padding: 4px; font-size: 1rem;">
-									{skill.enabled ? '●' : '○'}
-								</button>
-								<button class="skill-delete" onclick={() => handleDeleteSkill(skill.file_name)} title="Delete">
-									<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-										<path d="M2 2L10 10M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-									</svg>
-								</button>
-							{/if}
-						</div>
-					{/each}
-					{#if brainSkills.length === 0}
-						<p class="brain-hint">No skills active yet. Create one or install from built-in templates.</p>
-					{/if}
-				</div>
-
-				{#if showTemplates}
-					<div style="margin-top: 1rem;">
-						<div class="new-dm-section-label" style="margin-bottom: 0.5rem;">Built-in Templates</div>
-						<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.75rem;">
-							{#each skillTemplates.filter(t => !t.installed) as tmpl}
-								<div style="border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; background: var(--bg-surface);">
-									<div style="font-weight: 600; font-size: var(--text-sm); margin-bottom: 0.25rem;">{tmpl.name}</div>
-									<div style="font-size: var(--text-xs); color: var(--text-muted); margin-bottom: 0.5rem; line-height: 1.3;">{tmpl.description}</div>
-									<div style="display: flex; justify-content: space-between; align-items: center;">
-										<span style="font-size: 0.65rem; background: var(--bg-hover); padding: 0.15rem 0.4rem; border-radius: 4px;">{tmpl.trigger}</span>
-										<button class="btn btn-primary btn-sm" style="font-size: 0.7rem; padding: 0.2rem 0.5rem;" onclick={() => installTemplate(tmpl)}>Install</button>
-									</div>
-								</div>
-							{/each}
-							{#if skillTemplates.filter(t => !t.installed).length === 0}
-								<p class="brain-hint">All built-in skills are already installed.</p>
-							{/if}
-						</div>
-					</div>
-				{/if}
-
-				{#if activeSkill}
-					<div class="brain-editor" style="margin-top: 0.75rem">
-						<div class="brain-editor-header">
-							<span class="brain-file-name">{activeSkill.file_name}</span>
-							{#if isAdmin}
-								<button class="btn btn-primary btn-sm" onclick={saveSkill} disabled={brainSaving}>
-									{brainSaving ? 'Saving...' : 'Save'}
-								</button>
-							{/if}
-						</div>
-						<textarea
-							class="brain-file-content"
-							bind:value={skillContent}
-							readonly={!isAdmin}
-						></textarea>
-					</div>
-				{/if}
-			</div>
-
-			{:else if brainTab === 'knowledge'}
-			<div class="brain-section">
-				<p class="brain-hint" style="margin-bottom: 0.75rem">Reference materials Brain can search when responding. Upload docs or add articles directly.</p>
-
-				{#if isAdmin}
-				<div class="knowledge-actions" style="margin-bottom: 0.75rem; display: flex; gap: 0.5rem;">
-					<button class="btn btn-primary btn-sm" onclick={() => { showNewKnowledge = true; activeKnowledgeItem = null; knowledgeTitle = ''; knowledgeContent = ''; showUrlImport = false; }}>Add Article</button>
-					<button class="btn btn-ghost btn-sm" onclick={() => knowledgeFileInput?.click()}>Upload File</button>
-					<button class="btn btn-ghost btn-sm" onclick={() => { showUrlImport = true; showNewKnowledge = false; activeKnowledgeItem = null; urlPreview = null; importUrl = ''; }}>Import URL</button>
-					<input type="file" accept=".txt,.md,.pdf" style="display:none" bind:this={knowledgeFileInput} onchange={handleUploadKnowledgeFile} />
-				</div>
-				{/if}
-
-				{#if showNewKnowledge}
-				<div class="brain-editor" style="margin-bottom: 0.75rem">
-					<div class="brain-field">
-						<label>Title</label>
-						<input type="text" class="brain-input" bind:value={knowledgeTitle} placeholder="Article title" />
-					</div>
-					<div class="brain-field">
-						<label>Content</label>
-						<textarea class="brain-file-content" bind:value={knowledgeContent} placeholder="Article content (markdown supported)" rows="8"></textarea>
-					</div>
-					<div style="display: flex; gap: 0.5rem;">
-						<button class="btn btn-primary btn-sm" onclick={handleCreateKnowledge} disabled={knowledgeSaving}>
-							{knowledgeSaving ? 'Saving...' : 'Save'}
-						</button>
-						<button class="btn btn-ghost btn-sm" onclick={() => { showNewKnowledge = false; knowledgeTitle = ''; knowledgeContent = ''; }}>Cancel</button>
-					</div>
-				</div>
-				{/if}
-
-				{#if showUrlImport}
-				<div class="brain-editor" style="margin-bottom: 0.75rem">
-					<div class="brain-field">
-						<label>URL</label>
-						<div style="display: flex; gap: 0.5rem;">
-							<input type="url" class="brain-input" bind:value={importUrl} placeholder="https://example.com/article" style="flex:1" />
-							<button class="btn btn-primary btn-sm" onclick={handleFetchUrl} disabled={urlImporting}>
-								{urlImporting ? 'Fetching...' : 'Fetch'}
-							</button>
-						</div>
-					</div>
-					{#if urlPreview}
-						<div class="brain-field">
-							<label>Title</label>
-							<input type="text" class="brain-input" bind:value={urlPreview.title} />
-						</div>
-						<div class="brain-field">
-							<label>Content Preview ({urlPreview.content.length} chars, ~{Math.round(urlPreview.content.length/4)} tokens)</label>
-							<textarea class="brain-file-content" bind:value={urlPreview.content} rows="8"></textarea>
-						</div>
-						<div style="display: flex; gap: 0.5rem;">
-							<button class="btn btn-primary btn-sm" onclick={handleSaveUrlImport} disabled={knowledgeSaving}>
-								{knowledgeSaving ? 'Saving...' : 'Save as Knowledge'}
-							</button>
-							<button class="btn btn-ghost btn-sm" onclick={() => { showUrlImport = false; urlPreview = null; importUrl = ''; }}>Cancel</button>
-						</div>
-					{:else}
-						<button class="btn btn-ghost btn-sm" onclick={() => { showUrlImport = false; }}>Cancel</button>
-					{/if}
-				</div>
-				{/if}
-
-				{#if activeKnowledgeItem && !showNewKnowledge && !showUrlImport}
-				<div class="brain-editor" style="margin-bottom: 0.75rem">
-					<div class="brain-editor-header">
-						<span class="brain-file-name">{activeKnowledgeItem.title}</span>
-						{#if isAdmin}
-							<button class="btn btn-primary btn-sm" onclick={handleUpdateKnowledge} disabled={knowledgeSaving}>
-								{knowledgeSaving ? 'Saving...' : 'Save'}
-							</button>
-						{/if}
-					</div>
-					<div class="brain-field">
-						<label>Title</label>
-						<input type="text" class="brain-input" bind:value={knowledgeTitle} readonly={!isAdmin} />
-					</div>
-					<textarea class="brain-file-content" bind:value={knowledgeContent} readonly={!isAdmin}></textarea>
-					<button class="btn btn-ghost btn-sm" style="margin-top: 0.5rem;" onclick={() => { activeKnowledgeItem = null; knowledgeTitle = ''; knowledgeContent = ''; }}>Close</button>
-				</div>
-				{/if}
-
-				<div class="knowledge-list">
-					{#each knowledgeItems as item}
-						<div class="knowledge-item">
-							<button class="knowledge-select" onclick={() => selectKnowledgeItem(item)}>
-								<span class="knowledge-title">{item.title}</span>
-								<span class="knowledge-meta">
-									<span class="knowledge-badge" data-type={item.source_type}>{item.source_type}</span>
-									<span class="knowledge-tokens">{item.tokens} tokens</span>
-								</span>
-							</button>
-							{#if isAdmin}
-								<button class="memory-delete" onclick={() => handleDeleteKnowledge(item.id)} title="Delete">
-									<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-										<path d="M2 2L10 10M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-									</svg>
-								</button>
-							{/if}
-						</div>
-					{/each}
-					{#if knowledgeItems.length === 0}
-						<p class="brain-hint">No knowledge articles yet. Add articles or upload .txt/.md/.pdf files.</p>
-					{/if}
-				</div>
-			</div>
-
-			{:else if brainTab === 'roles'}
-			<div class="brain-section">
-				<h3>Workspace Roles</h3>
-				<p class="brain-hint">Roles control what members can do. Assign via Team &rarr; Members &rarr; Manage.</p>
-
-				{#if rolesLoading}
-				<p class="brain-hint">Loading roles...</p>
-				{:else if rolesData.length === 0}
-				<p class="brain-hint">No roles found.</p>
-				{:else}
-				{#each [...rolesData].sort((a, b) => a.name === 'admin' ? -1 : b.name === 'admin' ? 1 : a.name.localeCompare(b.name)) as role}
-				<div class="role-card">
-					<div class="role-card-header" onclick={() => toggleRoleExpand(role.name)}>
-						<span class="role-card-name">{formatRoleName(role.name)}</span>
-						<span class="role-card-count">{role.permissions?.length || 0} permissions</span>
-					</div>
-					{#if expandedRoles.has(role.name)}
-					<div class="role-card-body">
-						{#each PERM_GROUPS as group}
-						<div class="perm-group-row">
-							<span class="perm-group-label">{group.label}</span>
-							<div class="perm-chips">
-								{#each group.perms as perm}
-								<span class="perm-chip" class:granted={role.permissions?.includes(perm)}>
-									{shortPermLabel(perm)}
-								</span>
-								{/each}
-							</div>
-						</div>
-						{/each}
-					</div>
-					{/if}
-				</div>
-				{/each}
-				{/if}
-			</div>
-
-			{:else if brainTab === 'integrations'}
-			<div class="brain-section">
-				<p class="brain-hint" style="margin-bottom: 1rem">Connect external systems to Brain via webhooks, email, or Telegram.</p>
-
-				<!-- Webhooks Section -->
-				<h3 class="brain-section-title">Webhooks</h3>
-				<p class="brain-hint" style="margin-bottom: 0.5rem;">Create a webhook, copy its URL, then POST JSON to it from any external service.</p>
-				<div class="brain-field">
-					<label>Autonomy</label>
-					<select class="brain-input" value={brainSettings.webhook_autonomy || 'autonomous'} onchange={(e) => handleBrainSettingChange('webhook_autonomy', e.currentTarget.value)}>
-						<option value="autonomous">Autonomous — Brain responds automatically</option>
-						<option value="draft">Draft — Brain responds in channel only</option>
-						<option value="never">Never — Message saved, Brain silent</option>
-					</select>
-				</div>
-
-				{#if isAdmin}
-				<div style="display: flex; gap: 0.5rem; margin: 0.75rem 0; align-items: flex-end;">
-					<div class="brain-field" style="flex: 1; margin: 0;">
-						<label>Channel</label>
-						<select class="brain-input" bind:value={newWebhookChannel}>
-							<option value="">Select channel...</option>
-							{#each channels as ch}
-								<option value={ch.id}>{ch.name}</option>
-							{/each}
-						</select>
-					</div>
-					<div class="brain-field" style="flex: 1; margin: 0;">
-						<label>Description</label>
-						<input type="text" class="brain-input" bind:value={newWebhookDesc} placeholder="e.g. GitHub notifications" />
-					</div>
-					<button class="btn btn-primary btn-sm" onclick={handleCreateWebhook}>Create</button>
-				</div>
-				{/if}
-
-				{#each webhooks as hook}
-				<div class="knowledge-item" style="margin-bottom: 0.5rem;">
-					<div style="flex: 1;">
-						<div style="font-weight: 500;">{hook.description || 'Unnamed webhook'}</div>
-						<div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.25rem; font-family: monospace; word-break: break-all;">
-							{hook.url}
-						</div>
-						<div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.25rem;">
-							Channel: {hook.channel_id} · Created: {new Date(hook.created_at).toLocaleDateString()}
-							<button class="btn btn-ghost btn-xs" style="margin-left: 0.5rem;" onclick={() => loadEventsForHook(hook.id)}>Events</button>
-						</div>
-						{#if webhookEvents[hook.id]}
-						<div style="margin-top: 0.5rem; font-size: 0.75rem;">
-							{#each webhookEvents[hook.id].slice(0, 10) as evt}
-							<div style="display: flex; gap: 0.5rem; padding: 0.15rem 0; border-bottom: 1px solid var(--border);">
-								<span class="knowledge-badge" data-type={evt.status}>{evt.status}</span>
-								<span style="color: var(--text-dim);">{new Date(evt.created_at).toLocaleString()}</span>
-								<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{evt.payload.substring(0, 80)}</span>
-							</div>
-							{/each}
-							{#if webhookEvents[hook.id].length === 0}
-								<span style="color: var(--text-dim);">No events yet</span>
-							{/if}
-						</div>
-						{/if}
-					</div>
-					{#if isAdmin}
-					<button class="memory-delete" onclick={() => handleDeleteWebhook(hook.id)} title="Delete">
-						<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-							<path d="M2 2L10 10M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-						</svg>
-					</button>
-					{/if}
-				</div>
-				{/each}
-				{#if webhooks.length === 0}
-					<p class="brain-hint">No webhooks yet. Create one to receive external events.</p>
-				{/if}
-
-				<!-- Email Section -->
-				<h3 class="brain-section-title" style="margin-top: 1.5rem;">Email</h3>
-				<p class="brain-hint" style="margin-bottom: 0.5rem;">Configure SMTP relay for outbound email. MX record needed for inbound.</p>
-				<div class="brain-field">
-					<label>
-						<input type="checkbox" checked={brainSettings.email_enabled === 'true'} onchange={(e) => handleBrainSettingChange('email_enabled', e.currentTarget.checked ? 'true' : 'false')} />
-						Enable inbound email
-					</label>
-				</div>
-				{#if brainSettings.email_enabled === 'true'}
-				<div class="brain-field">
-					<label>Inbound address</label>
-					<input type="text" class="brain-input" value="brain-{slug}@your-domain:2525" readonly style="font-family: monospace; color: var(--text-dim);" />
-				</div>
-				<div class="brain-field">
-					<label>Autonomy</label>
-					<select class="brain-input" value={brainSettings.email_autonomy || 'draft'} onchange={(e) => handleBrainSettingChange('email_autonomy', e.currentTarget.value)}>
-						<option value="autonomous">Autonomous — Brain auto-replies via email</option>
-						<option value="draft">Draft — Brain responds in channel only</option>
-						<option value="never">Never — Message saved, Brain silent</option>
-					</select>
-				</div>
-				<div class="brain-field">
-					<label>Reply scope</label>
-					<select class="brain-input" value={brainSettings.email_reply_scope || 'anyone'} onchange={(e) => handleBrainSettingChange('email_reply_scope', e.currentTarget.value)}>
-						<option value="anyone">Anyone</option>
-						<option value="contacts">Known contacts only</option>
-						<option value="internal">Internal workspace members only</option>
-					</select>
-				</div>
-
-				<details style="margin-top: 0.5rem;">
-					<summary style="cursor: pointer; font-size: 0.85rem; color: var(--text-dim);">Outbound SMTP settings</summary>
-					<div style="margin-top: 0.5rem;">
-						<div class="brain-field">
-							<label>SMTP Host</label>
-							<input type="text" class="brain-input" value={brainSettings.email_outbound_host || ''} onchange={(e) => handleBrainSettingChange('email_outbound_host', e.currentTarget.value)} placeholder="smtp.gmail.com" />
-						</div>
-						<div class="brain-field">
-							<label>Port</label>
-							<input type="text" class="brain-input" value={brainSettings.email_outbound_port || '587'} onchange={(e) => handleBrainSettingChange('email_outbound_port', e.currentTarget.value)} />
-						</div>
-						<div class="brain-field">
-							<label>Username</label>
-							<input type="text" class="brain-input" value={brainSettings.email_outbound_user || ''} onchange={(e) => handleBrainSettingChange('email_outbound_user', e.currentTarget.value)} />
-						</div>
-						<div class="brain-field">
-							<label>Password</label>
-							<input type="password" class="brain-input" value={brainSettings.email_outbound_pass || ''} onchange={(e) => handleBrainSettingChange('email_outbound_pass', e.currentTarget.value)} />
-						</div>
-					</div>
-				</details>
-
-				{#if emailThreads.length > 0}
-				<h4 style="margin-top: 1rem; font-size: 0.85rem; color: var(--text-dim);">Email Threads</h4>
-				{#each emailThreads as thread}
-				<div class="knowledge-item">
-					<div style="flex: 1;">
-						<div style="font-weight: 500;">{thread.subject || 'No subject'}</div>
-						<div style="font-size: 0.7rem; color: var(--text-dim);">Last reply: {new Date(thread.last_reply_at).toLocaleString()}</div>
-					</div>
-					{#if isAdmin}
-					<button class="memory-delete" onclick={() => handleDeleteEmailThread(thread.id)} title="Delete">
-						<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-							<path d="M2 2L10 10M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-						</svg>
-					</button>
-					{/if}
-				</div>
-				{/each}
-				{/if}
-				{/if}
-
-				<!-- Telegram Section -->
-				<h3 class="brain-section-title" style="margin-top: 1.5rem;">Telegram</h3>
-				<p class="brain-hint" style="margin-bottom: 0.5rem;">Get a bot token from <strong>@BotFather</strong> on Telegram, paste it here, then save.</p>
-				<div class="brain-field">
-					<label>Bot Token</label>
-					<input type="password" class="brain-input" value={brainSettings.telegram_bot_token || ''} onchange={(e) => handleBrainSettingChange('telegram_bot_token', e.currentTarget.value)} placeholder="123456:ABC-DEF..." />
-					<span style="font-size: 0.7rem; color: var(--text-dim);">Saving auto-registers the Telegram webhook</span>
-				</div>
-				{#if brainSettings.telegram_bot_token}
-				<div class="brain-field">
-					<label>Autonomy</label>
-					<select class="brain-input" value={brainSettings.telegram_autonomy || 'autonomous'} onchange={(e) => handleBrainSettingChange('telegram_autonomy', e.currentTarget.value)}>
-						<option value="autonomous">Autonomous — Brain replies in Telegram</option>
-						<option value="draft">Draft — Brain responds in channel only</option>
-						<option value="never">Never — Message saved, Brain silent</option>
-					</select>
-				</div>
-
-				{#if telegramChats.length > 0}
-				<h4 style="margin-top: 0.75rem; font-size: 0.85rem; color: var(--text-dim);">Linked Chats</h4>
-				{#each telegramChats as chat}
-				<div class="knowledge-item">
-					<div style="flex: 1;">
-						<div style="font-weight: 500;">{chat.label || 'Chat ' + chat.chat_id}</div>
-						<div style="font-size: 0.7rem; color: var(--text-dim);">Chat ID: {chat.chat_id}</div>
-					</div>
-					{#if isAdmin}
-					<button class="memory-delete" onclick={() => handleDeleteTelegramChat(chat.id)} title="Unlink">
-						<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-							<path d="M2 2L10 10M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-						</svg>
-					</button>
-					{/if}
-				</div>
-				{/each}
-				{/if}
-				{/if}
-
-			</div>
-
-			{:else if brainTab === 'tools'}
-			<div class="brain-section">
-				<p class="brain-hint" style="margin-bottom: 1rem">Add MCP tool servers to extend Brain and Agent capabilities.</p>
-
-				{#if isAdmin && mcpTemplates.length > 0}
-				<h3 class="brain-section-title">Add Tools</h3>
-				{@const connectedIds = mcpServers.map((s: any) => s.name.toLowerCase())}
-				{#each ['free', 'api_key', 'custom'] as tier}
-				{@const tierTemplates = mcpTemplates.filter((t: any) => t.tier === tier && !connectedIds.includes(t.name.toLowerCase()))}
-				{#if tierTemplates.length > 0}
-				<div style="margin-bottom: 1rem;">
-					<div style="font-size: 0.7rem; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">
-						{tier === 'free' ? 'Free — works instantly' : tier === 'api_key' ? 'API Key required' : 'Custom configuration'}
-					</div>
-					<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.5rem;">
-						{#each tierTemplates as template}
-						<button class="mcp-template-card" onclick={() => openTemplateSetup(template)}>
-							<div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.25rem;">
-								<strong style="font-size: 0.85rem;">{template.name}</strong>
-								{#if tier === 'free'}
-								<span class="tier-badge tier-free">Free</span>
-								{:else if tier === 'api_key'}
-								<span class="tier-badge tier-api-key">API Key</span>
-								{:else}
-								<span class="tier-badge tier-custom">Custom</span>
-								{/if}
-							</div>
-							<div style="font-size: 0.72rem; color: var(--text-dim); line-height: 1.3;">{template.description}</div>
-						</button>
-						{/each}
-					</div>
-				</div>
-				{/if}
-				{/each}
-
-				<!-- Template setup modal -->
-				{#if mcpTemplateSetup}
-				<div class="knowledge-form" style="margin-bottom: 1rem; border: 1px solid var(--accent); padding: 1rem; border-radius: 8px;">
-					<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem;">
-						<h3 class="brain-section-title" style="margin: 0;">Setup {mcpTemplateSetup.name}</h3>
-						<button class="btn btn-sm" onclick={() => { mcpTemplateSetup = null; }}>Cancel</button>
-					</div>
-					<p style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 0.75rem;">{mcpTemplateSetup.description}</p>
-
-					{#if mcpTemplateSetup.env_vars && mcpTemplateSetup.env_vars.length > 0}
-					{#each mcpTemplateSetup.env_vars as envVar}
-					<div class="brain-field">
-						<label>
-							{envVar.description}
-							{#if envVar.help_url}
-							<a href={envVar.help_url} target="_blank" rel="noopener" style="font-size: 0.7rem; margin-left: 0.25rem;">Get key</a>
-							{/if}
-						</label>
-						<input type="text" class="brain-input" bind:value={mcpTemplateEnv[envVar.key]} placeholder={envVar.key} />
-					</div>
-					{/each}
-					{:else}
-					<p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem;">No configuration needed — just click Add.</p>
-					{/if}
-
-					<button class="btn btn-primary" disabled={mcpTemplateSaving || (mcpTemplateSetup.env_vars?.length > 0 && mcpTemplateSetup.env_vars.some((v: any) => v.required && !mcpTemplateEnv[v.key]))} onclick={handleAddFromTemplate}>
-						{mcpTemplateSaving ? 'Connecting...' : 'Add'}
-					</button>
-					{#if mcpTemplateError}
-					<div style="color: var(--red); font-size: 0.8rem; margin-top: 0.5rem;">{mcpTemplateError}</div>
-					{/if}
-				</div>
-				{/if}
-				{/if}
-
-				{#if isAdmin}
-				<details style="margin-bottom: 1.5rem;">
-					<summary style="cursor: pointer; font-size: 0.8rem; color: var(--text-dim);">Advanced: Add custom MCP server</summary>
-					<div class="knowledge-form" style="margin-top: 0.75rem;">
-					<div class="brain-field">
-						<label>Name</label>
-						<input type="text" class="brain-input" bind:value={mcpForm.name} placeholder="e.g. GitHub Tools" />
-					</div>
-					<div class="brain-field">
-						<label>Transport</label>
-						<select class="brain-input" bind:value={mcpForm.transport}>
-							<option value="stdio">stdio (command)</option>
-							<option value="sse">SSE (URL)</option>
-						</select>
-					</div>
-					{#if mcpForm.transport === 'stdio'}
-					<div class="brain-field">
-						<label>Command</label>
-						<input type="text" class="brain-input" bind:value={mcpForm.command} placeholder="npx -y @modelcontextprotocol/server-github" />
-					</div>
-					{:else}
-					<div class="brain-field">
-						<label>URL</label>
-						<input type="text" class="brain-input" bind:value={mcpForm.url} placeholder="https://example.com/mcp/sse" />
-					</div>
-					{/if}
-					<div class="brain-field">
-						<label>Tool Prefix (optional)</label>
-						<input type="text" class="brain-input" bind:value={mcpForm.prefix} placeholder="github" />
-					</div>
-					<div class="brain-field">
-						<label>Environment Variables</label>
-						{#each mcpEnvEntries as entry, i}
-						<div style="display: flex; gap: 0.25rem; margin-bottom: 0.25rem;">
-							<input type="text" class="brain-input" style="flex:1" bind:value={entry.key} placeholder="KEY" />
-							<input type="text" class="brain-input" style="flex:1" bind:value={entry.value} placeholder="value" />
-							<button class="btn btn-sm" style="padding: 0 0.5rem" onclick={() => { mcpEnvEntries = mcpEnvEntries.filter((_, j) => j !== i); }}>x</button>
-						</div>
-						{/each}
-						<button class="btn btn-sm" onclick={() => { mcpEnvEntries = [...mcpEnvEntries, {key:'',value:''}]; }}>+ Add Variable</button>
-					</div>
-					<button class="btn btn-primary" disabled={!mcpForm.name || mcpSaving} onclick={handleCreateMCPServer}>
-						{mcpSaving ? 'Connecting...' : 'Add Server'}
-					</button>
-					{#if mcpConnectError}
-					<div style="color: var(--red); font-size: 0.8rem; margin-top: 0.5rem;">{mcpConnectError}</div>
-					{/if}
-					</div>
-				</details>
-				{/if}
-
-				<h3 class="brain-section-title">Connected Servers</h3>
-				{#if mcpServers.length === 0}
-				<p class="brain-hint">No MCP servers configured yet. Add one from the catalog above.</p>
-				{:else}
-				{#each mcpServers as server}
-				<div class="knowledge-item" style="margin-bottom: 0.75rem; flex-direction: column; align-items: stretch;">
-					<div style="display: flex; align-items: center; gap: 0.5rem;">
-						<span style="font-size: 0.6rem; width: 8px; height: 8px; border-radius: 50%; background: {server.connected ? 'var(--green)' : 'var(--red)'}; display: inline-block;"></span>
-						<strong>{server.name}</strong>
-						<span class="agent-badge" style="font-size: 0.65rem;">{server.transport}</span>
-						<span style="color: var(--text-dim); font-size: 0.75rem;">{server.tool_count} tools</span>
-						<div style="margin-left: auto; display: flex; gap: 0.25rem;">
-							<button class="btn btn-sm" onclick={() => handleRefreshMCP(server.id)}>Refresh</button>
-							<button class="btn btn-sm btn-danger" onclick={() => handleDeleteMCP(server.id)}>Delete</button>
-						</div>
-					</div>
-					{#if server.tool_prefix}
-					<div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.25rem;">Prefix: <code>{server.tool_prefix}__</code></div>
-					{/if}
-					{#if server.command}
-					<div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.25rem; font-family: monospace;">{server.command}</div>
-					{/if}
-					{#if server.tools && server.tools.length > 0}
-					<div style="margin-top: 0.5rem;">
-						{#each server.tools as tool}
-						<div style="font-size: 0.75rem; padding: 0.2rem 0; color: var(--text-secondary);">
-							<code style="color: var(--accent);">{tool.qual_name}</code>
-							{#if tool.description}
-							<span style="color: var(--text-dim);"> — {tool.description}</span>
-							{/if}
-						</div>
-						{/each}
-					</div>
-					{/if}
-				</div>
-				{/each}
-				{/if}
-			</div>
-
-			{:else if brainTab === 'info'}
-			<div class="brain-section">
-				{#if !workspaceInfo}
-				<p class="brain-hint">Loading workspace info...</p>
-				{:else}
-				<div class="info-grid">
-					<div class="info-card">
-						<div class="info-card-label">Workspace</div>
-						<div class="info-card-value">{workspaceInfo.name || slug}</div>
-					</div>
-					<div class="info-card">
-						<div class="info-card-label">Created</div>
-						<div class="info-card-value">{workspaceInfo.created_at ? new Date(workspaceInfo.created_at).toLocaleDateString() : '—'}</div>
-					</div>
-					<div class="info-card">
-						<div class="info-card-label">Created by</div>
-						<div class="info-card-value">{workspaceInfo.created_by || '—'}</div>
-					</div>
-					<div class="info-card">
-						<div class="info-card-label">Online now</div>
-						<div class="info-card-value">{workspaceInfo.online_count ?? 0}</div>
-					</div>
-				</div>
-
-				<h3 class="brain-section-title" style="margin-top: 1.5rem;">Storage</h3>
-				<div class="info-grid">
-					<div class="info-card">
-						<div class="info-card-label">Disk usage</div>
-						<div class="info-card-value">{workspaceInfo.disk_display || '0 B'}</div>
-					</div>
-					<div class="info-card">
-						<div class="info-card-label">File storage</div>
-						<div class="info-card-value">{workspaceInfo.files_display || '0 B'}</div>
-					</div>
-				</div>
-
-				<h3 class="brain-section-title" style="margin-top: 1.5rem;">Counts</h3>
-				<div class="info-grid">
-					{#each Object.entries(workspaceInfo.counts || {}).sort((a, b) => a[0].localeCompare(b[0])) as [key, count]}
-					<div class="info-card">
-						<div class="info-card-label">{key.charAt(0).toUpperCase() + key.slice(1)}</div>
-						<div class="info-card-value">{count}</div>
-					</div>
-					{/each}
-				</div>
-				{/if}
-			</div>
-
-			{:else if brainTab === 'network'}
-			<div class="brain-section">
-				<h3 class="brain-section-title">Network Transparency</h3>
-				<p class="brain-hint" style="margin-bottom: 0.75rem">Every outbound connection this Nexus instance makes. No hidden telemetry, no tracking, no phone-home. Just the AI providers you configured.</p>
-				<button class="brain-save-btn" style="margin-bottom: 0.75rem;" onclick={async () => {
-					const stats = await getNetworkLog(slug, 'stats');
-					networkStats = stats;
-					if (networkExpanded) {
-						const full = await getNetworkLog(slug, 'entries');
-						networkEntries = full.entries || [];
-					}
-				}}>
-					Refresh
-				</button>
-				{#if networkStats}
-				<div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.75rem;">
-					<strong>{networkStats.total}</strong> outbound requests logged since instance start
-				</div>
-				{#if networkStats.hosts && networkStats.hosts.length > 0}
-				<div style="display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 0.75rem;">
-					{#each networkStats.hosts as host}
-					<div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; padding: 0.5rem 0.75rem; background: var(--bg-surface); border-radius: 8px; border: 1px solid var(--border-default);">
-						<span style="color: var(--accent); font-weight: 600; font-family: monospace;">{host.host}</span>
-						<span style="color: var(--text-tertiary); margin-left: auto;">{host.count} requests</span>
-						<span style="background: rgba(249,115,22,0.1); color: var(--accent); padding: 2px 8px; border-radius: 4px; font-size: 0.7rem;">{host.purpose}</span>
-					</div>
-					{/each}
-				</div>
-				{:else}
-				<div style="font-size: 0.85rem; color: var(--text-tertiary); padding: 2rem; text-align: center; border: 1px dashed var(--border-default); border-radius: 8px;">
-					No outbound connections yet. This instance has not contacted any external service.
-				</div>
-				{/if}
-				<button class="brain-hint" style="cursor: pointer; text-decoration: underline; background: none; border: none; padding: 0; font-size: 0.75rem;" onclick={async () => {
-					networkExpanded = !networkExpanded;
-					if (networkExpanded) {
-						const full = await getNetworkLog(slug, 'entries');
-						networkEntries = full.entries || [];
-					}
-				}}>
-					{networkExpanded ? 'Hide full request log' : 'Show full request log'}
-				</button>
-				{#if networkExpanded && networkEntries.length > 0}
-				<div style="margin-top: 0.5rem; max-height: 400px; overflow-y: auto; font-family: monospace; font-size: 0.7rem; background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: 8px; padding: 0.5rem;">
-					{#each networkEntries.slice().reverse() as entry}
-					<div style="display: flex; gap: 0.5rem; padding: 0.3rem 0.25rem; border-bottom: 1px solid var(--border-subtle);">
-						<span style="color: var(--text-tertiary); min-width: 140px;">{entry.timestamp.replace('T', ' ').slice(0, 19)}</span>
-						<span style="color: var(--accent); min-width: 35px;">{entry.method}</span>
-						<span style="color: var(--text-primary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{entry.host}{entry.path}</span>
-						<span style="color: {entry.status_code < 400 ? 'var(--accent)' : '#ef4444'};">{entry.status_code}</span>
-						<span style="color: var(--text-tertiary); min-width: 50px; text-align: right;">{entry.duration_ms}ms</span>
-					</div>
-					{/each}
-				</div>
-				{/if}
-				<p class="brain-hint" style="margin-top: 1rem; font-style: italic;">This is the complete list of every external connection. Nothing else leaves your server. Don't trust us — verify it.</p>
-				{/if}
-			</div>
-
-			{:else if brainTab === 'portability'}
-			<div class="brain-section">
-				<h3 class="brain-section-title">Export Workspace</h3>
-				<p class="brain-hint" style="margin-bottom: 0.75rem">Download your entire workspace as a single <code>.nexus</code> file. Includes all messages, tasks, documents, files, and Brain configuration. Import it on any Nexus instance — or keep it as a backup.</p>
-				<a href={exportWorkspaceUrl(slug)} download class="brain-save-btn" style="display: inline-block; text-decoration: none; text-align: center;">
-					Export Workspace (.nexus)
-				</a>
-				<p class="brain-hint" style="margin-top: 0.5rem;">Your workspace is a file, not a subscription. Take it anywhere.</p>
-			</div>
-
-			<div class="brain-section" style="margin-top: 2rem; border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 1.25rem; background: rgba(239, 68, 68, 0.03);">
-				<h3 class="brain-section-title" style="color: #ef4444;">Kill Switch</h3>
-				<p class="brain-hint" style="margin-bottom: 0.75rem">Permanently delete this workspace and all its data. Database, files, Brain memory, everything. This cannot be undone. No 30-day wait. No retention policy. Gone.</p>
-				<input
-					type="text"
-					class="brain-input"
-					placeholder="Type workspace name to confirm"
-					bind:value={destroyConfirm}
-					style="margin-bottom: 0.5rem; border-color: rgba(239, 68, 68, 0.3);"
-				/>
-				<button
-					class="brain-save-btn"
-					style="background: #ef4444; border-color: #ef4444; opacity: {destroyConfirm && !destroyingWorkspace ? 1 : 0.4}; pointer-events: {destroyConfirm && !destroyingWorkspace ? 'auto' : 'none'};"
-					onclick={async () => {
-						if (!destroyConfirm) return;
-						destroyingWorkspace = true;
-						try {
-							await destroyWorkspace(slug, destroyConfirm);
-							clearSession();
-							window.location.href = '/';
-						} catch (e: any) {
-							alert(e.message || 'Failed to destroy workspace');
-							destroyingWorkspace = false;
-						}
-					}}
-				>
-					{destroyingWorkspace ? 'Destroying...' : 'Permanently Delete Workspace'}
-				</button>
-			</div>
-
-			{:else if brainTab === 'costs'}
-			<div class="brain-section">
-				<h3 class="brain-section-title">AI Cost Transparency</h3>
-				<p class="brain-hint" style="margin-bottom: 1rem">Every API call tracked. See exactly what you spend — no hidden costs.</p>
-				<div style="display: flex; gap: 0.5rem; margin-bottom: 1.25rem;">
-					{#each ['day', 'week', 'month', 'all'] as p}
-						<button class="btn btn-ghost btn-xs" class:active={usagePeriod === p} onclick={() => { usagePeriod = p; loadUsage(); }}>{p === 'all' ? 'All Time' : p.charAt(0).toUpperCase() + p.slice(1)}</button>
-					{/each}
-				</div>
-				{#if usageData}
-					<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
-						<div style="background: var(--bg-secondary); border-radius: 8px; padding: 1rem; text-align: center;">
-							<div style="font-size: 1.75rem; font-weight: 700; color: var(--accent);">${usageData.total_cost.toFixed(4)}</div>
-							<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">Total Spend</div>
-						</div>
-						<div style="background: var(--bg-secondary); border-radius: 8px; padding: 1rem; text-align: center;">
-							<div style="font-size: 1.75rem; font-weight: 700;">{usageData.call_count.toLocaleString()}</div>
-							<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">API Calls</div>
-						</div>
-						<div style="background: var(--bg-secondary); border-radius: 8px; padding: 1rem; text-align: center;">
-							<div style="font-size: 1.75rem; font-weight: 700;">{(usageData.total_input_tokens + usageData.total_output_tokens).toLocaleString()}</div>
-							<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">Total Tokens</div>
-						</div>
-					</div>
-
-					{#if usageData.by_model.length > 0}
-					<h4 style="font-size: 0.85rem; font-weight: 600; margin-bottom: 0.5rem;">By Model</h4>
-					<div style="margin-bottom: 1.25rem;">
-						{#each usageData.by_model as m}
-							<div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; font-size: 0.8rem;">
-								<div style="flex: 1; min-width: 0;">
-									<div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
-										<span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{m.model}</span>
-										<span style="color: var(--text-muted); flex-shrink: 0;">${m.cost.toFixed(4)} ({m.calls} calls)</span>
-									</div>
-									<div style="height: 4px; background: var(--bg-tertiary); border-radius: 2px; overflow: hidden;">
-										<div style="height: 100%; background: var(--accent); border-radius: 2px; width: {usageData.total_cost > 0 ? (m.cost / usageData.total_cost * 100) : 0}%;"></div>
-									</div>
-								</div>
-							</div>
-						{/each}
-					</div>
-					{/if}
-
-					{#if usageData.by_action.length > 0}
-					<h4 style="font-size: 0.85rem; font-weight: 600; margin-bottom: 0.5rem;">By Action</h4>
-					<div style="margin-bottom: 1.25rem;">
-						{#each usageData.by_action as a}
-							<div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; font-size: 0.8rem;">
-								<div style="flex: 1; min-width: 0;">
-									<div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
-										<span>{a.action}</span>
-										<span style="color: var(--text-muted);">${a.cost.toFixed(4)} ({a.calls} calls)</span>
-									</div>
-									<div style="height: 4px; background: var(--bg-tertiary); border-radius: 2px; overflow: hidden;">
-										<div style="height: 100%; background: #60a5fa; border-radius: 2px; width: {usageData.total_cost > 0 ? (a.cost / usageData.total_cost * 100) : 0}%;"></div>
-									</div>
-								</div>
-							</div>
-						{/each}
-					</div>
-					{/if}
-
-					{#if usageData.daily.length > 0}
-					<h4 style="font-size: 0.85rem; font-weight: 600; margin-bottom: 0.5rem;">Daily Trend (last 30 days)</h4>
-					<div style="display: flex; align-items: flex-end; gap: 2px; height: 80px; margin-bottom: 0.5rem;">
-						{#each usageData.daily as d}
-							{@const maxCost = Math.max(...usageData.daily.map((x: any) => x.cost), 0.0001)}
-							<div
-								title="{d.date}: ${d.cost.toFixed(4)} ({d.calls} calls)"
-								style="flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 2px; height: {(d.cost / maxCost * 100)}%; opacity: 0.8;"
-							></div>
-						{/each}
-					</div>
-					<div style="display: flex; justify-content: space-between; font-size: 0.65rem; color: var(--text-muted);">
-						<span>{usageData.daily[0]?.date?.slice(5) || ''}</span>
-						<span>{usageData.daily[usageData.daily.length - 1]?.date?.slice(5) || ''}</span>
-					</div>
-					{/if}
-				{:else}
-					<p class="brain-hint">Loading usage data...</p>
-				{/if}
-			</div>
-
-			{/if}
-		</div>
-	</main>
 
 		{/if}
 </div>
@@ -6650,6 +5189,12 @@ autonomy: reactive
 				<div class="invite-code-label">Share this invite code</div>
 				<div class="invite-code-display">{inviteCode}</div>
 				<div class="invite-code-hint">Expires in 24 hours</div>
+				{#if workspaceInfo && workspaceInfo.plan !== 'pro' && workspaceInfo.max_members > 0}
+					{@const remaining = (workspaceInfo.max_members ?? 5) - (workspaceInfo.counts?.members ?? 0)}
+					{#if remaining <= 2 && remaining > 0}
+						<div class="invite-limit-warn">{remaining} spot{remaining === 1 ? '' : 's'} remaining on free plan</div>
+					{/if}
+				{/if}
 				<div style="display:flex;gap:8px;margin-top:12px">
 					<button class="btn btn-primary btn-sm" style="flex:1" onclick={() => handleCopyInvite(inviteCode, 'code')}>
 						{inviteCopied === 'code' ? 'Copied!' : 'Copy Code'}
@@ -6666,6 +5211,74 @@ autonomy: reactive
 			{:else}
 			<div style="text-align:center;padding:2rem 0;color:var(--text-tertiary)">Generating invite...</div>
 			{/if}
+		</div>
+	</div>
+</div>
+{/if}
+
+{#if showUpgradeModal}
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="modal-overlay" onclick={() => { showUpgradeModal = false; waitlistStatus = 'idle'; waitlistEmail = ''; }}>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="modal-dialog" onclick={(e) => e.stopPropagation()} style="max-width: 520px">
+		<div class="modal-header">
+			<h3>Upgrade to Pro</h3>
+			<button class="modal-close" onclick={() => { showUpgradeModal = false; waitlistStatus = 'idle'; waitlistEmail = ''; }}>&times;</button>
+		</div>
+		<div class="modal-body" style="padding:1.25rem">
+			<div class="upgrade-plans">
+				<div class="upgrade-plan-card upgrade-plan-current">
+					<div class="upgrade-plan-badge">Current Plan</div>
+					<h4>Free</h4>
+					<div class="upgrade-member-bar">
+						<div class="upgrade-member-label">{workspaceInfo?.counts?.members ?? 0} of {workspaceInfo?.max_members ?? 5} members</div>
+						<div class="upgrade-progress">
+							<div class="upgrade-progress-fill" style="width: {Math.min(100, ((workspaceInfo?.counts?.members ?? 0) / (workspaceInfo?.max_members ?? 5)) * 100)}%"></div>
+						</div>
+					</div>
+					<ul class="upgrade-features">
+						<li>Unlimited messages & tasks</li>
+						<li>Brain AI + all features</li>
+						<li>Up to 5 team members</li>
+					</ul>
+				</div>
+				<div class="upgrade-plan-card upgrade-plan-pro">
+					<div class="upgrade-plan-badge upgrade-badge-pro">Pro</div>
+					<h4>$29<span class="upgrade-price-period">/mo</span></h4>
+					<p class="upgrade-plan-desc">Everything in Free, plus:</p>
+					<ul class="upgrade-features">
+						<li>Unlimited members</li>
+						<li>Priority support</li>
+						<li>SSO / SAML (coming soon)</li>
+					</ul>
+				</div>
+			</div>
+
+			{#if waitlistStatus === 'done'}
+				<div class="upgrade-waitlist-success">We'll reach out with payment details soon!</div>
+			{:else}
+				<div class="upgrade-waitlist-form">
+					<input type="email" class="brain-input" bind:value={waitlistEmail} placeholder="you@company.com" style="flex:1" />
+					<button class="btn btn-primary" disabled={waitlistStatus === 'sending' || !waitlistEmail.trim()} onclick={async () => {
+						waitlistStatus = 'sending';
+						try {
+							const res = await fetch('/api/waitlist', {
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify({ email: waitlistEmail.trim(), plan: 'pro', workspace: slug })
+							});
+							if (res.ok) waitlistStatus = 'done';
+							else waitlistStatus = 'idle';
+						} catch { waitlistStatus = 'idle'; }
+					}}>
+						{waitlistStatus === 'sending' ? 'Joining...' : 'Upgrade to Pro — $29/mo'}
+					</button>
+				</div>
+			{/if}
+
+			<div class="upgrade-footer">
+				<a href="/landing#deploy" target="_blank" rel="noopener">Or self-host with your own infrastructure</a>
+			</div>
 		</div>
 	</div>
 </div>
@@ -6988,6 +5601,1854 @@ autonomy: reactive
 </div>
 {/if}
 
+<!-- System Logs Modal -->
+{#if showSystemLogs}
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="modal-overlay" onclick={closeSystemLogs}>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="modal-content system-logs-modal" onclick={(e) => e.stopPropagation()}>
+		<div class="modal-header system-logs-header">
+			<h2>System Logs</h2>
+			<span style="color: var(--text-tertiary); font-size: 13px;">{logTotal} total</span>
+			<div style="flex:1"></div>
+			<button class="log-refresh-btn" class:active={logAutoRefresh} onclick={toggleLogAutoRefresh}>
+				{logAutoRefresh ? 'Auto-refresh ON' : 'Auto-refresh'}
+			</button>
+			<button class="log-refresh-btn" onclick={fetchLogs} disabled={logLoading}>
+				{logLoading ? 'Loading...' : 'Refresh'}
+			</button>
+			<button class="modal-close" onclick={closeSystemLogs}>&times;</button>
+		</div>
+		<div class="log-filters">
+			<div class="log-filter-group">
+				<span class="log-filter-label">Category</span>
+				<div class="log-filter-pills">
+					<button class="log-pill" class:active={logCategory === ''} onclick={() => logCategory = ''}>All</button>
+					{#each logCategories as cat}
+						<button class="log-pill" class:active={logCategory === cat} onclick={() => logCategory = logCategory === cat ? '' : cat} style="--pill-color: {LOG_CATEGORY_COLORS[cat] || 'var(--text-tertiary)'}">
+							{cat}
+						</button>
+					{/each}
+				</div>
+			</div>
+			<div class="log-filter-group">
+				<span class="log-filter-label">Level</span>
+				<div class="log-filter-pills">
+					{#each LOG_LEVELS as lvl}
+						<button class="log-pill" class:active={logLevel === lvl} onclick={() => logLevel = lvl}>
+							{lvl || 'All'}
+						</button>
+					{/each}
+				</div>
+			</div>
+			<div class="log-filter-group">
+				<span class="log-filter-label">Range</span>
+				<div class="log-filter-pills">
+					{#each LOG_RANGES as r}
+						<button class="log-pill" class:active={logRange === r.value} onclick={() => logRange = r.value}>
+							{r.label}
+						</button>
+					{/each}
+				</div>
+			</div>
+		</div>
+		<div class="log-entries-list">
+			{#if logEntries.length === 0 && !logLoading}
+				<div style="text-align: center; color: var(--text-tertiary); padding: 48px 24px; font-size: 14px;">No log entries found for the selected filters.</div>
+			{/if}
+			{#each logEntries as entry, idx}
+				<button class="log-entry-row" onclick={() => toggleLogExpand(idx)}>
+					<span class="log-time-col">{formatLogTime(entry.time)}</span>
+					<span class="log-level-col" style="color: {logLevelColor(entry.level)}">{entry.level?.toUpperCase() || 'INFO'}</span>
+					<span class="log-cat-col" style="color: {LOG_CATEGORY_COLORS[entry.category] || 'var(--text-tertiary)'}">{entry.category || '-'}</span>
+					<span class="log-msg-col">{entry.message || ''}</span>
+					<svg class="log-expand-icon" class:expanded={logExpandedIds.has(idx)} width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+				</button>
+				{#if logExpandedIds.has(idx)}
+					<div class="log-detail-box">
+						<pre>{JSON.stringify(entry.fields || entry, null, 2)}</pre>
+					</div>
+				{/if}
+			{/each}
+		</div>
+	</div>
+</div>
+{/if}
+
+<!-- Brain Settings Modal -->
+{#if showBrainSettings}
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="modal-overlay" onclick={() => showBrainSettings = false}>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="modal-content brain-settings-modal" onclick={(e) => e.stopPropagation()}>
+		<div class="modal-header">
+			<h2>Brain Configuration</h2>
+			<button class="modal-close" onclick={() => showBrainSettings = false}>&times;</button>
+		</div>
+		<div class="brain-settings-layout">
+			<div class="brain-settings-nav">
+				<button class="brain-nav-item" class:active={brainTab === 'settings'} onclick={() => brainTab = 'settings'}>Settings</button>
+				{#if isAdmin}
+					<button class="brain-nav-item" class:active={brainTab === 'north_star'} onclick={() => brainTab = 'north_star'}>North Star</button>
+					<button class="brain-nav-item" class:active={brainTab === 'definitions'} onclick={() => brainTab = 'definitions'}>Personality</button>
+					<button class="brain-nav-item" class:active={brainTab === 'memory'} onclick={() => { brainTab = 'memory'; loadMemories(); }}>Memory</button>
+					<button class="brain-nav-item" class:active={brainTab === 'activity'} onclick={() => { brainTab = 'activity'; loadActions(); }}>Activity</button>
+					<button class="brain-nav-item" class:active={brainTab === 'skills'} onclick={() => { brainTab = 'skills'; loadSkills(); }}>Skills</button>
+					<button class="brain-nav-item" class:active={brainTab === 'knowledge'} onclick={() => { brainTab = 'knowledge'; loadKnowledge(); }}>Knowledge</button>
+					<button class="brain-nav-item" class:active={brainTab === 'integrations'} onclick={() => { brainTab = 'integrations'; loadIntegrations(); }}>Integrations</button>
+					<button class="brain-nav-item" class:active={brainTab === 'tools'} onclick={() => { brainTab = 'tools'; loadMCPServersData(); loadMCPTemplates(); }}>Tools</button>
+					<button class="brain-nav-item" class:active={brainTab === 'roles'} onclick={() => { brainTab = 'roles'; loadRoles(); }}>Roles</button>
+					<button class="brain-nav-item" class:active={brainTab === 'info'} onclick={() => { brainTab = 'info'; loadWorkspaceInfo(); }}>Info</button>
+					<button class="brain-nav-item" class:active={brainTab === 'network'} onclick={() => { brainTab = 'network'; getNetworkLog(slug, 'stats').then(s => networkStats = s); }}>Network</button>
+					<button class="brain-nav-item" class:active={brainTab === 'portability'} onclick={() => brainTab = 'portability'}>Portability</button>
+					<button class="brain-nav-item" class:active={brainTab === 'costs'} onclick={() => { brainTab = 'costs'; loadUsage(); }}>Costs</button>
+					<button class="brain-nav-item" class:active={brainTab === 'bridge'} onclick={() => brainTab = 'bridge'}>Mac App</button>
+				{/if}
+			</div>
+			<div class="brain-settings-content">
+			{#if brainTab === 'north_star'}
+			{#if isAdmin}
+			<div class="brain-section">
+				<h3 class="brain-section-title">North Star</h3>
+				<p class="brain-hint" style="margin-bottom: var(--space-sm);">Set the mission that guides Brain and all agents in this workspace.</p>
+				<label class="brain-hint" style="display:block;margin-top:var(--space-xs)">Goal — What are we trying to achieve?</label>
+				<textarea class="brain-input" rows="2" bind:value={northStar} placeholder="e.g. Build the best AI workspace for teams"></textarea>
+				<label class="brain-hint" style="display:block;margin-top:var(--space-sm)">Why — Why does it matter?</label>
+				<textarea class="brain-input" rows="2" bind:value={northStarWhy} placeholder="e.g. Teams waste too much time switching tools"></textarea>
+				<label class="brain-hint" style="display:block;margin-top:var(--space-sm)">Success — What does success look like?</label>
+				<textarea class="brain-input" rows="2" bind:value={northStarSuccess} placeholder="e.g. 10,000 teams collaborating with AI agents"></textarea>
+				<label class="brain-hint" style="display:block;margin-top:var(--space-sm)">Strategic Themes (comma-separated)</label>
+				<input class="brain-input" type="text" bind:value={strategicThemesInput} placeholder="e.g. AI agents, Seamless collaboration, Developer extensibility" />
+				<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveBrainSettings} disabled={brainSaving}>
+					{brainSaving ? 'Saving...' : 'Save North Star'}
+				</button>
+			</div>
+
+			<div class="brain-section">
+				<h3 class="brain-section-title">Self-Reflection</h3>
+				<p class="brain-hint" style="margin-bottom: var(--space-sm);">Brain periodically reflects on workspace activity, team patterns, and North Star alignment. Findings are saved to REFLECTIONS.md and influence all future responses.</p>
+				<label class="brain-toggle-row">
+					<input type="checkbox" bind:checked={reflectionEnabled} />
+					<div>
+						<strong>Enable daily reflection</strong>
+						<span class="brain-hint" style="display: block; margin-top: 2px;">Brain analyzes activity, updates its self-awareness journal</span>
+					</div>
+				</label>
+				{#if reflectionEnabled}
+				<label class="brain-hint" style="display:block;margin-top:var(--space-sm)">Reflection time (UTC, HH:MM)</label>
+				<input class="brain-input" type="text" bind:value={reflectionTime} placeholder="3:00" style="max-width: 120px;" />
+				{/if}
+				<div style="display:flex;gap:var(--space-sm);margin-top:var(--space-md);">
+					<button class="btn btn-primary btn-sm" onclick={saveBrainSettings} disabled={brainSaving}>
+						{brainSaving ? 'Saving...' : 'Save'}
+					</button>
+					<button class="btn btn-sm" style="border:1px solid var(--border-subtle);" onclick={async () => {
+						reflectingNow = true;
+						try {
+							await triggerReflection(slug);
+							setTimeout(() => { reflectingNow = false; }, 15000);
+						} catch (e) {
+							reflectingNow = false;
+							alert(e);
+						}
+					}} disabled={reflectingNow}>
+						{reflectingNow ? 'Reflecting...' : 'Reflect Now'}
+					</button>
+					<button class="btn btn-sm" style="border:1px solid var(--border-subtle);" onclick={async () => {
+						showReflectionHistory = true;
+						reflectionHistoryLoading = true;
+						try {
+							const data = await getReflectionHistory(slug);
+							reflectionHistory = data.reflections || [];
+							if (reflectionHistory.length > 0) selectedReflection = reflectionHistory[0];
+						} catch {}
+						reflectionHistoryLoading = false;
+					}}>
+						History
+					</button>
+				</div>
+			</div>
+			{/if}
+			{/if}
+
+			{#if brainTab === 'settings'}
+			{#if isAdmin}
+			<div class="brain-section">
+				<h3 class="brain-section-title">Engine Mode</h3>
+				<label class="brain-toggle-row">
+					<input type="radio" name="engine-mode" checked={engineMode === 'cloud'} onchange={() => setEngineMode('cloud')} />
+					<div>
+						<strong>OpenRouter</strong>
+						<span class="brain-hint" style="display: block; margin-top: 2px;">300+ models via OpenRouter</span>
+					</div>
+				</label>
+				<label class="brain-toggle-row">
+					<input type="radio" name="engine-mode" checked={engineMode === 'grok'} onchange={() => setEngineMode('grok')} />
+					<div>
+						<strong>Grok / xAI</strong>
+						<span class="brain-hint" style="display: block; margin-top: 2px;">Direct xAI access with native X/Twitter search</span>
+					</div>
+				</label>
+				<label class="brain-toggle-row">
+					<input type="radio" name="engine-mode" checked={engineMode === 'ollama'} onchange={() => setEngineMode('ollama')} />
+					<div style="display: flex; align-items: center; gap: 8px; flex: 1;">
+						<div style="flex: 1;">
+							<strong>Ollama (Local AI)</strong>
+							<span class="brain-hint" style="display: block; margin-top: 2px;">Run models on your machine via Ollama — zero cloud dependency</span>
+						</div>
+						{#if bridgeConnected}
+							<span style="display: inline-flex; align-items: center; gap: 4px; font-size: 0.7rem; color: var(--green, #22c55e); background: rgba(34,197,94,0.1); padding: 2px 8px; border-radius: 10px; white-space: nowrap;">
+								<span style="width: 6px; height: 6px; border-radius: 50%; background: var(--green, #22c55e); display: inline-block;"></span>
+								Bridge
+							</span>
+						{/if}
+					</div>
+				</label>
+				<label class="brain-toggle-row">
+					<input type="radio" name="engine-mode" checked={engineMode === 'local'} onchange={() => setEngineMode('local')} />
+					<div>
+						<strong>Local LLM</strong>
+						<span class="brain-hint" style="display: block; margin-top: 2px;">Inference runs in your browser via WebGPU — no API key needed</span>
+					</div>
+				</label>
+				<label class="brain-toggle-row" style="opacity: 0.5; pointer-events: none;">
+					<input type="radio" name="engine-mode" disabled checked={engineMode === 'standard'} />
+					<div>
+						<strong>Standard Chat Only</strong>
+						<span class="brain-hint" style="display: block; margin-top: 2px;">Pattern-matching responses — coming soon</span>
+					</div>
+				</label>
+				<div class="engine-status">
+					{#if engineMode === 'cloud'}
+						Active: <strong>OpenRouter</strong> — all messages routed to LLM
+					{:else if engineMode === 'grok'}
+						Active: <strong>Grok / xAI</strong> — all messages routed to xAI
+					{:else if engineMode === 'ollama'}
+						<div style="display: flex; flex-direction: column; gap: 8px;">
+							<div style="display: flex; align-items: center; gap: 8px;">
+								<span style="width: 8px; height: 8px; border-radius: 50%; background: {bridgeConnected ? 'var(--green, #22c55e)' : 'var(--accent)'}; display: inline-block;"></span>
+								Active: <strong>Ollama</strong> — {bridgeConnected ? 'via bridge to your Mac' : `direct to ${brainOllamaURL}`}
+							</div>
+							<div style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem;">
+								<label style="color: var(--text-secondary); white-space: nowrap;">Model:</label>
+								{#if bridgeConnected && bridgeModels.length > 0}
+									<select class="brain-input" style="flex: 1; padding: 4px 8px; font-size: 0.8rem;" bind:value={brainOllamaModel}>
+										<option value="">Select model...</option>
+										{#each bridgeModels as m}
+											<option value={m.name}>{m.name}{m.size ? ` (${(m.size / 1e9).toFixed(1)}GB)` : ''}</option>
+										{/each}
+									</select>
+								{:else}
+									<input type="text" class="brain-input" style="flex: 1; padding: 4px 8px; font-size: 0.8rem;" placeholder="llama3.2" bind:value={brainOllamaModel} />
+								{/if}
+								<button class="btn btn-primary btn-xs" onclick={saveBrainSettings} disabled={brainSaving || !brainOllamaModel}>{brainSaving ? '...' : 'Apply'}</button>
+							</div>
+							{#if !bridgeConnected}
+								<div style="font-size: 0.75rem; color: var(--text-tertiary);">
+									No bridge connected. Using direct HTTP to Ollama. <button class="btn-link" style="font-size: 0.75rem;" onclick={() => brainTab = 'bridge'}>Set up Mac App</button>
+								</div>
+							{/if}
+						</div>
+					{:else if engineMode === 'local'}
+						Active: <strong>Local LLM</strong> — all inference runs in your browser
+					{:else}
+						Active: <strong>Standard Chat</strong> — pattern-matching only, no AI
+					{/if}
+				</div>
+			</div>
+			{:else}
+			<div class="brain-section">
+				<h3 class="brain-section-title">Engine</h3>
+				<div class="engine-status">
+					Workspace engine: <strong>{engineMode === 'cloud' ? 'OpenRouter' : engineMode === 'grok' ? 'Grok / xAI' : engineMode === 'ollama' ? 'Ollama' : engineMode === 'local' ? 'Local LLM' : 'Standard Chat'}</strong>
+				</div>
+				{#if typeof navigator !== 'undefined' && (navigator as any).gpu}
+					<label class="brain-toggle-row" style="margin-top: 8px;">
+						<input type="checkbox" checked={userWebLLMEnabled} onchange={(e: Event) => {
+							userWebLLMEnabled = (e.target as HTMLInputElement).checked;
+							try { localStorage.setItem('nexus_user_webllm_' + slug, String(userWebLLMEnabled)); } catch {}
+						}} />
+						<div>
+							<strong>Use Local Model</strong>
+							<span class="brain-hint" style="display: block; margin-top: 2px;">Run AI in your browser instead of using the workspace engine</span>
+						</div>
+					</label>
+				{/if}
+			</div>
+			{/if}
+
+			{#if isAdmin}
+			<div class="brain-section">
+				<h3 class="brain-section-title">Ollama (Local AI)</h3>
+				{#if brainOllamaEnabled}
+				<div class="service-card service-active" style="margin-bottom: var(--space-md);">
+					<div class="service-header">
+						<div class="service-status-dot active"></div>
+						<div>
+							<strong>Ollama</strong>
+							<span class="brain-hint" style="display: block; margin-top: 2px;">
+								{#if bridgeConnected}
+									Bridge connected &middot; {brainOllamaModel || 'no model selected'}
+								{:else}
+									Direct mode &middot; {brainOllamaModel || 'no model selected'}
+								{/if}
+							</span>
+						</div>
+					</div>
+					<details class="service-details" open>
+						<summary>Configuration</summary>
+						<div class="brain-field">
+							<label>Model</label>
+							{#if bridgeConnected && bridgeModels.length > 0}
+								<select class="brain-input" bind:value={brainOllamaModel}>
+									<option value="">Select a model...</option>
+									{#each bridgeModels as m}
+										<option value={m.name}>{m.name}</option>
+									{/each}
+								</select>
+							{:else}
+								<input type="text" class="brain-input" placeholder="llama3.2" bind:value={brainOllamaModel} />
+							{/if}
+						</div>
+						<div class="brain-field">
+							<label>Ollama URL <span class="brain-hint">(for self-hosted / direct mode)</span></label>
+							<input type="text" class="brain-input" placeholder="http://localhost:11434" bind:value={brainOllamaURL} />
+						</div>
+						<div class="brain-field">
+							<label>Connection</label>
+							<div style="display: flex; align-items: center; gap: 8px; font-size: var(--text-sm);">
+								<span class="service-status-dot" class:active={bridgeConnected} style="position: static; width: 8px; height: 8px;"></span>
+								{#if bridgeConnected}
+									<span style="color: var(--green, #22c55e);">Bridge connected ({bridgeModels.length} model{bridgeModels.length !== 1 ? 's' : ''})</span>
+								{:else}
+									<span style="color: var(--text-secondary);">No bridge — using direct connection to {brainOllamaURL}</span>
+								{/if}
+							</div>
+						</div>
+						<button class="btn btn-primary btn-sm" style="margin-top: var(--space-sm);" onclick={saveBrainSettings} disabled={brainSaving}>
+							{brainSaving ? 'Saving...' : 'Save'}
+						</button>
+					</details>
+				</div>
+				{:else}
+				<div class="engine-status">
+					Select "Ollama (Local AI)" in Engine Mode above to configure. Install <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a> on your machine to run models locally.
+				</div>
+				{/if}
+			</div>
+			{/if}
+
+			<div class="brain-section">
+				<h3 class="brain-section-title">Local Model (WebLLM)</h3>
+				{#if typeof navigator !== 'undefined' && !(navigator as any).gpu}
+					<div class="engine-status engine-warning">
+						WebGPU is not available in this browser. Try Chrome 113+ or Edge 113+.
+					</div>
+				{:else}
+					{#if brainWebLLMEnabled || userWebLLMEnabled}
+						{#await import('$lib/webllm.svelte.ts') then webllm}
+							{@const recommended = webllm.getRecommendedModels()}
+							{@const allModels = webllm.getAvailableModels()}
+							{@const state = webllm.getState()}
+
+							<!-- Installed Models List -->
+							{#if state.installedModels.length > 0}
+								<div class="brain-field">
+									<label>Installed Models ({state.installedModels.length}/{webllm.MAX_INSTALLED})</label>
+									<div class="webllm-installed-list">
+										{#each state.installedModels as modelId}
+											{@const isActive = state.isLoaded && state.currentModel === modelId}
+											{@const displayName = webllm.getModelDisplayName(modelId)}
+											{@const hasTools = webllm.isToolCallingModel(modelId)}
+											{@const rec = recommended.find(m => m.model_id === modelId)}
+											<div class="webllm-model-row" class:active={isActive}>
+												<span class="webllm-model-dot" class:loaded={isActive}></span>
+												<div class="webllm-model-info">
+													<span class="webllm-model-name">{displayName}</span>
+													{#if rec}<span class="webllm-model-size">{rec.size}</span>{/if}
+													{#if hasTools}<span class="webllm-model-badge">Tools</span>{/if}
+												</div>
+												<div class="webllm-model-actions">
+													{#if state.isDownloading}
+														<!-- no actions while downloading -->
+													{:else if isActive}
+														<button class="btn btn-secondary btn-xs" onclick={() => webllm.unloadEngine()}>Unload</button>
+													{:else}
+														<button class="btn btn-primary btn-xs" onclick={() => { brainWebLLMModel = modelId; webllm.loadEngine(modelId); }}>Load</button>
+														<button class="btn btn-danger btn-xs" onclick={() => webllm.deleteModelCache(modelId)} title="Delete from cache">&#128465;</button>
+													{/if}
+												</div>
+											</div>
+										{/each}
+									</div>
+								</div>
+							{:else}
+								<div class="brain-hint" style="margin-bottom: 8px;">No models installed yet. Download one below.</div>
+								<!-- Auto-refresh installed models on first render -->
+								{#await webllm.refreshInstalledModels() then}{/await}
+							{/if}
+
+							<!-- Download progress -->
+							{#if state.isDownloading}
+								<div class="brain-field">
+									<div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 4px;">{state.downloadStatus}</div>
+									<div style="background: var(--bg-tertiary); border-radius: 4px; height: 8px; overflow: hidden;">
+										<div style="background: var(--accent); height: 100%; width: {state.downloadProgress * 100}%; transition: width 0.3s;"></div>
+									</div>
+								</div>
+							{/if}
+
+							<!-- Add Model (admin or user opt-in: full selector, member: download workspace model) -->
+							{#if !state.isDownloading}
+								{#if isAdmin || userWebLLMEnabled}
+									<div class="brain-field" style="margin-top: 8px;">
+										<label>Add Model</label>
+										<div style="display: flex; gap: 8px; align-items: center;">
+											<select class="brain-input" style="flex: 1;" bind:value={brainWebLLMModel} disabled={state.installedModels.length >= webllm.MAX_INSTALLED}>
+												<option value="">Select a model...</option>
+												<optgroup label="Recommended">
+													{#each recommended.filter(m => !state.installedModels.includes(m.model_id)) as m}
+														<option value={m.model_id}>{m.label} ({m.size}){m.hasTools ? ' — Tools' : ''}</option>
+													{/each}
+												</optgroup>
+												<optgroup label="All Models">
+													{#each allModels.filter(m => !state.installedModels.includes(m.model_id)) as m}
+														<option value={m.model_id}>{m.display_name} {m.vram_required_MB ? `(${Math.round(m.vram_required_MB / 1024 * 10) / 10} GB)` : ''}{m.hasTools ? ' — Tools' : ''}</option>
+													{/each}
+												</optgroup>
+											</select>
+											<button class="btn btn-primary btn-sm" disabled={!brainWebLLMModel || state.installedModels.length >= webllm.MAX_INSTALLED} onclick={() => webllm.loadEngine(brainWebLLMModel)}>Download</button>
+										</div>
+										{#if state.installedModels.length >= webllm.MAX_INSTALLED}
+											<div class="brain-hint" style="margin-top: 4px; color: var(--text-warning);">Maximum {webllm.MAX_INSTALLED} models. Delete one to add another.</div>
+										{/if}
+									</div>
+								{:else if brainWebLLMModel && !state.installedModels.includes(brainWebLLMModel)}
+									<div class="brain-field" style="margin-top: 8px;">
+										<label>Workspace Model</label>
+										<div style="display: flex; gap: 8px; align-items: center;">
+											<span style="flex: 1; font-size: var(--text-sm); color: var(--text-secondary);">{webllm.getModelDisplayName(brainWebLLMModel)}</span>
+											<button class="btn btn-primary btn-sm" onclick={() => webllm.loadEngine(brainWebLLMModel)}>Download</button>
+										</div>
+										<span class="brain-hint">Download once to enable @Brain in your browser</span>
+									</div>
+								{/if}
+							{/if}
+
+							<!-- Active model status -->
+							{#if state.isLoaded}
+								<div class="engine-status" style="margin-top: 8px;">
+									Active: <strong>{webllm.getModelDisplayName(state.currentModel)}</strong>
+									{#if webllm.isToolCallingModel(state.currentModel)}
+										<span style="color: var(--accent);"> &#9889; Tools enabled</span>
+									{/if}
+								</div>
+							{/if}
+						{/await}
+					{/if}
+					{#if brainWebLLMEnabled && !userWebLLMEnabled}
+						<div class="engine-status" style="margin-top: 8px; background: rgba(234,88,12,0.1); border: 1px solid rgba(234,88,12,0.3);">
+							Local LLM active — Standard Chat and Cloud LLM are bypassed. All responses come from your browser.
+						</div>
+					{:else if userWebLLMEnabled}
+						<div class="engine-status" style="margin-top: 8px; background: rgba(234,88,12,0.1); border: 1px solid rgba(234,88,12,0.3);">
+							Personal Local LLM active — your messages use local inference instead of the workspace engine.
+						</div>
+					{/if}
+				{/if}
+			</div>
+
+			{#if isAdmin}
+			<div class="brain-section">
+				<h3 class="brain-section-title">LLM Provider</h3>
+				<div class="service-cards">
+					<!-- OpenRouter -->
+					<div class="service-card" class:service-active={brainSettings.api_key_set === 'true'}>
+						<div class="service-header">
+							<div class="service-status-dot" class:active={brainSettings.api_key_set === 'true'}></div>
+							<div class="service-title-area">
+								<span class="service-name">OpenRouter</span>
+								<span class="service-badge">{brainSettings.api_key_set === 'true' ? 'Connected' : 'Not configured'}</span>
+							</div>
+						</div>
+						<div class="service-desc">
+							{#if brainSettings.api_key_set === 'true'}
+								Model: <strong>{brainModel === 'nexus/free-auto' ? 'Free Auto' : brainModel.split('/').pop()}</strong>
+								{#if brainSettings.api_key_masked}&middot; Key: {brainSettings.api_key_masked}{/if}
+							{:else}
+								Cloud LLM via 300+ models. Powers chat, tools, and agents.
+							{/if}
+						</div>
+						<details class="service-details">
+							<summary>Configure</summary>
+							<div class="service-fields">
+								<div class="brain-field">
+									<label>API Key</label>
+									{#if brainSettings.api_key_set === 'true'}
+										<div class="brain-key-status">Active ({brainSettings.api_key_masked})</div>
+									{/if}
+									<input type="password" class="brain-input" placeholder="sk-or-v1-..." bind:value={brainApiKey} />
+									<span class="brain-hint">Get a key at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a></span>
+								</div>
+								<div class="brain-field">
+									<label>Model</label>
+									<div style="display: flex; gap: 0.5rem; align-items: center;">
+										<select class="brain-input" bind:value={brainModel} style="flex:1">
+											<option value="nexus/free-auto">Free Auto (Nexus)</option>
+											{#if pinnedModels.length > 0}
+												{#each pinnedModels as m}
+													<option value={m.id}>{m.display_name}</option>
+												{/each}
+											{:else}
+												<option value="anthropic/claude-sonnet-4">Claude Sonnet 4</option>
+												<option value="anthropic/claude-haiku-4">Claude Haiku 4</option>
+												<option value="openai/gpt-4o">GPT-4o</option>
+												<option value="openai/gpt-4o-mini">GPT-4o Mini</option>
+												<option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
+												<option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
+											{/if}
+											{#each addedModels.filter(am => !pinnedModels.some(pm => pm.id === am.id)) as m}
+												<option value={m.id}>{m.display_name}</option>
+											{/each}
+										</select>
+										<button class="btn btn-ghost btn-sm" onclick={openModelBrowser}>Browse</button>
+									</div>
+									{#if modelAvailability && !modelAvailability.model_available}
+										<div class="model-fallback-warning">
+											Model <strong>{modelAvailability.model}</strong> unavailable — falling back to <strong>{modelAvailability.fallback_model}</strong>
+										</div>
+									{/if}
+								</div>
+
+								{#if brainModel === 'nexus/free-auto'}
+								<div class="brain-field">
+									<label>Free Auto Router</label>
+									<span class="brain-hint" style="margin-bottom: 0.5rem">Models are tried in order. First available model responds.</span>
+									{#if workspaceFreeModels.length > 0}
+									<div class="free-model-list">
+										{#each workspaceFreeModels as model, i}
+										<div class="free-model-row">
+											<span class="free-model-priority">{i + 1}</span>
+											<span class="free-model-id">{model.id}</span>
+											<span class="free-model-name">{model.name}</span>
+											<div class="free-model-actions">
+												<button class="btn btn-ghost btn-xs" onclick={() => moveWorkspaceFreeModel(i, -1)} disabled={i === 0}>&#9650;</button>
+												<button class="btn btn-ghost btn-xs" onclick={() => moveWorkspaceFreeModel(i, 1)} disabled={i === workspaceFreeModels.length - 1}>&#9660;</button>
+												<button class="btn btn-ghost btn-xs danger" onclick={() => removeWorkspaceFreeModel(model.id)}>&times;</button>
+											</div>
+										</div>
+										{/each}
+									</div>
+									{:else}
+									<span class="brain-hint" style="font-style: italic">Using global defaults</span>
+									{/if}
+									<div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; align-items: flex-end;">
+										<div style="flex: 1;">
+											<input class="brain-input" bind:value={newFreeId} placeholder="provider/model:free" style="font-size: 0.8rem; font-family: var(--font-mono);" />
+										</div>
+										<div style="flex: 0.6;">
+											<input class="brain-input" bind:value={newFreeName} placeholder="Name" style="font-size: 0.8rem;" />
+										</div>
+										<button class="btn btn-primary btn-sm" onclick={addWorkspaceFreeModel} disabled={!newFreeId.trim()}>Add</button>
+									</div>
+									{#if workspaceFreeModels.length > 0}
+									<button class="btn btn-ghost btn-xs" style="margin-top: 0.5rem; color: var(--text-tertiary);" onclick={resetWorkspaceFreeModels}>Reset to defaults</button>
+									{/if}
+								</div>
+								{/if}
+							</div>
+						</details>
+					</div>
+
+					<!-- Grok / xAI -->
+					<div class="service-card" class:service-active={brainSettings.xai_api_key_set === 'true' && !!brainXAIModel}>
+						<div class="service-header">
+							<div class="service-status-dot" class:active={brainSettings.xai_api_key_set === 'true' && !!brainXAIModel}></div>
+							<div class="service-title-area">
+								<span class="service-name">Grok / xAI</span>
+								<span class="service-badge">
+									{#if brainSettings.xai_api_key_set === 'true' && brainXAIModel}
+										Active &middot; {brainXAIModel}
+									{:else if brainSettings.xai_api_key_set === 'true'}
+										Key set &middot; Select a model
+									{:else}
+										Not configured
+									{/if}
+								</span>
+							</div>
+						</div>
+						<div class="service-desc">
+							{#if brainSettings.xai_api_key_set === 'true' && brainXAIModel}
+								Brain routes all requests via xAI &mdash; lower latency, native X/Twitter search.
+							{:else}
+								Direct access to Grok models with native X/Twitter search. No OpenRouter needed.
+							{/if}
+						</div>
+						<details class="service-details" open={!brainSettings.xai_api_key_set || !brainXAIModel}>
+							<summary>Configure</summary>
+							<div class="service-fields">
+								<div class="brain-field">
+									<label>API Key</label>
+									{#if brainSettings.xai_api_key_set === 'true'}
+										<div class="brain-key-status">Active ({brainSettings.xai_api_key_masked})</div>
+									{/if}
+									<input type="password" class="brain-input" placeholder="xai-..." bind:value={brainXAIKey} />
+									<span class="brain-hint">Get a key at <a href="https://console.x.ai" target="_blank" rel="noopener">console.x.ai</a> &mdash; includes free credits</span>
+								</div>
+								<div class="brain-field">
+									<label>Model</label>
+									<select class="brain-input" bind:value={brainXAIModel}>
+										<option value="">Select a model...</option>
+										<option value="grok-4-1-fast-non-reasoning">Grok 4.1 Fast — $0.20/$0.50/M, 2M context</option>
+										<option value="grok-4-0709">Grok 4 — $3/$15/M</option>
+										<option value="grok-3-fast">Grok 3 Fast</option>
+										<option value="grok-3-mini-fast">Grok 3 Mini Fast</option>
+										<option value="grok-3">Grok 3</option>
+										<option value="grok-3-mini">Grok 3 Mini</option>
+									</select>
+								</div>
+							</div>
+						</details>
+					</div>
+				</div>
+
+				<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveBrainSettings} disabled={brainSaving}>
+					{brainSaving ? 'Saving...' : 'Save Settings'}
+				</button>
+			</div>
+
+			<div class="brain-section">
+				<h3 class="brain-section-title">Services</h3>
+				<div class="service-cards">
+					<!-- Gemini -->
+					<div class="service-card" class:service-active={brainSettings.gemini_api_key_set === 'true'}>
+						<div class="service-header">
+							<div class="service-status-dot" class:active={brainSettings.gemini_api_key_set === 'true'}></div>
+							<div class="service-title-area">
+								<span class="service-name">Google Gemini</span>
+								<span class="service-badge">{brainSettings.gemini_api_key_set === 'true' ? 'Connected' : 'Not configured'}</span>
+							</div>
+						</div>
+						<div class="service-desc">
+							{#if brainSettings.gemini_api_key_set === 'true'}
+								Image model: <strong>{brainImageModel.replace('gemini-', '').replace('-image', '').replace('-preview', '')}</strong>
+								{#if brainSettings.gemini_api_key_masked}&middot; Key: {brainSettings.gemini_api_key_masked}{/if}
+							{:else}
+								Powers image generation for agents. Free tier available.
+							{/if}
+						</div>
+						<details class="service-details">
+							<summary>Configure</summary>
+							<div class="service-fields">
+								<div class="brain-field">
+									<label>API Key</label>
+									{#if brainSettings.gemini_api_key_set === 'true'}
+										<div class="brain-key-status">Active ({brainSettings.gemini_api_key_masked})</div>
+									{/if}
+									<input type="password" class="brain-input" placeholder="AIza..." bind:value={brainGeminiKey} />
+									<span class="brain-hint">Get a key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com</a></span>
+								</div>
+								<div class="brain-field">
+									<label>Image Model</label>
+									<select class="brain-input" bind:value={brainImageModel}>
+										<option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image</option>
+										<option value="gemini-3-pro-image-preview">Gemini 3 Pro Image</option>
+										<option value="gemini-3.1-flash-image-preview">Gemini 3.1 Flash Image</option>
+									</select>
+								</div>
+							</div>
+						</details>
+					</div>
+
+					<!-- OpenAI -->
+					<div class="service-card" class:service-active={brainSettings.openai_api_key_set === 'true'}>
+						<div class="service-header">
+							<div class="service-status-dot" class:active={brainSettings.openai_api_key_set === 'true'}></div>
+							<div class="service-title-area">
+								<span class="service-name">OpenAI</span>
+								<span class="service-badge">{brainSettings.openai_api_key_set === 'true' ? 'Connected' : 'Not configured'}</span>
+							</div>
+						</div>
+						<div class="service-desc">
+							{#if brainSettings.openai_api_key_set === 'true'}
+								Available for memory extraction.
+								{#if brainSettings.openai_api_key_masked}Key: {brainSettings.openai_api_key_masked}{/if}
+							{:else}
+								Use OpenAI models directly for memory extraction. GPT-4o Mini is $0.15/M input.
+							{/if}
+						</div>
+						<details class="service-details">
+							<summary>Configure</summary>
+							<div class="service-fields">
+								<div class="brain-field">
+									<label>API Key</label>
+									{#if brainSettings.openai_api_key_set === 'true'}
+										<div class="brain-key-status">Active ({brainSettings.openai_api_key_masked})</div>
+									{/if}
+									<input type="password" class="brain-input" placeholder="sk-..." bind:value={brainOpenAIKey} />
+									<span class="brain-hint">Get a key at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com</a></span>
+								</div>
+							</div>
+						</details>
+					</div>
+
+					<!-- Brave Search -->
+					<div class="service-card" class:service-active={brainSettings.brave_api_key_set === 'true'}>
+						<div class="service-header">
+							<div class="service-status-dot" class:active={brainSettings.brave_api_key_set === 'true'}></div>
+							<div class="service-title-area">
+								<span class="service-name">Brave Search</span>
+								<span class="service-badge">{brainSettings.brave_api_key_set === 'true' ? 'Connected' : 'Not configured'}</span>
+							</div>
+						</div>
+						<div class="service-desc">
+							{#if brainSettings.brave_api_key_set === 'true'}
+								Web search enabled for Brain tools.
+								{#if brainSettings.brave_api_key_masked}Key: {brainSettings.brave_api_key_masked}{/if}
+							{:else}
+								Enables the web_search Brain tool. Free 2,000 queries/month.
+							{/if}
+						</div>
+						<details class="service-details">
+							<summary>Configure</summary>
+							<div class="service-fields">
+								<div class="brain-field">
+									<label>API Key</label>
+									{#if brainSettings.brave_api_key_set === 'true'}
+										<div class="brain-key-status">Active ({brainSettings.brave_api_key_masked})</div>
+									{/if}
+									<input type="password" class="brain-input" placeholder="BSA..." bind:value={brainBraveKey} />
+									<span class="brain-hint">Get a key at <a href="https://brave.com/search/api/" target="_blank" rel="noopener">brave.com/search/api</a></span>
+								</div>
+							</div>
+						</details>
+					</div>
+				</div>
+
+				<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveBrainSettings} disabled={brainSaving}>
+					{brainSaving ? 'Saving...' : 'Save Settings'}
+				</button>
+			</div>
+
+			<div class="brain-section">
+				<h3 class="brain-section-title">Organizational Memory</h3>
+				{#if brainMemoryTotal > 0}
+				<div class="memory-stats-bar">
+					<span>{brainMemoryTotal} memories stored</span>
+					{#if brainLastExtraction}
+						<span class="memory-stats-sep">&middot;</span>
+						<span>Last extraction: {new Date(brainLastExtraction).toLocaleDateString()}</span>
+					{/if}
+					{#if brainLastConsolidation}
+						<span class="memory-stats-sep">&middot;</span>
+						<span>Last consolidation: {new Date(brainLastConsolidation).toLocaleDateString()}</span>
+					{/if}
+				</div>
+				{/if}
+
+				<div class="memory-config-card">
+					<div class="memory-config-header">
+						<div class="memory-config-title-row">
+							<label class="brain-toggle-row" style="margin: 0;">
+								<input type="checkbox" bind:checked={brainSystemMemoryEnabled} />
+								<strong>System Memory</strong>
+							</label>
+						</div>
+						<span class="brain-hint">Captures decisions and commitments using pattern matching. Enables pinning messages to memory. No API cost.</span>
+					</div>
+				</div>
+
+				<div class="memory-config-card">
+					<div class="memory-config-header">
+						<div class="memory-config-title-row">
+							<label class="brain-toggle-row" style="margin: 0;">
+								<input type="checkbox" bind:checked={brainMemoryEnabled} />
+								<strong>LLM Memory</strong>
+							</label>
+						</div>
+						<span class="brain-hint">Uses an LLM to extract organizational decisions, commitments, and policies. Discards creative content, casual chat, and noise. Costs API credits.</span>
+					</div>
+
+					{#if brainMemoryEnabled}
+					<div class="memory-config-body">
+						<div class="brain-field" style="margin-bottom: 0.5rem;">
+							<label>Memory Engine</label>
+							<select class="brain-input" bind:value={brainMemoryEngine} onchange={() => {
+								// Auto-select cheapest model for the engine
+								if (brainMemoryEngine === 'openrouter') brainMemoryModel = 'openai/gpt-4o-mini';
+								else if (brainMemoryEngine === 'gemini') brainMemoryModel = 'gemini-2.5-flash-lite';
+								else if (brainMemoryEngine === 'grok') brainMemoryModel = 'grok-4.1-fast';
+								else if (brainMemoryEngine === 'openai') brainMemoryModel = 'gpt-4o-mini';
+							}}>
+								<option value="openrouter">OpenRouter {brainSettings.api_key_set !== 'true' ? '(free models)' : ''}</option>
+								<option value="gemini" disabled={brainSettings.gemini_api_key_set !== 'true'}>Gemini {brainSettings.gemini_api_key_set !== 'true' ? '— requires API key' : ''}</option>
+								<option value="grok" disabled={brainSettings.xai_api_key_set !== 'true'}>Grok / xAI {brainSettings.xai_api_key_set !== 'true' ? '— requires API key' : ''}</option>
+								<option value="openai" disabled={brainSettings.openai_api_key_set !== 'true'}>OpenAI {brainSettings.openai_api_key_set !== 'true' ? '— requires API key' : ''}</option>
+							</select>
+							<span class="brain-hint">Which provider to use for memory extraction, summaries, and consolidation.</span>
+						</div>
+
+						<div class="brain-field" style="margin-bottom: 0.5rem;">
+							<label>Memory Model</label>
+							<select class="brain-input" bind:value={brainMemoryModel}>
+								{#if brainMemoryEngine === 'openrouter'}
+									<option value="openai/gpt-4o-mini">GPT-4o Mini — $0.15/$0.60/M</option>
+									<option value="google/gemini-2.5-flash">Gemini 2.5 Flash — $0.15/$0.60/M</option>
+									<option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B (free)</option>
+								{:else if brainMemoryEngine === 'gemini'}
+									<option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite — $0.10/$0.40/M</option>
+									<option value="gemini-2.5-flash">Gemini 2.5 Flash — $0.30/$2.50/M</option>
+								{:else if brainMemoryEngine === 'grok'}
+									<option value="grok-4.1-fast">Grok 4.1 Fast — $0.20/$0.50/M</option>
+									<option value="grok-3-mini">Grok 3 Mini — $0.30/$0.50/M</option>
+								{:else if brainMemoryEngine === 'openai'}
+									<option value="gpt-4o-mini">GPT-4o Mini — $0.15/$0.60/M</option>
+								{/if}
+							</select>
+							<span class="brain-hint">Cheaper models work well for extraction.</span>
+						</div>
+
+						<div class="brain-field" style="margin-bottom: 0;">
+							<label>Extraction frequency</label>
+							<div class="brain-freq-row">
+								<input type="range" min="20" max="100" step="10" bind:value={brainExtractFreq} class="brain-range" />
+								<span class="brain-freq-val">Every {brainExtractFreq} messages</span>
+							</div>
+							<span class="brain-hint">Higher = fewer, better extractions. Default is 30. Target: 3-10 memories per week.</span>
+						</div>
+
+						{#if isAdmin && $activeChannel}
+						<div class="brain-field" style="margin-bottom: 0; margin-top: 0.75rem; border-top: 1px solid var(--border); padding-top: 0.75rem;">
+							<button class="btn btn-sm" disabled={extractingMemories} onclick={async () => {
+								extractingMemories = true;
+								extractMsg = '';
+								try {
+									const res = await extractMemoriesNow(slug, $activeChannel.id);
+									const n = res.extracted || 0;
+									extractMsg = n > 0 ? `Extracted ${n} memor${n === 1 ? 'y' : 'ies'} from #${$activeChannel.name}` : 'No memories extracted — messages may not contain decisions, commitments, or policies';
+								} catch (e) {
+									extractMsg = e.message;
+								}
+								extractingMemories = false;
+							}}>
+								{extractingMemories ? 'Extracting...' : 'Extract Now'}
+							</button>
+							{#if extractMsg}
+								<span class="brain-hint" style="color: var(--accent)">{extractMsg}</span>
+							{:else}
+								<span class="brain-hint">Run extraction on #{$activeChannel.name} without waiting for the message threshold.</span>
+							{/if}
+						</div>
+						{/if}
+					</div>
+					{/if}
+				</div>
+			</div>
+
+			{/if}
+
+			<div class="brain-section">
+				<h3 class="brain-section-title">Usage</h3>
+				<p class="brain-hint">Mention <strong>@Brain</strong> in any channel to get a response. Brain can create tasks, search messages, and write documents. It reads the last 20 messages plus stored memories for context.</p>
+			</div>
+
+			{#if isAdmin}
+			<div class="brain-section">
+				<h3 class="brain-section-title">Built-in Agents</h3>
+				<p class="brain-hint" style="margin-bottom: 0.75rem">Toggle built-in agents on or off. Brain is always active.</p>
+				{#each agentsList.filter((a: any) => a.is_system && a.id !== 'brain') as agent}
+					<label class="brain-toggle-row">
+						<input type="checkbox" checked={agent.is_active}
+							onchange={(e) => {
+								const enabled = (e.target as HTMLInputElement).checked;
+								updateBrainSettings(slug, { [`builtin_agent_${agent.id}_enabled`]: enabled ? 'true' : 'false' })
+									.then(() => loadAgents())
+									.catch(() => {});
+							}}
+						/>
+						<span>{agent.avatar} {agent.name}</span>
+						<span class="brain-hint" style="margin-left: auto; font-size: 0.75rem">{agent.role}</span>
+					</label>
+				{/each}
+			</div>
+			{/if}
+
+			{:else if brainTab === 'definitions'}
+			<div class="brain-section">
+				<h3 class="brain-section-title">Brain System Prompts</h3>
+				<p class="brain-hint" style="margin-bottom: 0.75rem">These files shape Brain's personality and behavior. Edit them to customize how Brain acts in your workspace.</p>
+
+				<div class="brain-files">
+					{#each brainDefFiles as file}
+						<button
+							class="brain-file-btn"
+							class:active={brainActiveFile === file}
+							onclick={() => selectBrainFile(file)}
+						>
+							{file}
+						</button>
+					{/each}
+				</div>
+
+				{#if brainActiveFile}
+					<div class="brain-editor">
+						<div class="brain-editor-header">
+							<span class="brain-file-name">{brainActiveFile}</span>
+							<button class="btn btn-primary btn-sm" onclick={saveBrainFile} disabled={brainSaving}>
+								{brainSaving ? 'Saving...' : 'Save'}
+							</button>
+						</div>
+						<textarea
+							class="brain-file-content"
+							bind:value={brainFileContent}
+						></textarea>
+					</div>
+				{/if}
+			</div>
+
+			<div class="brain-section" style="margin-top: 1rem;">
+				<h3 class="brain-section-title">WebLLM System Prompt</h3>
+				<p class="brain-hint" style="margin-bottom: 0.5rem">System prompt for the local WebLLM model. Keep it short — the local model has a ~4K token context window.</p>
+				<textarea
+					class="brain-file-content"
+					style="min-height: 120px;"
+					bind:value={brainWebLLMPrompt}
+				></textarea>
+				<div style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.5rem;">
+					<button class="btn btn-secondary btn-sm" onclick={() => { brainWebLLMPrompt = DEFAULT_WEBLLM_PROMPT; }} disabled={brainWebLLMPrompt === DEFAULT_WEBLLM_PROMPT}>
+						Reset to Default
+					</button>
+					<button class="btn btn-primary btn-sm" onclick={saveBrainSettings} disabled={brainSaving}>
+						{brainSaving ? 'Saving...' : 'Save'}
+					</button>
+				</div>
+			</div>
+
+			{:else if brainTab === 'memory'}
+			<div class="brain-section">
+				{#if currentMemories.length > 0}
+				<div class="memory-month-stats">
+					{#if monthDecisions > 0}<span>{monthDecisions} decision{monthDecisions !== 1 ? 's' : ''}</span>{/if}
+					{#if monthCommitments > 0}<span>{monthCommitments} commitment{monthCommitments !== 1 ? 's' : ''}</span>{/if}
+					{#if monthPolicies > 0}<span>{monthPolicies} {monthPolicies !== 1 ? 'policies' : 'policy'}</span>{/if}
+					{#if monthDecisions === 0 && monthCommitments === 0 && monthPolicies === 0}<span class="brain-hint">No organizational memories this month</span>{/if}
+					<span class="memory-month-stats-label">this month</span>
+				</div>
+				{/if}
+
+				{#if memories.length === 0}
+					<p class="brain-hint">No memories yet. Brain extracts organizational decisions, commitments, and policies as conversations happen.</p>
+				{:else}
+					<div class="memory-actions">
+						<div class="memory-source-filter">
+							{#each ['all', 'decision', 'commitment', 'policy', 'person', 'insight'] as typeFilter}
+								<button class="memory-filter-btn" class:active={memoryTypeFilter === typeFilter} onclick={() => memoryTypeFilter = typeFilter}>
+									{typeFilter === 'all' ? 'All' : typeFilter === 'decision' ? 'Decisions' : typeFilter === 'commitment' ? 'Commitments' : typeFilter === 'policy' ? 'Policies' : typeFilter === 'person' ? 'People' : 'Insights'}
+								</button>
+							{/each}
+						</div>
+						<button class="btn btn-ghost btn-sm memory-clear-btn" onclick={handleClearMemories}>Clear All</button>
+					</div>
+
+					<div class="memory-timeline">
+						{#each Object.entries(groupedMemories) as [month, mems]}
+							<div class="memory-month-group">
+								<div class="memory-month-header">{month}</div>
+								{#each mems as mem}
+									<div class="memory-timeline-item" class:superseded={!!mem.superseded_by || !!mem.valid_until}>
+										<div class="memory-timeline-left">
+											<span class="memory-type-icon" data-type={mem.type}>●</span>
+											<span class="memory-type-badge" data-type={mem.type}>{mem.type.toUpperCase()}</span>
+											<span class="memory-date">{new Date(mem.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+										</div>
+										<div class="memory-timeline-right">
+											<div class="memory-summary" class:struck={!!mem.superseded_by}>{mem.summary || mem.content}</div>
+											{#if mem.participants}
+												<span class="memory-participants">{mem.participants}</span>
+											{/if}
+											{#if mem.channel_name}
+												<span class="memory-channel">#{mem.channel_name}</span>
+											{/if}
+											{#if mem.confidence && mem.confidence < 1}
+												<span class="memory-confidence" title="Confidence: {(mem.confidence * 100).toFixed(0)}%">
+													<span class="confidence-dot" style="opacity: {mem.confidence}"></span>
+												</span>
+											{/if}
+											<span class="memory-source-badge" data-source={mem.source || 'llm'}>{mem.source === 'rule' ? 'rule' : mem.source === 'pin' ? 'pin' : 'auto'}</span>
+										</div>
+										<button class="memory-delete" onclick={() => handleDeleteMemory(mem.id)} title="Delete">
+											<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+												<path d="M2 2L10 10M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+											</svg>
+										</button>
+									</div>
+								{/each}
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+
+			{:else if brainTab === 'activity'}
+			<div class="brain-section">
+				<p class="brain-hint" style="margin-bottom: 0.75rem">{brainActionsTotal} total actions logged</p>
+
+				{#if brainActions.length === 0}
+					<p class="brain-hint">No activity yet. Brain logs actions when responding to mentions.</p>
+				{:else}
+					<div class="action-list">
+						{#each brainActions as action}
+							<div class="action-item">
+								<div class="action-header">
+									<span class="action-type-badge" data-type={action.action_type}>{action.action_type}</span>
+									<span class="action-model">{action.model}</span>
+									<span class="action-time">{new Date(action.created_at).toLocaleString()}</span>
+								</div>
+								{#if action.trigger_text}
+									<div class="action-trigger">{action.trigger_text}</div>
+								{/if}
+								{#if action.tools_used?.length > 0}
+									<div class="action-tools">
+										{#each action.tools_used as tool}
+											<span class="action-tool-badge">{tool}</span>
+										{/each}
+									</div>
+								{/if}
+								{#if action.response_text}
+									<div class="action-response">{action.response_text}</div>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+
+			{:else if brainTab === 'skills'}
+			<div class="brain-section">
+				<p class="brain-hint" style="margin-bottom: 0.75rem">Skills define specialized behaviors Brain can perform.</p>
+
+				{#if isAdmin}
+					<div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+						<button class="btn btn-primary btn-sm" onclick={() => { showNewSkillForm = !showNewSkillForm; showTemplates = false; }}>New Skill</button>
+						<button class="btn btn-ghost btn-sm" onclick={() => { showTemplates = !showTemplates; showNewSkillForm = false; if (showTemplates && skillTemplates.length === 0) loadSkillTemplates(); }}>Browse Built-in</button>
+					</div>
+				{/if}
+
+				{#if showNewSkillForm}
+					<div class="skill-form" style="border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; background: var(--bg-surface);">
+						<div style="display: flex; flex-direction: column; gap: 0.5rem;">
+							<div style="display: flex; gap: 0.5rem; align-items: flex-end;">
+								<textarea class="brain-input" bind:value={newSkillDescription} placeholder="Describe what this skill should do..." style="flex: 1; min-height: 40px; resize: vertical;"></textarea>
+								<button class="btn btn-ghost btn-sm" onclick={handleGenerateSkill} disabled={generatingSkill || !newSkillDescription.trim()} title={!brainSettings?.api_key ? 'Configure API key first' : 'Generate skill config with AI'}>
+									{generatingSkill ? 'Generating...' : 'Generate with AI'}
+								</button>
+							</div>
+							<input class="brain-input" type="text" placeholder="Skill name" bind:value={newSkillName} />
+							<div style="display: flex; gap: 0.5rem;">
+								<select class="brain-input" bind:value={newSkillTrigger} style="flex: 1">
+									<option value="mention">Trigger: Mention</option>
+									<option value="schedule">Trigger: Schedule</option>
+									<option value="keyword">Trigger: Keyword</option>
+								</select>
+								<select class="brain-input" bind:value={newSkillAutonomy} style="flex: 1">
+									<option value="reactive">Reactive</option>
+									<option value="proactive">Proactive</option>
+								</select>
+							</div>
+							<textarea class="brain-file-content" bind:value={newSkillPrompt} placeholder="Skill instructions..." style="min-height: 100px;"></textarea>
+							<div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+								<button class="btn btn-ghost btn-sm" onclick={() => showNewSkillForm = false}>Cancel</button>
+								<button class="btn btn-primary btn-sm" onclick={handleCreateSkill} disabled={!newSkillName.trim()}>Create</button>
+							</div>
+						</div>
+					</div>
+				{/if}
+
+				<div class="skill-list">
+					<div class="new-dm-section-label" style="margin-bottom: 0.5rem;">Active Skills ({brainSkills.length})</div>
+					{#each brainSkills as skill}
+						<div class="skill-item" class:active={activeSkill?.file_name === skill.file_name} style={skill.enabled ? '' : 'opacity: 0.5'}>
+							<button class="skill-select" onclick={() => selectSkill(skill)}>
+								<span class="skill-name">{skill.name}</span>
+								<span class="skill-desc">{skill.description}</span>
+								<span class="skill-meta">{skill.trigger} &middot; {skill.autonomy}{#if !skill.enabled} &middot; disabled{/if}</span>
+							</button>
+							{#if isAdmin}
+								<button class="skill-toggle" onclick={() => handleToggleSkill(skill)} title={skill.enabled ? 'Disable' : 'Enable'} style="background: none; border: none; cursor: pointer; padding: 4px; font-size: 1rem;">
+									{skill.enabled ? '●' : '○'}
+								</button>
+								<button class="skill-delete" onclick={() => handleDeleteSkill(skill.file_name)} title="Delete">
+									<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+										<path d="M2 2L10 10M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+									</svg>
+								</button>
+							{/if}
+						</div>
+					{/each}
+					{#if brainSkills.length === 0}
+						<p class="brain-hint">No skills active yet. Create one or install from built-in templates.</p>
+					{/if}
+				</div>
+
+				{#if showTemplates}
+					<div style="margin-top: 1rem;">
+						<div class="new-dm-section-label" style="margin-bottom: 0.5rem;">Built-in Templates</div>
+						<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.75rem;">
+							{#each skillTemplates.filter(t => !t.installed) as tmpl}
+								<div style="border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem; background: var(--bg-surface);">
+									<div style="font-weight: 600; font-size: var(--text-sm); margin-bottom: 0.25rem;">{tmpl.name}</div>
+									<div style="font-size: var(--text-xs); color: var(--text-muted); margin-bottom: 0.5rem; line-height: 1.3;">{tmpl.description}</div>
+									<div style="display: flex; justify-content: space-between; align-items: center;">
+										<span style="font-size: 0.65rem; background: var(--bg-hover); padding: 0.15rem 0.4rem; border-radius: 4px;">{tmpl.trigger}</span>
+										<button class="btn btn-primary btn-sm" style="font-size: 0.7rem; padding: 0.2rem 0.5rem;" onclick={() => installTemplate(tmpl)}>Install</button>
+									</div>
+								</div>
+							{/each}
+							{#if skillTemplates.filter(t => !t.installed).length === 0}
+								<p class="brain-hint">All built-in skills are already installed.</p>
+							{/if}
+						</div>
+					</div>
+				{/if}
+
+				{#if activeSkill}
+					<div class="brain-editor" style="margin-top: 0.75rem">
+						<div class="brain-editor-header">
+							<span class="brain-file-name">{activeSkill.file_name}</span>
+							{#if isAdmin}
+								<button class="btn btn-primary btn-sm" onclick={saveSkill} disabled={brainSaving}>
+									{brainSaving ? 'Saving...' : 'Save'}
+								</button>
+							{/if}
+						</div>
+						<textarea
+							class="brain-file-content"
+							bind:value={skillContent}
+							readonly={!isAdmin}
+						></textarea>
+					</div>
+				{/if}
+			</div>
+
+			{:else if brainTab === 'knowledge'}
+			<div class="brain-section">
+				<p class="brain-hint" style="margin-bottom: 0.75rem">Reference materials Brain can search when responding. Upload docs or add articles directly.</p>
+
+				{#if isAdmin}
+				<div class="knowledge-actions" style="margin-bottom: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+					<button class="btn btn-primary btn-sm" onclick={() => { showNewKnowledge = true; activeKnowledgeItem = null; knowledgeTitle = ''; knowledgeContent = ''; showUrlImport = false; }}>Add Article</button>
+					<button class="btn btn-ghost btn-sm" onclick={() => knowledgeFileInput?.click()}>Upload File</button>
+					<button class="btn btn-ghost btn-sm" onclick={() => { showUrlImport = true; showNewKnowledge = false; activeKnowledgeItem = null; urlPreview = null; importUrl = ''; }}>Import URL</button>
+					<button class="btn btn-ghost btn-sm" onclick={async () => { try { await reindexEmbeddings(slug); alert('Reindex started — embeddings are being regenerated in the background.'); } catch (e: any) { alert('Reindex failed: ' + e.message); } }}>Reindex All</button>
+					<input type="file" accept=".txt,.md,.pdf" style="display:none" bind:this={knowledgeFileInput} onchange={handleUploadKnowledgeFile} />
+				</div>
+				{/if}
+
+				{#if showNewKnowledge}
+				<div class="brain-editor" style="margin-bottom: 0.75rem">
+					<div class="brain-field">
+						<label>Title</label>
+						<input type="text" class="brain-input" bind:value={knowledgeTitle} placeholder="Article title" />
+					</div>
+					<div class="brain-field">
+						<label>Content</label>
+						<textarea class="brain-file-content" bind:value={knowledgeContent} placeholder="Article content (markdown supported)" rows="8"></textarea>
+					</div>
+					<div style="display: flex; gap: 0.5rem;">
+						<button class="btn btn-primary btn-sm" onclick={handleCreateKnowledge} disabled={knowledgeSaving}>
+							{knowledgeSaving ? 'Saving...' : 'Save'}
+						</button>
+						<button class="btn btn-ghost btn-sm" onclick={() => { showNewKnowledge = false; knowledgeTitle = ''; knowledgeContent = ''; }}>Cancel</button>
+					</div>
+				</div>
+				{/if}
+
+				{#if showUrlImport}
+				<div class="brain-editor" style="margin-bottom: 0.75rem">
+					<div class="brain-field">
+						<label>URL</label>
+						<div style="display: flex; gap: 0.5rem;">
+							<input type="url" class="brain-input" bind:value={importUrl} placeholder="https://example.com/article" style="flex:1" />
+							<button class="btn btn-primary btn-sm" onclick={handleFetchUrl} disabled={urlImporting}>
+								{urlImporting ? 'Fetching...' : 'Fetch'}
+							</button>
+						</div>
+					</div>
+					{#if urlPreview}
+						<div class="brain-field">
+							<label>Title</label>
+							<input type="text" class="brain-input" bind:value={urlPreview.title} />
+						</div>
+						<div class="brain-field">
+							<label>Content Preview ({urlPreview.content.length} chars, ~{Math.round(urlPreview.content.length/4)} tokens)</label>
+							<textarea class="brain-file-content" bind:value={urlPreview.content} rows="8"></textarea>
+						</div>
+						<div style="display: flex; gap: 0.5rem;">
+							<button class="btn btn-primary btn-sm" onclick={handleSaveUrlImport} disabled={knowledgeSaving}>
+								{knowledgeSaving ? 'Saving...' : 'Save as Knowledge'}
+							</button>
+							<button class="btn btn-ghost btn-sm" onclick={() => { showUrlImport = false; urlPreview = null; importUrl = ''; }}>Cancel</button>
+						</div>
+					{:else}
+						<button class="btn btn-ghost btn-sm" onclick={() => { showUrlImport = false; }}>Cancel</button>
+					{/if}
+				</div>
+				{/if}
+
+				{#if activeKnowledgeItem && !showNewKnowledge && !showUrlImport}
+				<div class="brain-editor" style="margin-bottom: 0.75rem">
+					<div class="brain-editor-header">
+						<span class="brain-file-name">{activeKnowledgeItem.title}</span>
+						{#if isAdmin}
+							<button class="btn btn-primary btn-sm" onclick={handleUpdateKnowledge} disabled={knowledgeSaving}>
+								{knowledgeSaving ? 'Saving...' : 'Save'}
+							</button>
+						{/if}
+					</div>
+					<div class="brain-field">
+						<label>Title</label>
+						<input type="text" class="brain-input" bind:value={knowledgeTitle} readonly={!isAdmin} />
+					</div>
+					<textarea class="brain-file-content" bind:value={knowledgeContent} readonly={!isAdmin}></textarea>
+					<button class="btn btn-ghost btn-sm" style="margin-top: 0.5rem;" onclick={() => { activeKnowledgeItem = null; knowledgeTitle = ''; knowledgeContent = ''; }}>Close</button>
+				</div>
+				{/if}
+
+				<div class="knowledge-list">
+					{#each knowledgeItems as item}
+						<div class="knowledge-item">
+							<button class="knowledge-select" onclick={() => selectKnowledgeItem(item)}>
+								<span class="knowledge-title">{item.title}</span>
+								<span class="knowledge-meta">
+									<span class="knowledge-badge" data-type={item.source_type}>{item.source_type}</span>
+									<span class="knowledge-tokens">{item.tokens} tokens</span>
+								</span>
+							</button>
+							{#if isAdmin}
+								<button class="memory-delete" onclick={() => handleDeleteKnowledge(item.id)} title="Delete">
+									<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+										<path d="M2 2L10 10M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+									</svg>
+								</button>
+							{/if}
+						</div>
+					{/each}
+					{#if knowledgeItems.length === 0}
+						<p class="brain-hint">No knowledge articles yet. Add articles or upload .txt/.md/.pdf files.</p>
+					{/if}
+				</div>
+			</div>
+
+			{:else if brainTab === 'roles'}
+			<div class="brain-section">
+				<h3>Workspace Roles</h3>
+				<p class="brain-hint">Roles control what members can do. Assign via Team &rarr; Members &rarr; Manage.</p>
+
+				{#if rolesLoading}
+				<p class="brain-hint">Loading roles...</p>
+				{:else if rolesData.length === 0}
+				<p class="brain-hint">No roles found.</p>
+				{:else}
+				{#each [...rolesData].sort((a, b) => a.name === 'admin' ? -1 : b.name === 'admin' ? 1 : a.name.localeCompare(b.name)) as role}
+				<div class="role-card">
+					<div class="role-card-header" onclick={() => toggleRoleExpand(role.name)}>
+						<span class="role-card-name">{formatRoleName(role.name)}</span>
+						<span class="role-card-count">{role.permissions?.length || 0} permissions</span>
+					</div>
+					{#if expandedRoles.has(role.name)}
+					<div class="role-card-body">
+						{#each PERM_GROUPS as group}
+						<div class="perm-group-row">
+							<span class="perm-group-label">{group.label}</span>
+							<div class="perm-chips">
+								{#each group.perms as perm}
+								<span class="perm-chip" class:granted={role.permissions?.includes(perm)}>
+									{shortPermLabel(perm)}
+								</span>
+								{/each}
+							</div>
+						</div>
+						{/each}
+					</div>
+					{/if}
+				</div>
+				{/each}
+				{/if}
+			</div>
+
+			{:else if brainTab === 'integrations'}
+			<div class="brain-section">
+				<p class="brain-hint" style="margin-bottom: 1rem">Connect external systems to Brain via Telegram.</p>
+
+				<!-- Telegram Section -->
+				<h3 class="brain-section-title">Telegram</h3>
+				<p class="brain-hint" style="margin-bottom: 0.5rem;">Get a bot token from <strong>@BotFather</strong> on Telegram, paste it here, then save.</p>
+				<div class="brain-field">
+					<label>Bot Token</label>
+					<input type="password" class="brain-input" value={brainSettings.telegram_bot_token || ''} onchange={(e) => handleBrainSettingChange('telegram_bot_token', e.currentTarget.value)} placeholder="123456:ABC-DEF..." />
+					<span style="font-size: 0.7rem; color: var(--text-dim);">Saving auto-registers the Telegram webhook</span>
+				</div>
+				{#if brainSettings.telegram_bot_token}
+				<div class="brain-field">
+					<label>Autonomy</label>
+					<select class="brain-input" value={brainSettings.telegram_autonomy || 'autonomous'} onchange={(e) => handleBrainSettingChange('telegram_autonomy', e.currentTarget.value)}>
+						<option value="autonomous">Autonomous — Brain replies in Telegram</option>
+						<option value="draft">Draft — Brain responds in channel only</option>
+						<option value="never">Never — Message saved, Brain silent</option>
+					</select>
+				</div>
+
+				{#if telegramChats.length > 0}
+				<h4 style="margin-top: 0.75rem; font-size: 0.85rem; color: var(--text-dim);">Linked Chats</h4>
+				{#each telegramChats as chat}
+				<div class="knowledge-item">
+					<div style="flex: 1;">
+						<div style="font-weight: 500;">{chat.label || 'Chat ' + chat.chat_id}</div>
+						<div style="font-size: 0.7rem; color: var(--text-dim);">Chat ID: {chat.chat_id}</div>
+					</div>
+					{#if isAdmin}
+					<button class="memory-delete" onclick={() => handleDeleteTelegramChat(chat.id)} title="Unlink">
+						<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+							<path d="M2 2L10 10M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+						</svg>
+					</button>
+					{/if}
+				</div>
+				{/each}
+				{/if}
+				{/if}
+
+			</div>
+
+			{:else if brainTab === 'tools'}
+			<div class="brain-section">
+				<p class="brain-hint" style="margin-bottom: 1rem">Add MCP tool servers to extend Brain and Agent capabilities.</p>
+
+				{#if isAdmin && mcpTemplates.length > 0}
+				<h3 class="brain-section-title">Add Tools</h3>
+				{@const connectedIds = mcpServers.map((s: any) => s.name.toLowerCase())}
+				{#each ['free', 'api_key', 'custom'] as tier}
+				{@const tierTemplates = mcpTemplates.filter((t: any) => t.tier === tier && !connectedIds.includes(t.name.toLowerCase()))}
+				{#if tierTemplates.length > 0}
+				<div style="margin-bottom: 1rem;">
+					<div style="font-size: 0.7rem; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">
+						{tier === 'free' ? 'Free — works instantly' : tier === 'api_key' ? 'API Key required' : 'Custom configuration'}
+					</div>
+					<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.5rem;">
+						{#each tierTemplates as template}
+						<button class="mcp-template-card" onclick={() => openTemplateSetup(template)}>
+							<div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.25rem;">
+								<strong style="font-size: 0.85rem;">{template.name}</strong>
+								{#if tier === 'free'}
+								<span class="tier-badge tier-free">Free</span>
+								{:else if tier === 'api_key'}
+								<span class="tier-badge tier-api-key">API Key</span>
+								{:else}
+								<span class="tier-badge tier-custom">Custom</span>
+								{/if}
+							</div>
+							<div style="font-size: 0.72rem; color: var(--text-dim); line-height: 1.3;">{template.description}</div>
+						</button>
+						{/each}
+					</div>
+				</div>
+				{/if}
+				{/each}
+
+				<!-- Template setup modal -->
+				{#if mcpTemplateSetup}
+				<div class="knowledge-form" style="margin-bottom: 1rem; border: 1px solid var(--accent); padding: 1rem; border-radius: 8px;">
+					<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem;">
+						<h3 class="brain-section-title" style="margin: 0;">Setup {mcpTemplateSetup.name}</h3>
+						<button class="btn btn-sm" onclick={() => { mcpTemplateSetup = null; }}>Cancel</button>
+					</div>
+					<p style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 0.75rem;">{mcpTemplateSetup.description}</p>
+
+					{#if mcpTemplateSetup.env_vars && mcpTemplateSetup.env_vars.length > 0}
+					{#each mcpTemplateSetup.env_vars as envVar}
+					<div class="brain-field">
+						<label>
+							{envVar.description}
+							{#if envVar.help_url}
+							<a href={envVar.help_url} target="_blank" rel="noopener" style="font-size: 0.7rem; margin-left: 0.25rem;">Get key</a>
+							{/if}
+						</label>
+						<input type="text" class="brain-input" bind:value={mcpTemplateEnv[envVar.key]} placeholder={envVar.key} />
+					</div>
+					{/each}
+					{:else}
+					<p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem;">No configuration needed — just click Add.</p>
+					{/if}
+
+					<button class="btn btn-primary" disabled={mcpTemplateSaving || (mcpTemplateSetup.env_vars?.length > 0 && mcpTemplateSetup.env_vars.some((v: any) => v.required && !mcpTemplateEnv[v.key]))} onclick={handleAddFromTemplate}>
+						{mcpTemplateSaving ? 'Connecting...' : 'Add'}
+					</button>
+					{#if mcpTemplateError}
+					<div style="color: var(--red); font-size: 0.8rem; margin-top: 0.5rem;">{mcpTemplateError}</div>
+					{/if}
+				</div>
+				{/if}
+				{/if}
+
+				{#if isAdmin}
+				<details style="margin-bottom: 1.5rem;">
+					<summary style="cursor: pointer; font-size: 0.8rem; color: var(--text-dim);">Advanced: Add custom MCP server</summary>
+					<div class="knowledge-form" style="margin-top: 0.75rem;">
+					<div class="brain-field">
+						<label>Name</label>
+						<input type="text" class="brain-input" bind:value={mcpForm.name} placeholder="e.g. GitHub Tools" />
+					</div>
+					<div class="brain-field">
+						<label>Transport</label>
+						<select class="brain-input" bind:value={mcpForm.transport}>
+							<option value="stdio">stdio (command)</option>
+							<option value="sse">SSE (URL)</option>
+						</select>
+					</div>
+					{#if mcpForm.transport === 'stdio'}
+					<div class="brain-field">
+						<label>Command</label>
+						<input type="text" class="brain-input" bind:value={mcpForm.command} placeholder="npx -y @modelcontextprotocol/server-github" />
+					</div>
+					{:else}
+					<div class="brain-field">
+						<label>URL</label>
+						<input type="text" class="brain-input" bind:value={mcpForm.url} placeholder="https://example.com/mcp/sse" />
+					</div>
+					{/if}
+					<div class="brain-field">
+						<label>Tool Prefix (optional)</label>
+						<input type="text" class="brain-input" bind:value={mcpForm.prefix} placeholder="github" />
+					</div>
+					<div class="brain-field">
+						<label>Environment Variables</label>
+						{#each mcpEnvEntries as entry, i}
+						<div style="display: flex; gap: 0.25rem; margin-bottom: 0.25rem;">
+							<input type="text" class="brain-input" style="flex:1" bind:value={entry.key} placeholder="KEY" />
+							<input type="text" class="brain-input" style="flex:1" bind:value={entry.value} placeholder="value" />
+							<button class="btn btn-sm" style="padding: 0 0.5rem" onclick={() => { mcpEnvEntries = mcpEnvEntries.filter((_, j) => j !== i); }}>x</button>
+						</div>
+						{/each}
+						<button class="btn btn-sm" onclick={() => { mcpEnvEntries = [...mcpEnvEntries, {key:'',value:''}]; }}>+ Add Variable</button>
+					</div>
+					<button class="btn btn-primary" disabled={!mcpForm.name || mcpSaving} onclick={handleCreateMCPServer}>
+						{mcpSaving ? 'Connecting...' : 'Add Server'}
+					</button>
+					{#if mcpConnectError}
+					<div style="color: var(--red); font-size: 0.8rem; margin-top: 0.5rem;">{mcpConnectError}</div>
+					{/if}
+					</div>
+				</details>
+				{/if}
+
+				<h3 class="brain-section-title">Connected Servers</h3>
+				{#if mcpServers.length === 0}
+				<p class="brain-hint">No MCP servers configured yet. Add one from the catalog above.</p>
+				{:else}
+				{#each mcpServers as server}
+				<div class="knowledge-item" style="margin-bottom: 0.75rem; flex-direction: column; align-items: stretch;">
+					<div style="display: flex; align-items: center; gap: 0.5rem;">
+						<span style="font-size: 0.6rem; width: 8px; height: 8px; border-radius: 50%; background: {server.connected ? 'var(--green)' : 'var(--red)'}; display: inline-block;"></span>
+						<strong>{server.name}</strong>
+						<span class="agent-badge" style="font-size: 0.65rem;">{server.transport}</span>
+						<span style="color: var(--text-dim); font-size: 0.75rem;">{server.tool_count} tools</span>
+						<div style="margin-left: auto; display: flex; gap: 0.25rem;">
+							<button class="btn btn-sm" onclick={() => handleRefreshMCP(server.id)}>Refresh</button>
+							<button class="btn btn-sm btn-danger" onclick={() => handleDeleteMCP(server.id)}>Delete</button>
+						</div>
+					</div>
+					{#if server.tool_prefix}
+					<div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.25rem;">Prefix: <code>{server.tool_prefix}__</code></div>
+					{/if}
+					{#if server.command}
+					<div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.25rem; font-family: monospace;">{server.command}</div>
+					{/if}
+					{#if server.tools && server.tools.length > 0}
+					<div style="margin-top: 0.5rem;">
+						{#each server.tools as tool}
+						<div style="font-size: 0.75rem; padding: 0.2rem 0; color: var(--text-secondary);">
+							<code style="color: var(--accent);">{tool.qual_name}</code>
+							{#if tool.description}
+							<span style="color: var(--text-dim);"> — {tool.description}</span>
+							{/if}
+						</div>
+						{/each}
+					</div>
+					{/if}
+				</div>
+				{/each}
+				{/if}
+			</div>
+
+			{:else if brainTab === 'info'}
+			<div class="brain-section">
+				{#if !workspaceInfo}
+				<p class="brain-hint">Loading workspace info...</p>
+				{:else}
+
+				<h3 class="brain-section-title">Plan</h3>
+				<div class="plan-info-row">
+					<div class="plan-info-badge" class:plan-info-badge-pro={workspaceInfo.plan === 'pro'}>
+						{workspaceInfo.plan === 'pro' ? 'Pro' : 'Free'}
+					</div>
+					<div class="plan-info-usage">
+						{#if workspaceInfo.plan === 'pro'}
+							<span>Unlimited members</span>
+						{:else}
+							<span>{workspaceInfo.counts?.members ?? 0} of {workspaceInfo.max_members ?? 5} members</span>
+							<div class="upgrade-progress" style="margin-top:4px;width:120px">
+								<div class="upgrade-progress-fill" style="width: {Math.min(100, ((workspaceInfo.counts?.members ?? 0) / (workspaceInfo.max_members ?? 5)) * 100)}%"></div>
+							</div>
+						{/if}
+					</div>
+					{#if isAdmin && workspaceInfo.plan !== 'pro'}
+						<button class="btn btn-ghost btn-sm" onclick={() => showUpgradeModal = true}>Manage Plan</button>
+					{/if}
+				</div>
+
+				<h3 class="brain-section-title" style="margin-top: 1.5rem;">Workspace</h3>
+				<div class="info-grid">
+					<div class="info-card">
+						<div class="info-card-label">Workspace</div>
+						<div class="info-card-value">{workspaceInfo.name || slug}</div>
+					</div>
+					<div class="info-card">
+						<div class="info-card-label">Created</div>
+						<div class="info-card-value">{workspaceInfo.created_at ? new Date(workspaceInfo.created_at).toLocaleDateString() : '—'}</div>
+					</div>
+					<div class="info-card">
+						<div class="info-card-label">Created by</div>
+						<div class="info-card-value">{workspaceInfo.created_by || '—'}</div>
+					</div>
+					<div class="info-card">
+						<div class="info-card-label">Online now</div>
+						<div class="info-card-value">{workspaceInfo.online_count ?? 0}</div>
+					</div>
+				</div>
+
+				<h3 class="brain-section-title" style="margin-top: 1.5rem;">Storage</h3>
+				<div class="info-grid">
+					<div class="info-card">
+						<div class="info-card-label">Disk usage</div>
+						<div class="info-card-value">{workspaceInfo.disk_display || '0 B'}</div>
+					</div>
+					<div class="info-card">
+						<div class="info-card-label">File storage</div>
+						<div class="info-card-value">{workspaceInfo.files_display || '0 B'}</div>
+					</div>
+				</div>
+
+				<h3 class="brain-section-title" style="margin-top: 1.5rem;">Counts</h3>
+				<div class="info-grid">
+					{#each Object.entries(workspaceInfo.counts || {}).sort((a, b) => a[0].localeCompare(b[0])) as [key, count]}
+					<div class="info-card">
+						<div class="info-card-label">{key.charAt(0).toUpperCase() + key.slice(1)}</div>
+						<div class="info-card-value">{count}</div>
+					</div>
+					{/each}
+				</div>
+				{/if}
+			</div>
+
+			{:else if brainTab === 'network'}
+			<div class="brain-section">
+				<h3 class="brain-section-title">Network Transparency</h3>
+				<p class="brain-hint" style="margin-bottom: 0.75rem">Every outbound connection this Nexus instance makes. No hidden telemetry, no tracking, no phone-home. Just the AI providers you configured.</p>
+				<button class="brain-save-btn" style="margin-bottom: 0.75rem;" onclick={async () => {
+					const stats = await getNetworkLog(slug, 'stats');
+					networkStats = stats;
+					if (networkExpanded) {
+						const full = await getNetworkLog(slug, 'entries');
+						networkEntries = full.entries || [];
+					}
+				}}>
+					Refresh
+				</button>
+				{#if networkStats}
+				<div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.75rem;">
+					<strong>{networkStats.total}</strong> outbound requests logged since instance start
+				</div>
+				{#if networkStats.hosts && networkStats.hosts.length > 0}
+				<div style="display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 0.75rem;">
+					{#each networkStats.hosts as host}
+					<div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; padding: 0.5rem 0.75rem; background: var(--bg-surface); border-radius: 8px; border: 1px solid var(--border-default);">
+						<span style="color: var(--accent); font-weight: 600; font-family: monospace;">{host.host}</span>
+						<span style="color: var(--text-tertiary); margin-left: auto;">{host.count} requests</span>
+						<span style="background: rgba(249,115,22,0.1); color: var(--accent); padding: 2px 8px; border-radius: 4px; font-size: 0.7rem;">{host.purpose}</span>
+					</div>
+					{/each}
+				</div>
+				{:else}
+				<div style="font-size: 0.85rem; color: var(--text-tertiary); padding: 2rem; text-align: center; border: 1px dashed var(--border-default); border-radius: 8px;">
+					No outbound connections yet. This instance has not contacted any external service.
+				</div>
+				{/if}
+				<button class="brain-hint" style="cursor: pointer; text-decoration: underline; background: none; border: none; padding: 0; font-size: 0.75rem;" onclick={async () => {
+					networkExpanded = !networkExpanded;
+					if (networkExpanded) {
+						const full = await getNetworkLog(slug, 'entries');
+						networkEntries = full.entries || [];
+					}
+				}}>
+					{networkExpanded ? 'Hide full request log' : 'Show full request log'}
+				</button>
+				{#if networkExpanded && networkEntries.length > 0}
+				<div style="margin-top: 0.5rem; max-height: 400px; overflow-y: auto; font-family: monospace; font-size: 0.7rem; background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: 8px; padding: 0.5rem;">
+					{#each networkEntries.slice().reverse() as entry}
+					<div style="display: flex; gap: 0.5rem; padding: 0.3rem 0.25rem; border-bottom: 1px solid var(--border-subtle);">
+						<span style="color: var(--text-tertiary); min-width: 140px;">{entry.timestamp.replace('T', ' ').slice(0, 19)}</span>
+						<span style="color: var(--accent); min-width: 35px;">{entry.method}</span>
+						<span style="color: var(--text-primary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{entry.host}{entry.path}</span>
+						<span style="color: {entry.status_code < 400 ? 'var(--accent)' : '#ef4444'};">{entry.status_code}</span>
+						<span style="color: var(--text-tertiary); min-width: 50px; text-align: right;">{entry.duration_ms}ms</span>
+					</div>
+					{/each}
+				</div>
+				{/if}
+				<p class="brain-hint" style="margin-top: 1rem; font-style: italic;">This is the complete list of every external connection. Nothing else leaves your server. Don't trust us — verify it.</p>
+				{/if}
+			</div>
+
+			{:else if brainTab === 'portability'}
+			<div class="brain-section">
+				<h3 class="brain-section-title">Export Workspace</h3>
+				<p class="brain-hint" style="margin-bottom: 0.75rem">Download your entire workspace as a single <code>.nexus</code> file. Includes all messages, tasks, documents, files, and Brain configuration. Import it on any Nexus instance — or keep it as a backup.</p>
+				<a href={exportWorkspaceUrl(slug)} download class="brain-save-btn" style="display: inline-block; text-decoration: none; text-align: center;">
+					Export Workspace (.nexus)
+				</a>
+				<p class="brain-hint" style="margin-top: 0.5rem;">Your workspace is a file, not a subscription. Take it anywhere.</p>
+			</div>
+
+			<div class="brain-section" style="margin-top: 2rem; border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 1.25rem; background: rgba(239, 68, 68, 0.03);">
+				<h3 class="brain-section-title" style="color: #ef4444;">Kill Switch</h3>
+				<p class="brain-hint" style="margin-bottom: 0.75rem">Permanently delete this workspace and all its data. Database, files, Brain memory, everything. This cannot be undone. No 30-day wait. No retention policy. Gone.</p>
+				<input
+					type="text"
+					class="brain-input"
+					placeholder="Type workspace name to confirm"
+					bind:value={destroyConfirm}
+					style="margin-bottom: 0.5rem; border-color: rgba(239, 68, 68, 0.3);"
+				/>
+				<button
+					class="brain-save-btn"
+					style="background: #ef4444; border-color: #ef4444; opacity: {destroyConfirm && !destroyingWorkspace ? 1 : 0.4}; pointer-events: {destroyConfirm && !destroyingWorkspace ? 'auto' : 'none'};"
+					onclick={async () => {
+						if (!destroyConfirm) return;
+						destroyingWorkspace = true;
+						try {
+							await destroyWorkspace(slug, destroyConfirm);
+							clearSession();
+							window.location.href = '/';
+						} catch (e: any) {
+							alert(e.message || 'Failed to destroy workspace');
+							destroyingWorkspace = false;
+						}
+					}}
+				>
+					{destroyingWorkspace ? 'Destroying...' : 'Permanently Delete Workspace'}
+				</button>
+			</div>
+
+			{:else if brainTab === 'bridge'}
+			<div class="brain-section">
+				<h3 class="brain-section-title">Nexus Bridge — Mac App</h3>
+				<p class="brain-hint" style="margin-bottom: var(--space-md);">
+					Connect a Mac running Ollama to this workspace. The bridge app tunnels LLM requests from Nexus to your local Ollama instance — zero cloud dependency, full data sovereignty.
+				</p>
+
+				<div class="service-card" style="margin-bottom: var(--space-lg);">
+					<div class="service-header">
+						<div class="service-status-dot" class:active={bridgeConnected}></div>
+						<div>
+							<strong>Bridge Status</strong>
+							<span class="brain-hint" style="display: block; margin-top: 2px;">
+								{#if bridgeConnected}
+									Connected{bridgeModels.length > 0 ? ` — ${bridgeModels.length} model${bridgeModels.length !== 1 ? 's' : ''} available` : ''}
+								{:else}
+									Not connected
+								{/if}
+							</span>
+						</div>
+					</div>
+				</div>
+
+				<h4 style="font-size: 0.85rem; font-weight: 600; margin-bottom: var(--space-sm);">Connection Settings</h4>
+				<p class="brain-hint" style="margin-bottom: var(--space-sm);">Copy these values into the Nexus Bridge Mac app to connect.</p>
+
+				<div class="brain-field">
+					<label>Workspace URL</label>
+					<div style="display: flex; gap: 8px; align-items: center;">
+						<input type="text" class="brain-input" readonly value={`${location.origin}/w/${slug}`} style="flex: 1; font-family: var(--font-mono); font-size: 0.8rem;" />
+						<button class="btn btn-secondary btn-sm" onclick={() => { navigator.clipboard.writeText(`${location.origin}/w/${slug}`); }}>Copy</button>
+					</div>
+				</div>
+
+				<div class="brain-field">
+					<label>Admin Token</label>
+					<div style="display: flex; gap: 8px; align-items: center;">
+						<input type="password" class="brain-input" readonly value={localStorage.getItem('nexus_token') || ''} style="flex: 1; font-family: var(--font-mono); font-size: 0.8rem;" />
+						<button class="btn btn-secondary btn-sm" onclick={() => { navigator.clipboard.writeText(localStorage.getItem('nexus_token') || ''); }}>Copy</button>
+					</div>
+					<span class="brain-hint" style="margin-top: 4px; display: block;">This is your current session token. It expires when you log out.</span>
+				</div>
+
+				<div style="margin-top: var(--space-lg); padding: var(--space-md); background: var(--bg-secondary); border-radius: 8px;">
+					<h4 style="font-size: 0.85rem; font-weight: 600; margin-bottom: var(--space-sm);">Setup</h4>
+					<ol style="font-size: 0.8rem; color: var(--text-secondary); padding-left: 1.25rem; line-height: 1.6;">
+						<li>Install <a href="https://ollama.com" target="_blank" rel="noopener" style="color: var(--accent);">Ollama</a> and pull a model: <code>ollama pull llama3.2</code></li>
+						<li>Open <strong>NexusBridge.app</strong> (appears in menu bar)</li>
+						<li>Paste the Workspace URL and Token above</li>
+						<li>Click <strong>Connect</strong></li>
+						<li>Go to <strong>Settings &rarr; Engine Mode &rarr; Ollama</strong> and select your model</li>
+					</ol>
+
+					<div style="margin-top: var(--space-md); padding-top: var(--space-md); border-top: 1px solid var(--border);">
+						<h5 style="font-size: 0.8rem; font-weight: 600; margin-bottom: var(--space-xs); color: var(--text-secondary);">Troubleshooting: "App is damaged" on another Mac</h5>
+						<p style="font-size: 0.75rem; color: var(--text-tertiary); line-height: 1.5; margin-bottom: var(--space-xs);">
+							macOS blocks unsigned apps transferred between computers. Open <strong>Terminal</strong> and run:
+						</p>
+						<code style="display: block; font-size: 0.75rem; background: var(--bg-primary); padding: 8px 12px; border-radius: 6px; margin-bottom: 4px; color: var(--text-secondary);">xattr -cr ~/Desktop/NexusBridge.app</code>
+						<code style="display: block; font-size: 0.75rem; background: var(--bg-primary); padding: 8px 12px; border-radius: 6px; color: var(--text-secondary);">xattr -cr /Applications/NexusBridge.app</code>
+						<p style="font-size: 0.7rem; color: var(--text-tertiary); margin-top: var(--space-xs);">Use the command matching where you placed the app. Then open it normally.</p>
+					</div>
+				</div>
+			</div>
+
+			{:else if brainTab === 'costs'}
+			<div class="brain-section">
+				<h3 class="brain-section-title">AI Cost Transparency</h3>
+				<p class="brain-hint" style="margin-bottom: 1rem">Every API call tracked. See exactly what you spend — no hidden costs.</p>
+				<div style="display: flex; gap: 0.5rem; margin-bottom: 1.25rem;">
+					{#each ['day', 'week', 'month', 'all'] as p}
+						<button class="btn btn-ghost btn-xs" class:active={usagePeriod === p} onclick={() => { usagePeriod = p; loadUsage(); }}>{p === 'all' ? 'All Time' : p.charAt(0).toUpperCase() + p.slice(1)}</button>
+					{/each}
+				</div>
+				{#if usageData}
+					<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+						<div style="background: var(--bg-secondary); border-radius: 8px; padding: 1rem; text-align: center;">
+							<div style="font-size: 1.75rem; font-weight: 700; color: var(--accent);">${usageData.total_cost.toFixed(4)}</div>
+							<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">Total Spend</div>
+						</div>
+						<div style="background: var(--bg-secondary); border-radius: 8px; padding: 1rem; text-align: center;">
+							<div style="font-size: 1.75rem; font-weight: 700;">{usageData.call_count.toLocaleString()}</div>
+							<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">API Calls</div>
+						</div>
+						<div style="background: var(--bg-secondary); border-radius: 8px; padding: 1rem; text-align: center;">
+							<div style="font-size: 1.75rem; font-weight: 700;">{(usageData.total_input_tokens + usageData.total_output_tokens).toLocaleString()}</div>
+							<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">Total Tokens</div>
+						</div>
+					</div>
+
+					{#if usageData.by_model.length > 0}
+					<h4 style="font-size: 0.85rem; font-weight: 600; margin-bottom: 0.5rem;">By Model</h4>
+					<div style="margin-bottom: 1.25rem;">
+						{#each usageData.by_model as m}
+							<div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; font-size: 0.8rem;">
+								<div style="flex: 1; min-width: 0;">
+									<div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+										<span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{m.model}</span>
+										<span style="color: var(--text-muted); flex-shrink: 0;">${m.cost.toFixed(4)} ({m.calls} calls)</span>
+									</div>
+									<div style="height: 4px; background: var(--bg-tertiary); border-radius: 2px; overflow: hidden;">
+										<div style="height: 100%; background: var(--accent); border-radius: 2px; width: {usageData.total_cost > 0 ? (m.cost / usageData.total_cost * 100) : 0}%;"></div>
+									</div>
+								</div>
+							</div>
+						{/each}
+					</div>
+					{/if}
+
+					{#if usageData.by_action.length > 0}
+					<h4 style="font-size: 0.85rem; font-weight: 600; margin-bottom: 0.5rem;">By Action</h4>
+					<div style="margin-bottom: 1.25rem;">
+						{#each usageData.by_action as a}
+							<div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; font-size: 0.8rem;">
+								<div style="flex: 1; min-width: 0;">
+									<div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+										<span>{a.action}</span>
+										<span style="color: var(--text-muted);">${a.cost.toFixed(4)} ({a.calls} calls)</span>
+									</div>
+									<div style="height: 4px; background: var(--bg-tertiary); border-radius: 2px; overflow: hidden;">
+										<div style="height: 100%; background: #60a5fa; border-radius: 2px; width: {usageData.total_cost > 0 ? (a.cost / usageData.total_cost * 100) : 0}%;"></div>
+									</div>
+								</div>
+							</div>
+						{/each}
+					</div>
+					{/if}
+
+					{#if usageData.daily.length > 0}
+					<h4 style="font-size: 0.85rem; font-weight: 600; margin-bottom: 0.5rem;">Daily Trend (last 30 days)</h4>
+					<div style="display: flex; align-items: flex-end; gap: 2px; height: 80px; margin-bottom: 0.5rem;">
+						{#each usageData.daily as d}
+							{@const maxCost = Math.max(...usageData.daily.map((x: any) => x.cost), 0.0001)}
+							<div
+								title="{d.date}: ${d.cost.toFixed(4)} ({d.calls} calls)"
+								style="flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 2px; height: {(d.cost / maxCost * 100)}%; opacity: 0.8;"
+							></div>
+						{/each}
+					</div>
+					<div style="display: flex; justify-content: space-between; font-size: 0.65rem; color: var(--text-muted);">
+						<span>{usageData.daily[0]?.date?.slice(5) || ''}</span>
+						<span>{usageData.daily[usageData.daily.length - 1]?.date?.slice(5) || ''}</span>
+					</div>
+					{/if}
+				{:else}
+					<p class="brain-hint">Loading usage data...</p>
+				{/if}
+			</div>
+
+			{/if}
+			</div>
+		</div>
+	</div>
+</div>
+{/if}
+
+<!-- Reflection History Modal -->
+{#if showReflectionHistory}
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="modal-overlay" onclick={() => showReflectionHistory = false}>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="modal-content reflection-history-modal" onclick={(e) => e.stopPropagation()}>
+		<div class="modal-header">
+			<h2>Reflection History</h2>
+			<button class="modal-close" onclick={() => showReflectionHistory = false}>&times;</button>
+		</div>
+		{#if reflectionHistoryLoading}
+			<div style="padding: var(--space-2xl); text-align: center; color: var(--text-tertiary);">Loading...</div>
+		{:else if reflectionHistory.length === 0}
+			<div style="padding: var(--space-2xl); text-align: center; color: var(--text-tertiary);">No reflections yet. Click "Reflect Now" to generate the first one.</div>
+		{:else}
+			<div class="reflection-history-layout">
+				<div class="reflection-history-list">
+					{#each reflectionHistory as entry}
+						<button
+							class="reflection-history-item"
+							class:active={selectedReflection?.id === entry.id}
+							onclick={() => selectedReflection = entry}
+						>
+							<span class="reflection-history-date">{new Date(entry.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+							<span class="reflection-history-time">{new Date(entry.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</span>
+							<span class="reflection-history-badge" data-period={entry.period}>{entry.period}</span>
+						</button>
+					{/each}
+				</div>
+				<div class="reflection-history-content">
+					{#if selectedReflection}
+						<div class="reflection-history-content-header">
+							<span>{new Date(selectedReflection.created_at).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</span>
+							<span class="reflection-history-badge" data-period={selectedReflection.period}>{selectedReflection.period}</span>
+						</div>
+						<div class="reflection-history-body">{@html selectedReflection.content.replace(/^### (.+)$/gm, '<h3>$1</h3>').replace(/^## (.+)$/gm, '<h2>$1</h2>').replace(/^# (.+)$/gm, '<h1>$1</h1>').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/^- (.+)$/gm, '<li>$1</li>').replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>').replace(/<\/ul>\s*<ul>/g, '').replace(/\n\n/g, '<br/><br/>').replace(/\n/g, '<br/>')}</div>
+					{/if}
+				</div>
+			</div>
+		{/if}
+	</div>
+</div>
+{/if}
+
 <style>
 	.workspace {
 		display: flex;
@@ -7247,6 +7708,137 @@ autonomy: reactive
 		flex-shrink: 0;
 	}
 
+	/* Plan Banner */
+	.plan-banner {
+		padding: 6px 16px;
+		font-size: 11px;
+		color: var(--text-muted);
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 6px;
+		border-top: 1px solid var(--border-subtle);
+	}
+	.plan-banner-warning {
+		color: #e8a33a;
+	}
+	.plan-banner-warning .plan-banner-text {
+		color: #e8a33a;
+	}
+	.plan-banner-upgrade {
+		background: none;
+		border: none;
+		color: var(--accent);
+		font-size: 11px;
+		cursor: pointer;
+		padding: 0;
+		font-weight: 600;
+	}
+	.plan-banner-upgrade:hover {
+		text-decoration: underline;
+	}
+
+	/* Upgrade Modal */
+	.upgrade-plans {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 12px;
+		margin-bottom: 16px;
+	}
+	.upgrade-plan-card {
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		padding: 16px;
+	}
+	.upgrade-plan-card h4 {
+		margin: 8px 0 10px;
+		font-size: 1.25rem;
+	}
+	.upgrade-price-period {
+		font-size: 0.8rem;
+		font-weight: 400;
+		color: var(--text-tertiary);
+	}
+	.upgrade-plan-badge {
+		font-size: 10px;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		color: var(--text-tertiary);
+	}
+	.upgrade-badge-pro {
+		color: var(--accent);
+	}
+	.upgrade-plan-pro {
+		border-color: var(--accent);
+		background: rgba(232, 140, 0, 0.04);
+	}
+	.upgrade-plan-desc {
+		font-size: 0.8rem;
+		color: var(--text-secondary);
+		margin: 0 0 8px;
+	}
+	.upgrade-member-bar {
+		margin-bottom: 10px;
+	}
+	.upgrade-member-label {
+		font-size: 0.8rem;
+		color: var(--text-secondary);
+		margin-bottom: 4px;
+	}
+	.upgrade-progress {
+		height: 4px;
+		background: var(--bg-tertiary);
+		border-radius: 2px;
+		overflow: hidden;
+	}
+	.upgrade-progress-fill {
+		height: 100%;
+		background: var(--accent);
+		border-radius: 2px;
+		transition: width 0.3s;
+	}
+	.upgrade-features {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		font-size: 0.8rem;
+		color: var(--text-secondary);
+	}
+	.upgrade-features li {
+		padding: 3px 0;
+	}
+	.upgrade-features li::before {
+		content: "✓ ";
+		color: var(--accent);
+		font-weight: 600;
+	}
+	.upgrade-waitlist-form {
+		display: flex;
+		gap: 8px;
+		margin-bottom: 12px;
+	}
+	.upgrade-waitlist-success {
+		text-align: center;
+		color: var(--accent);
+		font-weight: 600;
+		font-size: 0.9rem;
+		padding: 12px 0;
+		margin-bottom: 12px;
+	}
+	.upgrade-footer {
+		text-align: center;
+		font-size: 0.75rem;
+	}
+	.upgrade-footer a {
+		color: var(--text-tertiary);
+		text-decoration: none;
+	}
+	.upgrade-footer a:hover {
+		color: var(--text-secondary);
+		text-decoration: underline;
+	}
+
 	/* Sidebar footer */
 	/* User Menu */
 	.user-menu-wrap {
@@ -7420,6 +8012,30 @@ autonomy: reactive
 		flex-direction: column;
 		gap: 2px;
 	}
+	.load-more-bar {
+		display: flex;
+		justify-content: center;
+		padding: var(--space-sm) 0 var(--space-md);
+	}
+	.load-more-btn {
+		padding: 6px 16px;
+		background: var(--bg-raised);
+		color: var(--text-secondary);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-md);
+		font-size: var(--text-xs);
+		font-family: inherit;
+		cursor: pointer;
+		transition: all 150ms;
+	}
+	.load-more-btn:hover:not(:disabled) {
+		color: var(--text-primary);
+		border-color: var(--accent);
+	}
+	.load-more-btn:disabled {
+		opacity: 0.5;
+		cursor: default;
+	}
 
 	.message-row {
 		display: flex;
@@ -7430,6 +8046,14 @@ autonomy: reactive
 	}
 	.message-row:hover {
 		background: var(--bg-surface);
+	}
+	.message-row.message-highlight {
+		animation: msg-highlight 2s ease-out;
+	}
+	@keyframes msg-highlight {
+		0% { background: rgba(255, 165, 0, 0.25); border-left: 3px solid var(--accent); }
+		70% { background: rgba(255, 165, 0, 0.1); border-left: 3px solid var(--accent); }
+		100% { background: transparent; border-left: 3px solid transparent; }
 	}
 	.message-row.pending {
 		opacity: 0.6;
@@ -8362,45 +8986,8 @@ autonomy: reactive
 	/* ================================
 	   BRAIN SETTINGS
 	   ================================ */
-	.brain-main {
-		flex: 1;
-		overflow-y: auto;
-		padding: var(--space-xl);
-	}
 	.brain-settings {
-		max-width: 860px;
-	}
-	.brain-header-row {
-		display: flex;
-		align-items: center;
-		gap: var(--space-sm);
-		margin-bottom: var(--space-md);
-	}
-	.brain-back {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 32px;
-		height: 32px;
-		border-radius: 8px;
-		border: none;
-		background: none;
-		color: var(--text-secondary);
-		cursor: pointer;
-		flex-shrink: 0;
-	}
-	.brain-back:hover {
-		background: var(--bg-hover);
-		color: var(--text-primary);
-	}
-	.brain-heading {
-		font-size: 1.25rem;
-		font-weight: 600;
-		color: var(--text-primary);
-		margin-bottom: 0;
-	}
-	.sidebar.hidden {
-		display: none;
+		max-width: none;
 	}
 	.brain-tabs {
 		display: flex;
@@ -9112,6 +9699,32 @@ autonomy: reactive
 		display: flex;
 		gap: 2px;
 	}
+	.plan-info-row {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		margin-top: 8px;
+		margin-bottom: 4px;
+	}
+	.plan-info-badge {
+		font-size: 0.75rem;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		padding: 3px 10px;
+		border-radius: var(--radius-sm);
+		background: var(--bg-tertiary);
+		color: var(--text-secondary);
+	}
+	.plan-info-badge-pro {
+		background: rgba(232, 140, 0, 0.15);
+		color: var(--accent);
+	}
+	.plan-info-usage {
+		font-size: 0.85rem;
+		color: var(--text-secondary);
+		flex: 1;
+	}
 	.info-grid {
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -9377,6 +9990,12 @@ autonomy: reactive
 		user-select: all;
 	}
 	.invite-code-hint { font-size: 0.7rem; color: var(--text-tertiary); }
+	.invite-limit-warn {
+		font-size: 0.75rem;
+		color: #e8a33a;
+		margin-top: 8px;
+		font-weight: 500;
+	}
 	.modal-close:hover {
 		color: var(--text-primary);
 		background: var(--bg-raised, rgba(255,255,255,0.1));
@@ -9614,6 +10233,15 @@ autonomy: reactive
 		min-width: 100px;
 	}
 	.slash-popup .mention-role { font-size: 0.75rem; }
+	.slash-category {
+		font-size: 0.65rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-tertiary);
+		padding: 6px 12px 2px;
+	}
+	.slash-category:first-child { padding-top: 4px; }
 	.tools-used {
 		display: flex; align-items: flex-start; gap: 0.35rem;
 		font-size: 0.7rem; color: var(--text-tertiary); margin-top: 0.35rem;
@@ -10348,8 +10976,8 @@ autonomy: reactive
 
 	/* Agent Library Modal */
 	.agent-library-modal {
-		max-width: 800px;
-		width: 90vw;
+		max-width: 1100px;
+		width: 95vw;
 		max-height: 80vh;
 		display: flex;
 		flex-direction: column;
@@ -10669,10 +11297,41 @@ autonomy: reactive
 		padding: var(--space-md) var(--space-lg);
 		border-bottom: 1px solid var(--border-subtle);
 	}
+	.thread-header-left {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+	}
 	.thread-header h3 {
 		font-size: var(--text-base);
 		font-weight: 600;
 		margin: 0;
+	}
+	.thread-participant-avatars {
+		display: flex;
+		align-items: center;
+	}
+	.thread-participant-avatar {
+		width: 22px;
+		height: 22px;
+		border-radius: 50%;
+		background: var(--accent);
+		color: #000;
+		font-size: 0.65rem;
+		font-weight: 600;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		margin-left: -6px;
+		border: 2px solid var(--bg-primary);
+	}
+	.thread-participant-avatar:first-child {
+		margin-left: 0;
+	}
+	.thread-participant-more {
+		font-size: 0.7rem;
+		color: var(--text-secondary);
+		margin-left: 4px;
 	}
 	.thread-messages {
 		flex: 1;
@@ -10969,6 +11628,336 @@ autonomy: reactive
 		background: color-mix(in srgb, var(--accent) 15%, transparent);
 		color: var(--accent);
 		white-space: nowrap;
+	}
+
+	/* Reflection History Modal */
+	.reflection-history-modal {
+		max-width: 900px;
+		width: 95vw;
+		max-height: 80vh;
+	}
+	.reflection-history-modal .modal-header h2 {
+		font-size: var(--text-lg);
+		font-weight: 600;
+		margin: 0;
+	}
+	.reflection-history-layout {
+		display: flex;
+		flex: 1;
+		overflow: hidden;
+		min-height: 400px;
+	}
+	.reflection-history-list {
+		width: 220px;
+		min-width: 220px;
+		border-right: 1px solid var(--border-subtle);
+		overflow-y: auto;
+		padding: var(--space-sm) 0;
+	}
+	.reflection-history-item {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		width: 100%;
+		padding: var(--space-sm) var(--space-md);
+		background: none;
+		border: none;
+		text-align: left;
+		cursor: pointer;
+		color: var(--text-secondary);
+		font-size: var(--text-sm);
+		border-left: 2px solid transparent;
+	}
+	.reflection-history-item:hover {
+		background: var(--bg-hover);
+	}
+	.reflection-history-item.active {
+		background: var(--bg-hover);
+		border-left-color: var(--accent);
+		color: var(--text-primary);
+	}
+	.reflection-history-date {
+		font-weight: 500;
+		color: inherit;
+	}
+	.reflection-history-time {
+		font-size: var(--text-xs);
+		color: var(--text-tertiary);
+	}
+	.reflection-history-badge {
+		display: inline-block;
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		padding: 1px 6px;
+		border-radius: var(--radius-full);
+		background: var(--bg-root);
+		color: var(--text-tertiary);
+		width: fit-content;
+	}
+	.reflection-history-badge[data-period="weekly"] {
+		color: var(--accent);
+		background: rgba(249, 115, 22, 0.1);
+	}
+	.reflection-history-content {
+		flex: 1;
+		overflow-y: auto;
+		padding: var(--space-lg);
+	}
+	.reflection-history-content-header {
+		display: flex;
+		align-items: center;
+		gap: var(--space-sm);
+		margin-bottom: var(--space-md);
+		padding-bottom: var(--space-sm);
+		border-bottom: 1px solid var(--border-subtle);
+		font-size: var(--text-sm);
+		color: var(--text-secondary);
+	}
+	.reflection-history-body {
+		font-size: var(--text-sm);
+		line-height: 1.7;
+		color: var(--text-primary);
+	}
+	.reflection-history-body :global(h1) {
+		font-size: var(--text-lg);
+		font-weight: 700;
+		margin: var(--space-md) 0 var(--space-sm);
+	}
+	.reflection-history-body :global(h2) {
+		font-size: var(--text-base);
+		font-weight: 600;
+		margin: var(--space-md) 0 var(--space-xs);
+		color: var(--accent);
+	}
+	.reflection-history-body :global(h3) {
+		font-size: var(--text-sm);
+		font-weight: 600;
+		margin: var(--space-sm) 0 var(--space-xs);
+	}
+	.reflection-history-body :global(ul) {
+		padding-left: var(--space-lg);
+		margin: var(--space-xs) 0;
+	}
+	.reflection-history-body :global(li) {
+		margin-bottom: 4px;
+	}
+	.reflection-history-body :global(strong) {
+		color: var(--text-primary);
+		font-weight: 600;
+	}
+
+	/* Brain Settings Modal */
+	.brain-settings-modal {
+		max-width: 1100px;
+		width: 95vw;
+		height: 85vh;
+		max-height: 85vh;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		padding: 0;
+	}
+	.brain-settings-modal .modal-header {
+		padding: 16px 24px;
+		border-bottom: 1px solid var(--border-subtle);
+		flex-shrink: 0;
+	}
+	.brain-settings-modal .modal-header h2 {
+		font-size: var(--text-lg);
+		font-weight: 600;
+		margin: 0;
+	}
+	.brain-settings-layout {
+		display: flex;
+		flex: 1;
+		overflow: hidden;
+	}
+	.brain-settings-nav {
+		width: 180px;
+		min-width: 180px;
+		border-right: 1px solid var(--border-subtle);
+		overflow-y: auto;
+		padding: var(--space-sm) 0;
+		flex-shrink: 0;
+	}
+	.brain-nav-item {
+		display: block;
+		width: 100%;
+		padding: var(--space-sm) var(--space-md);
+		background: none;
+		border: none;
+		text-align: left;
+		cursor: pointer;
+		color: var(--text-secondary);
+		font-size: var(--text-sm);
+		border-left: 2px solid transparent;
+	}
+	.brain-nav-item:hover {
+		background: var(--bg-hover);
+	}
+	.brain-nav-item.active {
+		background: var(--bg-hover);
+		border-left-color: var(--accent);
+		color: var(--text-primary);
+		font-weight: 500;
+	}
+	.brain-settings-content {
+		flex: 1;
+		overflow-y: auto;
+		padding: var(--space-xl);
+	}
+	.brain-settings-content .brain-settings {
+		max-width: none;
+	}
+
+	/* System Logs Modal */
+	.system-logs-modal {
+		max-width: 1100px;
+		width: 95vw;
+		height: 85vh;
+		max-height: 85vh;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		padding: 0;
+	}
+	.system-logs-header {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 16px 24px;
+		border-bottom: 1px solid var(--border-subtle);
+		flex-shrink: 0;
+	}
+	.system-logs-header h2 {
+		font-size: var(--text-lg);
+		font-weight: 600;
+		margin: 0;
+	}
+	.log-refresh-btn {
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		color: var(--text-secondary);
+		padding: 6px 12px;
+		border-radius: 6px;
+		font-size: 12px;
+		cursor: pointer;
+	}
+	.log-refresh-btn:hover { background: var(--bg-tertiary); }
+	.log-refresh-btn.active {
+		background: var(--accent);
+		color: white;
+		border-color: var(--accent);
+	}
+	.log-filters {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 16px;
+		padding: 12px 24px;
+		border-bottom: 1px solid var(--border-subtle);
+		flex-shrink: 0;
+	}
+	.log-filter-group {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+	.log-filter-label {
+		font-size: 12px;
+		color: var(--text-tertiary);
+		font-weight: 500;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+	}
+	.log-filter-pills {
+		display: flex;
+		gap: 4px;
+		flex-wrap: wrap;
+	}
+	.log-pill {
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		color: var(--text-secondary);
+		padding: 3px 10px;
+		border-radius: 12px;
+		font-size: 11px;
+		cursor: pointer;
+		transition: all 0.15s;
+	}
+	.log-pill:hover { background: var(--bg-tertiary); }
+	.log-pill.active {
+		background: var(--pill-color, var(--accent));
+		color: white;
+		border-color: var(--pill-color, var(--accent));
+	}
+	.log-entries-list {
+		flex: 1;
+		overflow-y: auto;
+	}
+	.log-entry-row {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 8px 24px;
+		border-bottom: 1px solid var(--border-subtle);
+		width: 100%;
+		background: none;
+		border-left: none;
+		border-right: none;
+		border-top: none;
+		color: inherit;
+		font-family: inherit;
+		font-size: 12px;
+		cursor: pointer;
+		text-align: left;
+	}
+	.log-entry-row:hover { background: var(--bg-secondary); }
+	.log-time-col {
+		color: var(--text-tertiary);
+		font-family: monospace;
+		font-size: 11px;
+		flex-shrink: 0;
+		min-width: 72px;
+	}
+	.log-level-col {
+		font-weight: 600;
+		font-size: 10px;
+		text-transform: uppercase;
+		flex-shrink: 0;
+		min-width: 40px;
+	}
+	.log-cat-col {
+		font-size: 11px;
+		font-weight: 500;
+		flex-shrink: 0;
+		min-width: 72px;
+	}
+	.log-msg-col {
+		flex: 1;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		color: var(--text-primary);
+	}
+	.log-expand-icon {
+		flex-shrink: 0;
+		transition: transform 0.15s;
+		color: var(--text-tertiary);
+	}
+	.log-expand-icon.expanded { transform: rotate(180deg); }
+	.log-detail-box {
+		background: var(--bg-secondary);
+		padding: 12px 24px 12px 48px;
+		border-bottom: 1px solid var(--border-subtle);
+	}
+	.log-detail-box pre {
+		margin: 0;
+		font-size: 11px;
+		color: var(--text-secondary);
+		white-space: pre-wrap;
+		word-break: break-all;
+		font-family: monospace;
 	}
 
 </style>

@@ -20,10 +20,12 @@ import (
 	"github.com/nexus-chat/nexus/internal/metrics"
 )
 
-// maxMessageAge is the maximum age of a message before an agent skips responding.
-// If a goroutine is blocked on agentSem and the message becomes older than this,
-// the response is dropped to avoid replying to stale conversations.
-const maxMessageAge = 2 * time.Minute
+// Tiered staleness thresholds for different response contexts.
+const (
+	maxBrainThreadAge  = 5 * time.Minute  // Thread replies move fast
+	maxBrainChannelAge = 10 * time.Minute // Channel mentions can wait a bit
+	maxAgentAge        = 2 * time.Minute  // Agents stay at 2min
+)
 
 // generatedImagesFolderCache caches the folder ID per workspace slug.
 var generatedImagesFolderCache sync.Map
@@ -64,12 +66,18 @@ func (s *Server) ensureGeneratedImagesFolder(slug string) string {
 }
 
 // broadcastAgentState sends an agent.state event to all clients in the channel.
-func (s *Server) broadcastAgentState(slug, channelID, agentID, agentName, state, toolName string) {
+// Optional parentID parameter scopes the indicator to a thread.
+func (s *Server) broadcastAgentState(slug, channelID, agentID, agentName, state, toolName string, parentID ...string) {
+	pid := ""
+	if len(parentID) > 0 {
+		pid = parentID[0]
+	}
 	h := s.hubs.Get(slug)
 	h.Broadcast(channelID, hub.MakeEnvelope(hub.TypeAgentState, hub.AgentStatePayload{
 		AgentID:   agentID,
 		AgentName: agentName,
 		ChannelID: channelID,
+		ParentID:  pid,
 		State:     state,
 		ToolName:  toolName,
 	}), "")
@@ -88,8 +96,13 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 			logger.WithCategory(logger.CatAgent).Warn().Str("workspace", slug).Str("agent", agent.Name).Msg("too many concurrent agents, dropping")
 			return
 		}
+		// Skip messages from before this server boot (e.g., after restart)
+		if messageTime.Before(s.bootedAt) {
+			logger.WithCategory(logger.CatAgent).Info().Time("msg_time", messageTime).Time("boot", s.bootedAt).Str("agent", agent.Name).Msg("skipping pre-boot message")
+			return
+		}
 		// Skip stale messages that waited too long on the semaphore
-		if time.Since(messageTime) > maxMessageAge {
+		if time.Since(messageTime) > maxAgentAge {
 			logger.WithCategory(logger.CatAgent).Info().Str("agent", agent.Name).Dur("age", time.Since(messageTime)).Msg("skipping stale message")
 			return
 		}
@@ -106,9 +119,9 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 			return
 		}
 
-		// Broadcast thinking state
-		s.broadcastAgentState(slug, channelID, agent.ID, agent.Name, "thinking", "")
-		defer s.broadcastAgentState(slug, channelID, agent.ID, agent.Name, "idle", "")
+		// Broadcast thinking state (scoped to thread if parentID set)
+		s.broadcastAgentState(slug, channelID, agent.ID, agent.Name, "thinking", "", parentID)
+		defer s.broadcastAgentState(slug, channelID, agent.ID, agent.Name, "idle", "", parentID)
 
 		// Use agent's model or fall back to workspace default
 		model := agent.Model
@@ -246,7 +259,7 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 			followUp := append(messages, assistantMsg)
 
 			for _, call := range toolCalls {
-				s.broadcastAgentState(slug, channelID, agent.ID, agent.Name, "tool_executing", call.Function.Name)
+				s.broadcastAgentState(slug, channelID, agent.ID, agent.Name, "tool_executing", call.Function.Name, parentID)
 				senderID := s.resolveMemberIDByName(slug, senderName)
 				result := s.executeAgentTool(slug, channelID, senderID, agent, call)
 				toolNames = append(toolNames, call.Function.Name)
@@ -366,7 +379,7 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 		var imagePromptTag string
 		var toolResults []string
 		for _, call := range toolCalls {
-			s.broadcastAgentState(slug, channelID, agent.ID, agent.Name, "tool_executing", call.Function.Name)
+			s.broadcastAgentState(slug, channelID, agent.ID, agent.Name, "tool_executing", call.Function.Name, parentID)
 			senderID := s.resolveMemberIDByName(slug, senderName)
 			result := s.executeAgentTool(slug, channelID, senderID, agent, call)
 			logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Str("tool", call.Function.Name).Str("result", truncate(result, 100)).Msg("tool executed")

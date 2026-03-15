@@ -80,6 +80,8 @@ func (s *Server) executeToolInner(slug, channelID, senderMemberID string, call b
 		return s.toolSearchX(slug, call.Function.Arguments)
 	case "fetch_url":
 		return toolFetchURL(call.Function.Arguments)
+	case "trace_knowledge":
+		return s.toolTraceKnowledge(slug, call.Function.Arguments)
 	default:
 		// Route to MCP server
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -361,9 +363,10 @@ func (s *Server) toolDeleteTask(slug, argsJSON string) string {
 
 func (s *Server) toolSearchMessages(slug, channelID, argsJSON string) string {
 	var args struct {
-		Query     string `json:"query"`
-		ChannelID string `json:"channel_id"`
-		Limit     int    `json:"limit"`
+		Query       string `json:"query"`
+		ChannelName string `json:"channel_name"`
+		SenderName  string `json:"sender_name"`
+		Limit       int    `json:"limit"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "Error parsing arguments"
@@ -372,18 +375,55 @@ func (s *Server) toolSearchMessages(slug, channelID, argsJSON string) string {
 		args.Limit = 10
 	}
 
-	results, err := s.search.Search(slug, args.Query, []string{"message"}, args.Limit)
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return "Error opening workspace"
+	}
+
+	// Build SQL query with optional filters
+	query := `
+		SELECT m.content, m.created_at,
+			COALESCE(mem.display_name, m.sender_id) as sender_name,
+			COALESCE(c.name, '') as channel_name
+		FROM messages m
+		LEFT JOIN members mem ON mem.id = m.sender_id
+		LEFT JOIN channels c ON c.id = m.channel_id
+		WHERE m.deleted = FALSE AND m.content LIKE ?`
+	params := []any{"%" + args.Query + "%"}
+
+	if args.ChannelName != "" {
+		query += " AND LOWER(c.name) = LOWER(?)"
+		params = append(params, args.ChannelName)
+	}
+	if args.SenderName != "" {
+		query += " AND LOWER(mem.display_name) LIKE LOWER(?)"
+		params = append(params, "%"+args.SenderName+"%")
+	}
+
+	query += " ORDER BY m.created_at DESC LIMIT ?"
+	params = append(params, args.Limit)
+
+	rows, err := wdb.DB.Query(query, params...)
 	if err != nil {
 		return "Error searching messages"
 	}
+	defer rows.Close()
 
 	var lines []string
-	for _, r := range results {
-		content := r.Content
-		if len(content) > 150 {
-			content = content[:147] + "..."
+	for rows.Next() {
+		var content, createdAt, senderName, channelName string
+		if err := rows.Scan(&content, &createdAt, &senderName, &channelName); err != nil {
+			continue
 		}
-		lines = append(lines, fmt.Sprintf("[%.2f] %s", r.Score, content))
+		if len(content) > 300 {
+			content = content[:297] + "..."
+		}
+		// Format timestamp nicely
+		ts := createdAt
+		if t, err := time.Parse(time.RFC3339, createdAt); err == nil {
+			ts = t.Format("Jan 2, 3:04 PM")
+		}
+		lines = append(lines, fmt.Sprintf("[#%s] %s (%s): %s", channelName, senderName, ts, content))
 	}
 
 	if len(lines) == 0 {
@@ -570,9 +610,18 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 			s.agentSem <- struct{}{} // block until slot available
 			defer func() { <-s.agentSem }()
 		}
-		// Skip stale messages that waited too long on the semaphore
-		if time.Since(messageTime) > maxMessageAge {
-			logger.WithCategory(logger.CatBrain).Info().Dur("age", time.Since(messageTime)).Msg("skipping stale message")
+		// Skip messages from before this server boot (e.g., after restart)
+		if messageTime.Before(s.bootedAt) {
+			logger.WithCategory(logger.CatBrain).Info().Time("msg_time", messageTime).Time("boot", s.bootedAt).Msg("skipping pre-boot message")
+			return
+		}
+		// Tiered staleness: threads are faster-paced than channel mentions
+		maxAge := maxBrainChannelAge
+		if parentID != "" {
+			maxAge = maxBrainThreadAge
+		}
+		if time.Since(messageTime) > maxAge {
+			logger.WithCategory(logger.CatBrain).Info().Dur("age", time.Since(messageTime)).Dur("max", maxAge).Msg("skipping stale message")
 			return
 		}
 		metrics.AgentExecutionsTotal.WithLabelValues("Brain", "started").Inc()
@@ -580,23 +629,23 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 		// Handle /search, /localsearch, and natural language web search directly (bypass LLM tool selection)
 		trimmed := strings.TrimSpace(content)
 		if webQuery := extractWebSearchQuery(trimmed); webQuery != "" {
-			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "thinking", "")
-			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", "web_search")
+			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "thinking", "", parentID)
+			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", "web_search", parentID)
 			argsJSON := fmt.Sprintf(`{"query":%q}`, webQuery)
 			result := s.toolWebSearch(slug, argsJSON)
 			s.sendBrainMessage(slug, channelID, parentID, result, "web_search")
-			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "")
+			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "", parentID)
 			return
 		}
 		if strings.HasPrefix(trimmed, "/localsearch ") {
 			query := strings.TrimSpace(strings.TrimPrefix(trimmed, "/localsearch"))
 			if query != "" {
-				s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "thinking", "")
-				s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", "search_workspace")
+				s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "thinking", "", parentID)
+				s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", "search_workspace", parentID)
 				argsJSON := fmt.Sprintf(`{"query":%q}`, query)
 				result := s.toolSearchMessages(slug, channelID, argsJSON)
 				s.sendBrainMessage(slug, channelID, parentID, result, "search_workspace")
-				s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "")
+				s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "", parentID)
 				return
 			}
 		}
@@ -623,15 +672,16 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 		if len(modelOverride) > 0 && modelOverride[0] != "" {
 			model = modelOverride[0]
 		}
-		if apiKey == "" && s.getXAIKey(slug) == "" {
+		ollamaEnabled := s.getBrainSetting(slug, "ollama_enabled") == "true"
+		if apiKey == "" && s.getXAIKey(slug) == "" && !ollamaEnabled {
 			s.sendBrainMessage(slug, channelID, parentID,
 				"I can answer search and stats queries without an API key. Try: \"search for X\", \"how many messages\", \"who is online\", \"list channels\". For general questions, configure an API key in Settings.")
 			return
 		}
 
-		// Broadcast thinking state
-		s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "thinking", "")
-		defer s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "")
+		// Broadcast thinking state (scoped to thread if parentID set)
+		s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "thinking", "", parentID)
+		defer s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "", parentID)
 
 		brainDir := brain.BrainDir(s.cfg.DataDir, slug)
 		systemPrompt, err := brain.BuildSystemPrompt(brainDir)
@@ -647,64 +697,8 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 			return
 		}
 
-		// Inject North Star context
-		if nsCtx := s.buildNorthStarContext(slug); nsCtx != "" {
-			systemPrompt += "\n\n---\n\n" + nsCtx
-		}
-
-		// Append workspace snapshot
-		wsContext := brain.BuildWorkspaceContext(wdb.DB)
-		if wsContext != "" {
-			systemPrompt += "\n\n---\n\n" + wsContext
-			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(wsContext)).Int("total", len(systemPrompt)).Msg("+workspace_context")
-		}
-
-		// Append memories to system prompt
-		memoryContext := brain.BuildMemoryContext(wdb.DB, content)
-		if memoryContext != "" {
-			systemPrompt += "\n\n---\n\n" + memoryContext
-			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(memoryContext)).Int("total", len(systemPrompt)).Msg("+memories")
-		}
-
-		// Append skills context (role-gated + enabled filter)
-		skills := brain.LoadSkills(brainDir)
-		s.applySkillEnabledState(slug, skills)
-		var senderRole string
-		_ = wdb.DB.QueryRow("SELECT role FROM members WHERE LOWER(display_name) = LOWER(?)", senderName).Scan(&senderRole)
-		skills = brain.FilterSkillsByRole(skills, senderRole)
-		skills = filterEnabledSkills(skills)
-		skillContext := brain.BuildSkillContext(skills)
-		if skillContext != "" {
-			systemPrompt += "\n\n---\n\n" + skillContext
-			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(skillContext)).Int("total", len(systemPrompt)).Msg("+skills")
-		}
-
-		// Append knowledge base context
-		kbContext := brain.BuildKnowledgeContext(wdb.DB, content, brain.SemanticOpts{
-			VectorStore: s.vectors, APIKey: apiKey, Slug: slug,
-		})
-		if kbContext != "" {
-			systemPrompt += "\n\n---\n\n" + kbContext
-			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(kbContext)).Int("total", len(systemPrompt)).Msg("+knowledge")
-		}
-
-		// Append channel history summary (this channel)
-		if chSummary := brain.BuildSingleChannelContext(wdb.DB, channelID); chSummary != "" {
-			systemPrompt += "\n\n---\n\n" + chSummary
-			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(chSummary)).Int("total", len(systemPrompt)).Msg("+channel_summary")
-		}
-
-		// Append cross-channel awareness (Brain only)
-		if crossCtx := brain.BuildCrossChannelContext(wdb.DB, channelID); crossCtx != "" {
-			systemPrompt += "\n\n---\n\n" + crossCtx
-			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(crossCtx)).Int("total", len(systemPrompt)).Msg("+cross_channel")
-		}
-
-		// Hard cap: if system prompt is too large, truncate to prevent token overflow
-		if len(systemPrompt) > 100000 {
-			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Int("chars", len(systemPrompt)).Msg("system prompt too large, truncating to 100000")
-			systemPrompt = systemPrompt[:100000]
-		}
+		// Build context based on attention mode (thread vs channel)
+		systemPrompt = s.buildContextForMode(slug, wdb, channelID, parentID, content, senderName, apiKey, brainDir, systemPrompt)
 
 		messages := s.getThreadOrChannelMessages(wdb, channelID, parentID, 40)
 		logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("count", len(messages)).Msg("messages")
@@ -746,7 +740,7 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 		var imageRefs []string
 		var toolResults []string
 		for _, call := range toolCalls {
-			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", call.Function.Name)
+			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", call.Function.Name, parentID)
 			senderID := s.resolveMemberIDByName(slug, senderName)
 			result := s.executeTool(slug, channelID, senderID, call)
 			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("tool", call.Function.Name).Str("result", truncate(result, 100)).Msg("tool result")
@@ -809,6 +803,142 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 		brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 			truncate(content, 200), truncate(finalResponse, 500), model, toolNames)
 	}()
+}
+
+// buildContextForMode assembles the system prompt context based on attention mode.
+// Thread mode (parentID set) uses a focused context; channel mode uses full workspace awareness.
+func (s *Server) buildContextForMode(slug string, wdb *db.WorkspaceDB, channelID, parentID, content, senderName, apiKey, brainDir, systemPrompt string) string {
+	// Inject North Star context (always)
+	if nsCtx := s.buildNorthStarContext(slug); nsCtx != "" {
+		systemPrompt += "\n\n---\n\n" + nsCtx
+	}
+
+	if parentID != "" {
+		// === THREAD MODE: focused context, let thread messages dominate ===
+
+		// Ensure thread context row exists and get topic
+		s.ensureThreadContext(wdb, channelID, parentID)
+		var topic string
+		var participantCount, messageCount int
+		_ = wdb.DB.QueryRow(
+			"SELECT topic, participant_count, message_count FROM thread_context WHERE parent_id = ?",
+			parentID,
+		).Scan(&topic, &participantCount, &messageCount)
+
+		if topic != "" {
+			systemPrompt += fmt.Sprintf("\n\n## Current Thread\nThread topic: %s\nParticipants: %d | Messages: %d\n",
+				topic, participantCount, messageCount)
+		}
+
+		// Tell Brain who it's talking to
+		systemPrompt += fmt.Sprintf("\n\n## Current Conversation\nYou are talking to: **%s**. Address them by this name.", senderName)
+		logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("mode", "thread").Int("chars", len(systemPrompt)).Msg("thread context")
+
+		// WARM: Memories (query-filtered to content)
+		memoryContext := brain.BuildMemoryContext(wdb.DB, content)
+		if memoryContext != "" {
+			systemPrompt += "\n\n---\n\n" + memoryContext
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(memoryContext)).Int("total", len(systemPrompt)).Msg("+memories (thread)")
+		}
+
+		// WARM: Channel summary (capped at 500 chars)
+		if chSummary := brain.BuildSingleChannelContext(wdb.DB, channelID); chSummary != "" {
+			if len(chSummary) > 500 {
+				chSummary = chSummary[:500] + "\n[...]"
+			}
+			systemPrompt += "\n\n---\n\n" + chSummary
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(chSummary)).Int("total", len(systemPrompt)).Msg("+channel_summary (thread, capped)")
+		}
+
+		// Skills (still include — they define capabilities)
+		skills := brain.LoadSkills(brainDir)
+		s.applySkillEnabledState(slug, skills)
+		var senderRole string
+		_ = wdb.DB.QueryRow("SELECT role FROM members WHERE LOWER(display_name) = LOWER(?)", senderName).Scan(&senderRole)
+		skills = brain.FilterSkillsByRole(skills, senderRole)
+		skills = filterEnabledSkills(skills)
+		skillContext := brain.BuildSkillContext(skills)
+		if skillContext != "" {
+			systemPrompt += "\n\n---\n\n" + skillContext
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(skillContext)).Int("total", len(systemPrompt)).Msg("+skills (thread)")
+		}
+
+		// COLD: Knowledge — only if topic-relevant, capped at 5000 chars
+		kbContext := brain.BuildKnowledgeContext(wdb.DB, content, brain.SemanticOpts{
+			VectorStore: s.vectors, APIKey: apiKey, Slug: slug,
+		})
+		if kbContext != "" {
+			if len(kbContext) > 5000 {
+				kbContext = kbContext[:5000] + "\n[...]"
+			}
+			systemPrompt += "\n\n---\n\n" + kbContext
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(kbContext)).Int("total", len(systemPrompt)).Msg("+knowledge (thread, capped)")
+		}
+
+		// SKIP: workspace snapshot, cross-channel context (Brain has tools if needed)
+
+	} else {
+		// === CHANNEL MODE: full workspace awareness (existing behavior) ===
+
+		// Append workspace snapshot
+		wsContext := brain.BuildWorkspaceContext(wdb.DB)
+		if wsContext != "" {
+			systemPrompt += "\n\n---\n\n" + wsContext
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(wsContext)).Int("total", len(systemPrompt)).Msg("+workspace_context")
+		}
+
+		// Tell Brain who it's talking to
+		systemPrompt += fmt.Sprintf("\n\n## Current Conversation\nYou are talking to: **%s**. Address them by this name.", senderName)
+
+		// Append memories
+		memoryContext := brain.BuildMemoryContext(wdb.DB, content)
+		if memoryContext != "" {
+			systemPrompt += "\n\n---\n\n" + memoryContext
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(memoryContext)).Int("total", len(systemPrompt)).Msg("+memories")
+		}
+
+		// Append skills context (role-gated + enabled filter)
+		skills := brain.LoadSkills(brainDir)
+		s.applySkillEnabledState(slug, skills)
+		var senderRole string
+		_ = wdb.DB.QueryRow("SELECT role FROM members WHERE LOWER(display_name) = LOWER(?)", senderName).Scan(&senderRole)
+		skills = brain.FilterSkillsByRole(skills, senderRole)
+		skills = filterEnabledSkills(skills)
+		skillContext := brain.BuildSkillContext(skills)
+		if skillContext != "" {
+			systemPrompt += "\n\n---\n\n" + skillContext
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(skillContext)).Int("total", len(systemPrompt)).Msg("+skills")
+		}
+
+		// Append knowledge base context
+		kbContext := brain.BuildKnowledgeContext(wdb.DB, content, brain.SemanticOpts{
+			VectorStore: s.vectors, APIKey: apiKey, Slug: slug,
+		})
+		if kbContext != "" {
+			systemPrompt += "\n\n---\n\n" + kbContext
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(kbContext)).Int("total", len(systemPrompt)).Msg("+knowledge")
+		}
+
+		// Append channel history summary
+		if chSummary := brain.BuildSingleChannelContext(wdb.DB, channelID); chSummary != "" {
+			systemPrompt += "\n\n---\n\n" + chSummary
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(chSummary)).Int("total", len(systemPrompt)).Msg("+channel_summary")
+		}
+
+		// Append cross-channel awareness (Brain only)
+		if crossCtx := brain.BuildCrossChannelContext(wdb.DB, channelID); crossCtx != "" {
+			systemPrompt += "\n\n---\n\n" + crossCtx
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(crossCtx)).Int("total", len(systemPrompt)).Msg("+cross_channel")
+		}
+	}
+
+	// Hard cap
+	if len(systemPrompt) > 100000 {
+		logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Int("chars", len(systemPrompt)).Msg("system prompt too large, truncating to 100000")
+		systemPrompt = systemPrompt[:100000]
+	}
+
+	return systemPrompt
 }
 
 // extractWebSearchQuery detects web search intent and returns the query, or "" if not a web search.
@@ -1645,6 +1775,79 @@ func isPrivateIP(ip net.IP) bool {
 func parseCIDR(s string) *net.IPNet {
 	_, n, _ := net.ParseCIDR(s)
 	return n
+}
+
+// toolTraceKnowledge searches memories and knowledge for provenance of a claim.
+func (s *Server) toolTraceKnowledge(slug, argsJSON string) string {
+	var args struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "Error parsing arguments"
+	}
+	if args.Query == "" {
+		return "Error: query is required"
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return "Error opening workspace"
+	}
+
+	var lines []string
+
+	// Search memories
+	memories, err := brain.SearchMemoriesTyped(wdb.DB, args.Query, "", 5)
+	if err == nil && len(memories) > 0 {
+		for _, m := range memories {
+			content := m.Content
+			if len(content) > 200 {
+				content = content[:197] + "..."
+			}
+			meta := fmt.Sprintf("**Memory (%s", m.Type)
+			if m.Confidence > 0 {
+				meta += fmt.Sprintf(", confidence %.2f", m.Confidence)
+			}
+			meta += fmt.Sprintf(`):** "%s"`, content)
+
+			var attribution []string
+			if m.Participants != "" {
+				attribution = append(attribution, m.Participants)
+			}
+			if m.SourceChannel != "" {
+				// Resolve channel name
+				var cname string
+				if wdb.DB.QueryRow("SELECT name FROM channels WHERE id = ?", m.SourceChannel).Scan(&cname) == nil {
+					attribution = append(attribution, "in #"+cname)
+				}
+			}
+			if t, pErr := time.Parse(time.RFC3339, m.CreatedAt); pErr == nil {
+				attribution = append(attribution, t.Format("Jan 2"))
+			}
+			if m.Source != "" {
+				attribution = append(attribution, "extracted from "+m.Source)
+			}
+			if len(attribution) > 0 {
+				meta += "\n— " + strings.Join(attribution, ", ")
+			}
+			lines = append(lines, meta)
+		}
+	}
+
+	// Search knowledge
+	apiKey, _ := s.getBrainSettings(slug)
+	knowledgeResult := brain.SearchKnowledgeForTool(wdb.DB, args.Query, brain.SemanticOpts{
+		VectorStore: s.vectors, APIKey: apiKey, Slug: slug,
+	})
+	if !strings.HasPrefix(knowledgeResult, "No knowledge") {
+		lines = append(lines, "\n"+knowledgeResult)
+	}
+
+	if len(lines) == 0 {
+		return fmt.Sprintf("No sources found for: %s", args.Query)
+	}
+
+	return fmt.Sprintf("Found %d sources:\n\n%s", len(lines), strings.Join(lines, "\n\n"))
 }
 
 // handleExecuteTool executes a single tool call from a client-side LLM.
