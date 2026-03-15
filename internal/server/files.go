@@ -118,6 +118,11 @@ func (s *Server) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 		URL:        fmt.Sprintf("/api/workspaces/%s/files/%s", slug, hash),
 	}
 
+	// Embed text files for RAG
+	if isTextFile(mime, header.Filename) {
+		go s.embedFile(slug, fileID, header.Filename, string(data))
+	}
+
 	// Broadcast file event to channel subscribers
 	h := s.hubs.Get(slug)
 	h.Broadcast(channelID, hub.MakeEnvelope("file.new", fi), "")
@@ -231,6 +236,19 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"files": files})
+}
+
+// isTextFile returns true if the file is a text-based format suitable for embedding.
+func isTextFile(mime, name string) bool {
+	if strings.HasPrefix(mime, "text/") {
+		return true
+	}
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".md", ".txt", ".csv", ".json", ".xml", ".yaml", ".yml", ".toml", ".log", ".svg":
+		return true
+	}
+	return false
 }
 
 func min(a, b int) int {

@@ -244,6 +244,20 @@ func NewOpenAIClient(apiKey, model string) *Client {
 	}
 }
 
+// NewOllamaClient creates a client that talks to a local Ollama instance via its
+// OpenAI-compatible endpoint. No real API key is needed — "ollama" is a placeholder.
+func NewOllamaClient(ollamaURL, model string) *Client {
+	return &Client{
+		APIKey:  "ollama",
+		Model:   model,
+		BaseURL: strings.TrimRight(ollamaURL, "/") + "/v1/chat/completions",
+		HTTPClient: &http.Client{
+			Timeout:   180 * time.Second,
+			Transport: globalTransport,
+		},
+	}
+}
+
 // IsGrokModel returns true if the model ID is a Grok/xAI model.
 func IsGrokModel(model string) bool {
 	return strings.HasPrefix(model, "grok-")

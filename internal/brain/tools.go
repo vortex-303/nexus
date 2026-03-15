@@ -146,14 +146,15 @@ var Tools = []ToolDef{
 	{
 		Type: "function",
 		Function: ToolFuncDef{
-			Name:        "search_workspace",
-			Description: "Search past messages, tasks, and documents WITHIN this workspace only. This is NOT web search. Use when someone asks about past conversations, what was discussed, or workspace history.",
+			Name:        "search_messages",
+			Description: "Search past messages across workspace channels. Returns who said what, when, and in which channel. Use to recall conversations, find decisions, or look up what someone said.",
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
-					"query": {"type": "string", "description": "Search query (matched against message content)"},
-					"channel_id": {"type": "string", "description": "Limit search to specific channel (optional, defaults to current channel)"},
-					"limit": {"type": "integer", "description": "Max results (default: 10)"}
+					"query": {"type": "string", "description": "Search keywords"},
+					"channel_name": {"type": "string", "description": "Filter to specific channel by name (optional)"},
+					"sender_name": {"type": "string", "description": "Filter by sender display name (optional)"},
+					"limit": {"type": "integer", "description": "Max results (default 10, max 20)"}
 				},
 				"required": ["query"]
 			}`),
@@ -179,7 +180,7 @@ var Tools = []ToolDef{
 		Type: "function",
 		Function: ToolFuncDef{
 			Name:        "search_knowledge",
-			Description: "Search the workspace knowledge base for reference materials and documentation. Use when someone asks about topics that may be covered in uploaded knowledge articles.",
+			Description: "Search across knowledge articles, documents, and uploaded files for reference materials. Use when someone asks about topics that may be covered in workspace content.",
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
@@ -414,6 +415,20 @@ var Tools = []ToolDef{
 					"url": {"type": "string", "description": "The URL to fetch (must be http or https)"}
 				},
 				"required": ["url"]
+			}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: ToolFuncDef{
+			Name:        "trace_knowledge",
+			Description: "Look up the source and provenance of something Brain knows. Use when asked where information came from, to cite sources, or to verify claims.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"query": {"type": "string", "description": "The claim or fact to trace"}
+				},
+				"required": ["query"]
 			}`),
 		},
 	},

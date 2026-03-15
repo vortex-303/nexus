@@ -1,437 +1,488 @@
-# Nexus — Product & Technical Specification
+# Nexus — Product & Engineering Specification
 
-> For one developer + one AI collaborator. Last updated: March 12, 2026.
-
-## What Is Nexus
-
-AI-native team platform: real-time chat, tasks, documents, calendar, files, org chart, and a persistent AI Brain — all in a single self-hosted Go binary with an embedded SvelteKit frontend.
-
-**Stack:** Go 1.25 + SQLite WAL + SvelteKit 2 / Svelte 5 + WebSocket + OpenRouter + xAI Grok + Google Gemini + MCP
-
-**Deploy:** `fly deploy` (production), `make dev` (local :3000), or bare metal with auto-TLS
+**Version:** March 2026
+**Production:** https://nexusteams.dev/
 
 ---
 
-## Product Features
+## 1. Product Overview
 
-### Chat & Channels
-- Public channels, DMs (1:1), group channels with explicit membership
-- Real-time send/edit/delete, emoji reactions, threaded replies (`parent_id`)
-- Typing indicators, presence (online/offline), unread counts, favorites
-- Channel clear (soft-delete), rate limiting (200ms/conn)
+Nexus is an AI-native team platform where a persistent AI Brain is the central nervous system of every workspace. The Brain remembers everything, extracts decisions, connects dots across channels, delegates to specialized sub-agents, and executes real actions (tasks, calendar events, emails, documents) through natural language.
 
-### Brain (AI Team Member)
-- Persistent AI member in every workspace, responds to @Brain or DM
-- System prompt built from definition files: SOUL.md, INSTRUCTIONS.md, TEAM.md, MEMORY.md, HEARTBEAT.md
-- 21 built-in tools (tasks, search, docs, calendar, email, telegram, web search, X search, image gen, memory, delegation)
-- 2-round tool calling loop: LLM → tool calls → results → final response
-- Memory system: fact/decision/commitment/person types, FTS5 search, importance scoring, 30-day recency decay
-- Skills: .md files with YAML frontmatter (trigger, channels, roles, autonomy), 15+ templates
-- Heartbeat: scheduled actions (daily/weekly/hourly) parsed from HEARTBEAT.md
-- Knowledge base: text, file upload, URL import — searchable via tool
-- Channel summaries: rolling LLM-generated per-channel context
-- WebLLM mode: client-side inference with server-provided context
+**One-liner:** A shared AI brain for your team — instant, private, self-hosted.
 
-### AI Agents
-- Custom agents with personality (role, goal, backstory, instructions, constraints)
-- Per-agent: model, temperature, tools subset, channel access, knowledge/memory access
-- Triggers: @mention, DM, schedule, keyword, auto-follow-threads
-- 3 builtin agents: Brain (orchestrator), Creative Director (image gen), Caly (EA)
-- AI-assisted creation: describe in natural language → full config JSON
-- Agent skills: per-agent .md skill files, separate from Brain skills
-- Concurrency: semaphore (20 max), conversation tracker prevents loops
+**Target markets:** Law firms (privilege), healthcare (HIPAA), finance (SOX), EU companies (GDPR), government (ITAR), and any privacy-conscious team that wants AI without sending data to a third party.
 
-### Tasks
-- Kanban board: backlog → todo → in_progress → done → cancelled
-- Priority: low/medium/high/urgent
-- Fields: title, description, expected_output, assignee, due date, tags, position (drag order)
-- Brain can create/list/update/delete tasks via tools
+**Positioning:**
 
-### Documents
-- Rich text editor (TipTap) + markdown mode toggle
-- Sharing: workspace or private, folder assignment
-- Full-text indexed in Bleve
-
-### Files
-- Content-addressed blob storage (SHA-256 dedup)
-- Folder tree with nesting, private flag, drag-to-move
-- Upload per channel or to folder, rename, duplicate, delete
-- Resizable editor panel for inline note editing
-
-### Calendar
-- Events with title, description, location, start/end, all-day, color
-- Full RRULE recurrence (daily, weekly, monthly, custom)
-- Attendees, reminders (cron-based WebSocket notifications)
-- Brain can create/list/update/delete events
-- Agent-scheduled events: auto-execute Brain/agents at start_time
-- Execution tracking: `executed_at` column, outcome API with response/tools/model
-- Outcome viewer: click past agent events → see status (executed/missed), prompt, response, tools used, model
-- Bulk clear agent events (past or all)
-
-### Social Pulse
-- X/Twitter sentiment analysis via xAI Grok's x_search
-- Pipeline: searching → analyzing → ready
-- Returns: sentiment score (0-100), summary, themes, key posts, recommendations, citations
-- Real-time status via WebSocket, save report as document
-
-### Organization & Teams
-- Member profiles: reports_to, title, bio, goals, color
-- Custom org roles with filled_by (member or agent)
-- 9 RBAC roles, 31 permissions, per-member overrides
-
-### Search
-- Bleve full-text: messages, tasks, docs, knowledge, members, channels
-- Optional Qdrant vector search (openai/text-embedding-3-small, 1536-dim)
-
-### Activity Stream
-- Typed event log with smart dedup (10-min window consolidation)
-- Real-time broadcast via WebSocket
-
-### Integrations
-- **Email**: inbound SMTP server (:2525), MIME parsing, thread tracking, outbound via SMTP/Resend
-- **Telegram**: webhook-based, bi-directional messaging to linked channels
-- **WhatsApp**: Twilio + Meta Cloud API, conversation management, 24h window tracking
-- **Incoming Webhooks**: token-based ingestion, event log per hook
-- **MCP**: stdio + SSE transports, tool discovery, namespaced tools merged with Brain tools
+| | Slack | Teams | Mattermost | Nexus |
+|---|---|---|---|---|
+| Self-hosted | No | No | Complex | One binary |
+| AI Agents | Bolt-on | Copilot (cloud) | Plugins | Core architecture |
+| Local LLM | No | No | No | Planned |
+| Data jurisdiction | US | US | Your choice | Your choice |
 
 ---
 
-## Architecture
+## 2. Architecture
 
-### Single Binary
-Go backend embeds SvelteKit static output via `//go:embed all:build`. One binary = entire product.
+### 2.1 Single Binary
 
-### Database: SQLite
-- **Global** (`nexus.db`): accounts, workspaces, JWT secret, platform config
-- **Per-workspace** (`workspaces/{slug}/workspace.db`): all workspace data
-- WAL mode, lazy connection pool via WorkspaceManager
-- Sequential integer migrations tracked in `_migrations` table
-
-### Key Tables (workspace DB, 41 migrations)
-
-| Table | Purpose |
-|---|---|
-| `members` | Workspace members with roles, profiles, colors |
-| `channels` | Public/DM/group channels |
-| `messages` | Chat messages with threading (parent_id), soft-delete |
-| `reactions` | Emoji reactions on messages |
-| `tasks` | Kanban tasks with priority, assignee, position |
-| `documents` | Rich text docs with folder/sharing |
-| `files` | Content-addressed blobs with metadata |
-| `folders` | Nested folder tree |
-| `calendar_events` | Events with RRULE recurrence, agent execution tracking |
-| `brain_settings` | K/V store for all Brain config |
-| `brain_memories` | Typed memories with importance scores |
-| `brain_knowledge` | Knowledge base articles |
-| `brain_action_log` | Brain action audit trail |
-| `agents` | Custom AI agents with full config |
-| `mcp_servers` | MCP server connections |
-| `social_pulses` | Social sentiment analysis results |
-| `activity_stream` | Typed activity events |
-| `whatsapp_conversations` | WhatsApp conversation state |
-| `webhook_hooks` / `webhook_events` | Incoming webhook config + log |
-| `email_threads` | SMTP thread tracking |
-| `workspace_models` | Custom model catalog |
-
-### WebSocket Protocol
-- Endpoint: `GET /ws?token={jwt}`
-- JSON envelope: `{"type": "...", "payload": {...}}`
-- One Hub per workspace, auto-subscribe to all non-archived channels
-- Two broadcast modes: normal (drop if buffer full) + low-priority (drop if >50% full)
-- Keepalive: ping 30s, write timeout 15s, read timeout 90s
-
-### Client → Server Events
-`message.send`, `message.edit`, `message.delete`, `reaction.add/remove`, `typing.start`, `channel.join/leave/read/clear`
-
-### Server → Client Events
-`message.new/edited/deleted`, `reaction.added/removed`, `typing`, `presence`, `task.created/updated/deleted`, `event.created/updated/deleted/reminder`, `agent.state`, `unread.update`, `activity.new`, `social_pulse.created/updated/deleted`, `whatsapp.*`, `error`
-
-### Auth
-- JWT HS256, workspace-scoped tokens
-- 9 roles: admin, member, designer, marketing_coordinator, marketing_strategist, researcher, sales, guest, custom
-- 31 permissions with per-member overrides
-- Superadmin: platform-wide impersonation, workspace management, account bans
-
-### Content-Addressed Storage
-Files stored as `{dataDir}/blobs/{sha256}`. Exact dedup. Download by hash is public (no auth) for CDN compatibility.
-
-### AI Concurrency
-- Semaphore: max 20 concurrent Brain/agent goroutines
-- ConversationTracker prevents re-entrant loops
-- Model fallback chain: on 429/503, retries up to 3 alternate models
-
-### Observability
-Prometheus metrics: `nexus_llm_calls_total`, `nexus_llm_tokens_total`, `nexus_llm_latency_seconds`, `nexus_tool_calls_total`, `nexus_tool_latency_seconds`, `nexus_agent_executions_total`, `nexus_ws_connections_active`, `nexus_messages_total`
-
----
-
-## API Routes
-
-### Auth & Workspace
-```
-POST /api/auth/register
-POST /api/auth/login
-GET  /api/auth/me                        PUT /api/auth/me
-PUT  /api/auth/me/password
-POST /api/auth/switch-workspace
-GET  /api/auth/workspaces
-POST /api/workspaces                     (create)
-POST /api/workspaces/{slug}/join
-POST /api/join                           (invite code)
-GET  /api/workspaces/{slug}
-GET  /api/workspaces/{slug}/info
-GET  /api/workspaces/{slug}/online
-POST /api/workspaces/{slug}/invite
-POST /api/workspaces/{slug}/invite/email
-```
-
-### Channels & Messages
-```
-GET    /api/workspaces/{slug}/channels
-POST   /api/workspaces/{slug}/channels
-DELETE /api/workspaces/{slug}/channels/{id}
-DELETE /api/workspaces/{slug}/channels/{id}/members/{mid}
-GET    /api/workspaces/{slug}/channels/{id}/messages
-GET    /api/workspaces/{slug}/channels/{id}/messages/{mid}/thread
-PUT    /api/workspaces/{slug}/channels/{id}/favorite
-POST   /api/workspaces/{slug}/channels/{cid}/brain-message
-```
-
-### Tasks
-```
-POST   /api/workspaces/{slug}/tasks
-GET    /api/workspaces/{slug}/tasks
-GET    /api/workspaces/{slug}/tasks/{id}
-PUT    /api/workspaces/{slug}/tasks/{id}
-DELETE /api/workspaces/{slug}/tasks/{id}
-```
-
-### Documents
-```
-POST   /api/workspaces/{slug}/documents
-GET    /api/workspaces/{slug}/documents
-GET    /api/workspaces/{slug}/documents/{id}
-PUT    /api/workspaces/{slug}/documents/{id}
-DELETE /api/workspaces/{slug}/documents/{id}
-```
-
-### Files & Folders
-```
-POST   /api/workspaces/{slug}/channels/{id}/files
-POST   /api/workspaces/{slug}/folders/{id}/files
-GET    /api/workspaces/{slug}/files
-GET    /api/workspaces/{slug}/files/{hash}           (public download)
-PUT    /api/workspaces/{slug}/files/{id}/update
-PUT    /api/workspaces/{slug}/files/{id}/move
-DELETE /api/workspaces/{slug}/files/{id}/delete
-POST   /api/workspaces/{slug}/files/{id}/duplicate
-POST   /api/workspaces/{slug}/folders
-GET    /api/workspaces/{slug}/folders
-PUT    /api/workspaces/{slug}/folders/{id}
-DELETE /api/workspaces/{slug}/folders/{id}
-```
-
-### Calendar
-```
-POST   /api/workspaces/{slug}/calendar/events
-GET    /api/workspaces/{slug}/calendar/events
-GET    /api/workspaces/{slug}/calendar/events/{id}
-PUT    /api/workspaces/{slug}/calendar/events/{id}
-DELETE /api/workspaces/{slug}/calendar/events/{id}
-GET    /api/workspaces/{slug}/calendar/events/{id}/outcome
-DELETE /api/workspaces/{slug}/calendar/events/clear-past-agent   ?mode=past|all
-```
-
-### Brain & Knowledge
-```
-GET  /api/workspaces/{slug}/brain/prompt
-GET  /api/workspaces/{slug}/brain/settings
-PUT  /api/workspaces/{slug}/brain/settings
-GET  /api/workspaces/{slug}/brain/definitions/{file}
-PUT  /api/workspaces/{slug}/brain/definitions/{file}
-GET  /api/workspaces/{slug}/brain/memories
-DELETE /api/workspaces/{slug}/brain/memories/{id}
-DELETE /api/workspaces/{slug}/brain/memories
-POST /api/workspaces/{slug}/brain/memories/pin
-GET  /api/workspaces/{slug}/brain/tools
-POST /api/workspaces/{slug}/brain/execute-tool
-POST /api/workspaces/{slug}/brain/webllm-context
-GET  /api/workspaces/{slug}/brain/actions
-GET  /api/workspaces/{slug}/brain/skills
-GET  /api/workspaces/{slug}/brain/skills/templates
-POST /api/workspaces/{slug}/brain/skills/generate
-POST /api/workspaces/{slug}/brain/skills
-GET  /api/workspaces/{slug}/brain/skills/{file}
-PUT  /api/workspaces/{slug}/brain/skills/{file}
-PUT  /api/workspaces/{slug}/brain/skills/{file}/toggle
-DELETE /api/workspaces/{slug}/brain/skills/{file}
-POST /api/workspaces/{slug}/brain/knowledge
-POST /api/workspaces/{slug}/brain/knowledge/upload
-POST /api/workspaces/{slug}/brain/knowledge/import-url
-GET  /api/workspaces/{slug}/brain/knowledge
-GET  /api/workspaces/{slug}/brain/knowledge/{id}
-PUT  /api/workspaces/{slug}/brain/knowledge/{id}
-DELETE /api/workspaces/{slug}/brain/knowledge/{id}
-```
-
-### Agents
-```
-POST   /api/workspaces/{slug}/agents
-GET    /api/workspaces/{slug}/agents
-GET    /api/workspaces/{slug}/agents/templates
-GET    /api/workspaces/{slug}/agents/{id}
-PUT    /api/workspaces/{slug}/agents/{id}
-DELETE /api/workspaces/{slug}/agents/{id}
-POST   /api/workspaces/{slug}/agents/generate
-POST   /api/workspaces/{slug}/agents/edit-with-ai
-POST   /api/workspaces/{slug}/agents/from-template
-GET    /api/workspaces/{slug}/agents/{id}/skills
-GET    /api/workspaces/{slug}/agents/{id}/skills/{file}
-PUT    /api/workspaces/{slug}/agents/{id}/skills/{file}
-DELETE /api/workspaces/{slug}/agents/{id}/skills/{file}
-```
-
-### Members & Org Chart
-```
-GET    /api/workspaces/{slug}/org-chart
-PUT    /api/workspaces/{slug}/org-chart/position
-PUT    /api/workspaces/{slug}/members/{id}/profile
-GET    /api/workspaces/{slug}/members/{id}
-PUT    /api/workspaces/{slug}/members/role
-PUT    /api/workspaces/{slug}/members/permission
-DELETE /api/workspaces/{slug}/members/{id}
-GET    /api/workspaces/{slug}/org-chart/roles
-POST   /api/workspaces/{slug}/org-chart/roles
-PUT    /api/workspaces/{slug}/org-chart/roles/{id}
-DELETE /api/workspaces/{slug}/org-chart/roles/{id}
-PUT    /api/workspaces/{slug}/org-chart/roles/{id}/fill
-```
-
-### Integrations
-```
-POST   /api/workspaces/{slug}/brain/webhooks
-GET    /api/workspaces/{slug}/brain/webhooks
-DELETE /api/workspaces/{slug}/brain/webhooks/{id}
-GET    /api/workspaces/{slug}/brain/webhooks/{id}/events
-GET    /api/workspaces/{slug}/brain/email/threads
-DELETE /api/workspaces/{slug}/brain/email/threads/{id}
-GET    /api/workspaces/{slug}/brain/telegram/chats
-DELETE /api/workspaces/{slug}/brain/telegram/chats/{id}
-GET    /api/workspaces/{slug}/whatsapp/conversations
-GET    /api/workspaces/{slug}/whatsapp/conversations/{id}
-PUT    /api/workspaces/{slug}/whatsapp/conversations/{id}
-DELETE /api/workspaces/{slug}/whatsapp/conversations/{id}
-```
-
-### MCP, Models, Activity, Social Pulse, Search, Logs
-```
-GET    /api/mcp-templates
-GET    /api/workspaces/{slug}/mcp-servers
-POST   /api/workspaces/{slug}/mcp-servers
-GET    /api/workspaces/{slug}/mcp-servers/{id}
-PUT    /api/workspaces/{slug}/mcp-servers/{id}
-DELETE /api/workspaces/{slug}/mcp-servers/{id}
-POST   /api/workspaces/{slug}/mcp-servers/{id}/refresh
-GET    /api/models/browse
-GET    /api/workspaces/{slug}/models
-POST   /api/workspaces/{slug}/models
-DELETE /api/workspaces/{slug}/models/{id}
-GET    /api/workspaces/{slug}/activity
-GET    /api/workspaces/{slug}/activity/stats
-POST   /api/workspaces/{slug}/social-pulse
-GET    /api/workspaces/{slug}/social-pulse
-GET    /api/workspaces/{slug}/social-pulse/{id}
-DELETE /api/workspaces/{slug}/social-pulse/{id}
-GET    /api/workspaces/{slug}/search
-GET    /api/workspaces/{slug}/logs
-GET    /api/roles
-```
-
-### Superadmin
-```
-GET    /api/admin/stats
-GET    /api/admin/workspaces
-GET    /api/admin/accounts
-PUT    /api/admin/workspaces/{slug}/suspend
-DELETE /api/admin/workspaces/{slug}
-PUT    /api/admin/accounts/{id}/ban
-POST   /api/admin/impersonate
-POST   /api/admin/workspaces/{slug}/enter
-GET    /api/admin/audit
-GET    /api/admin/workspaces/{slug}/detail
-GET    /api/admin/workspaces/{slug}/export
-PUT    /api/admin/accounts/{id}/password
-POST   /api/admin/announcements
-DELETE /api/admin/announcements
-GET    /api/admin/models
-PUT    /api/admin/models
-PUT    /api/admin/models/free
-```
-
----
-
-## Frontend Routes
-
-```
-/                          → workspace list / redirect
-/w/[slug]                  → main workspace (channels + chat + Brain + agents)
-/w/[slug]/tasks            → Kanban task board
-/w/[slug]/calendar         → Calendar (month/week views)
-/w/[slug]/files            → File manager + document editor
-/w/[slug]/team             → Team directory + org chart
-/w/[slug]/activity         → Activity stream
-/w/[slug]/social-pulse     → Social Pulse (X sentiment)
-/w/[slug]/logs             → Brain action logs
-/admin                     → Platform superadmin
-```
-
----
-
-## Configuration
-
-```toml
-# nexus.toml (or env vars: LISTEN, DATA_DIR, DOMAIN, etc.)
-listen      = ":8080"
-data_dir    = "~/.nexus"
-domain      = "nexus.example.com"    # triggers auto-TLS
-dev         = false
-smtp_listen = ":2525"
-redis_url   = "redis://localhost:6379"
-qdrant_url  = "localhost:6334"
-```
-
-Brain settings (per-workspace, stored in `brain_settings`): OpenRouter API key, model, xAI API key, Telegram bot token, WhatsApp credentials, SMTP config, Brave Search API key.
-
----
-
-## Build & Deploy
+Nexus compiles to a single Go binary embedding everything: HTTP + WebSocket server, REST API, SvelteKit SPA (`//go:embed all:build`), SQLite migrations, Brain engine, tool executor, and memory extractor. No runtime dependencies beyond the binary itself.
 
 ```bash
-make dev          # Build web + Go, run on :3000
-make build        # Build production binary
-cd web && npm run build   # Frontend only
-go build ./cmd/nexus/     # Backend only
-fly deploy        # Deploy to Fly.io
+./nexus serve --data-dir /var/nexus --domain nexus.example.com
 ```
 
-## Ports
+### 2.2 Database Model
 
-| Port | Service |
-|---|---|
-| 8080 (or 3000 dev) | HTTP + WebSocket |
-| 2525 | Inbound SMTP |
+SQLite with WAL mode, dual-database design:
 
-## Key Files
+**Global database** (`nexus.db`):
+- `accounts` — email, bcrypt password, display name, superadmin flag
+- `workspaces` — slug, name, created_by, suspended, max_members
+- `sessions` — JWT sessions
+- `invite_tokens` — invite links with optional expiry
+- `jwt_secrets` — HS256 signing key
+- `admin_audit_log` — superadmin action trail
+- `platform_announcements` — platform-wide banners
+- `platform_models` — pinned LLM model catalog
+- `email_verifications` — verification codes
+- `password_resets` — reset tokens
+- `waitlist` — waitlist signups (email, plan)
 
-| Path | Purpose |
-|---|---|
-| `cmd/nexus/` | CLI entry point |
-| `internal/server/` | All HTTP + WS handlers |
-| `internal/brain/` | Brain engine, LLM, memory, skills, tools |
-| `internal/db/migrations/` | SQLite migrations |
-| `internal/roles/` | RBAC definitions |
-| `internal/hub/` | WebSocket hub |
-| `internal/mcp/` | MCP client manager |
-| `web/src/routes/(app)/` | SvelteKit pages |
-| `web/src/lib/` | API client, WS client, stores, editor |
-| `web/static/landing.html` | Marketing page |
+**Per-workspace database** (`workspaces/{slug}/workspace.db`) — completely isolated per tenant:
+- `members` — account_id, display_name, role, title, bio, goals, reports_to, color
+- `channels` — name, type (public/private/dm), classification, archived
+- `messages` — channel_id, sender_id, content, parent_id (threads), deleted, metadata
+- `reactions` — emoji reactions
+- `channel_reads` — read receipts + favorites
+- `channel_members` — private channel membership
+- `permission_overrides` — per-member permission exceptions
+- `guest_channels` — allowed channels for guest role
+- `tasks` — title, description, expected_output, status, priority, assignee_id, due_date, tags, position, scheduled_at, recurrence_rule, agent_id
+- `documents` — title, content, sharing, channel_id, folder_id
+- `files` — name, mime, size, hash, channel_id, folder_id, is_private
+- `folders` — hierarchical folder organization
+- `agents` — AI agent configs (personality, LLM config, tools, triggers, behavior)
+- `org_roles` — organizational roles (title, reports_to, filled_by)
+- `brain_settings` — key-value config (api_key, model, etc.)
+- `brain_settings_log` — audit log of settings changes
+- `brain_memories` — extracted memories (type, content, source, importance, confidence, participants, valid_until, superseded_by)
+- `brain_memories_fts` — FTS5 virtual table for full-text memory search
+- `brain_channel_summaries` — rolling channel summaries
+- `brain_knowledge` — knowledge base articles (title, content, source_type, source_name, source_url, tokens)
+- `brain_action_log` — Brain action audit trail
+- `mcp_servers` — MCP server configurations
+- `webhook_hooks` — incoming webhook definitions
+- `webhook_events` — webhook delivery log
+- `channel_integrations` — Telegram, email mappings
+- `email_threads` — inbound email tracking
+- `calendar_events` — events with recurrence, attendees, reminders
+- `calendar_reminders_sent` — dedup log
+- `workspace_models` — workspace-pinned LLM models
+- `free_models` — free-tier accessible models
+- `activity_stream` — activity feed
+- `social_pulses` — social media intelligence scans
+- `living_briefs` — auto-generated intelligence briefs
+- `llm_usage` — token and cost tracking
+- `reflection_history` — periodic Brain reflection records
+
+### 2.3 Frontend
+
+- SvelteKit 2 + Svelte 5 runes (`$state`, `$derived`, `$effect`)
+- Static adapter — pure SPA embedded in binary
+- TypeScript throughout
+- Tiptap (ProseMirror) rich text editor with slash commands, code blocks, images, task lists
+- Dark theme, orange accent (`#f97316`)
+- D3.js + d3-org-chart for org visualization
+- WebSocket client with typed event subscriptions
+
+### 2.4 Real-Time Layer
+
+WebSocket hub per workspace using JSON envelopes:
+
+```json
+{ "type": "message.send", "payload": { "channel_id": "...", "content": "..." } }
+```
+
+Key event types: `message.*`, `reaction.*`, `typing.*`, `presence.*`, `channel.*`, `task.*`, `agent.state`
+
+Auth via `?token=` query parameter (JWT). 256-message buffer per connection; low-priority messages dropped when buffer > 50%.
+
+### 2.5 Deployment
+
+**Fly.io (hosted):** `shared-cpu-1x`, 1GB RAM, persistent volume at `/data`, auto-suspend/resume, health check at `GET /health`.
+
+**Self-hosted:** Same binary. Pass `--domain` for auto-TLS via Let's Encrypt (`autocert`).
+
+---
+
+## 3. Core Features
+
+### 3.1 Workspace Management
+- Create workspace (email+password in cloud mode); creator becomes admin; `#general` + Brain auto-created
+- Join by invite link, email invite, or code
+- Export/import full workspace JSON
+- Destroy workspace (admin kill switch)
+
+### 3.2 Real-Time Messaging
+- Public/private channels and DMs
+- Threaded replies, emoji reactions, typing indicators
+- Read receipts and unread counts
+- Message edit/delete, channel favorites
+- Rich metadata (attachments, images, Brain response data)
+
+### 3.3 File Uploads
+- Content-addressed blobs (SHA-256 dedup)
+- Stored at `workspaces/{slug}/blobs/{2-char-prefix}/{hash}`
+- Hierarchical folder organization with privacy flags
+- Any MIME type; images rendered inline
+
+### 3.4 Tasks
+- Statuses: `backlog`, `todo`, `in_progress`, `done`, `cancelled`
+- Priorities: `low`, `medium`, `high`, `urgent`
+- Assignee, due date, tags, position (drag-to-reorder)
+- Scheduled tasks with RRULE recurrence
+- Agent-linked tasks
+- Brain can create/list/update/delete via natural language
+
+### 3.5 Documents / Wiki
+- Markdown with Tiptap rich-text editing
+- Folder organization, sharing modes (workspace or channel-scoped)
+
+### 3.6 Calendar
+- Events with start/end, all-day, RRULE recurrence, attendees, reminders
+- iCal export
+- Reminder cron fires every minute
+- Agent-driven autonomous calendar events
+
+### 3.7 Member Roles & Permissions
+
+Three base roles: `admin` (all), `member` (standard), `guest` (restricted).
+
+31 permissions across: chat, channels, tasks, brain, agents, documents, files, knowledge, calendar, skills, workspace, contacts. Per-member overrides supported. Agents/Brain are special roles excluded from member limits.
+
+### 3.8 Search
+Bleve full-text search with auto-reindex on startup. Brain uses `search_workspace` tool (SQL LIKE fallback) and optional Qdrant semantic vector search for knowledge.
+
+### 3.9 Authentication
+- Email + password with bcrypt
+- Email verification (6-digit code, 24h expiry) via Resend
+- Password reset (1h token, single use)
+- JWT HS256, 30-day expiry, workspace-scoped
+- Superadmin impersonation
+
+### 3.10 Activity Feed
+- All significant events tracked in `activity_stream`
+- Message consolidation: one entry per actor+channel per 10-minute window
+- Aggregate stats endpoint
+
+---
+
+## 4. Brain AI System
+
+### 4.1 Overview
+
+Brain is a first-class workspace member (fixed ID `"brain"`, role `"brain"`). Triggered by `@Brain` in any channel or via DM. Uses OpenRouter API (any model). Tool-calling loop: LLM -> tool calls -> execute -> results -> loop until done.
+
+### 4.2 System Prompt Assembly (~12K tokens)
+
+1. **Definition files** (~2K): `SOUL.md`, `INSTRUCTIONS.md`, `TEAM.md`, `MEMORY.md`, `REFLECTIONS.md`, `HEARTBEAT.md`
+2. **Current time** — UTC timestamp + day of week
+3. **Extracted memories** (~1K): facts, decisions, commitments, people — ranked by BM25 + recency + importance
+4. **Knowledge base** (~1K): all if <=5000 tokens, else keyword/semantic search
+5. **Skills** (~1K): active skill definitions
+6. **Channel summary** (~500): rolling LLM summary of older messages
+7. **Cross-channel awareness** (~500): summaries from up to 5 other channels
+8. **Recent messages** (~6K): last 40 messages with sender names
+9. **Workspace snapshot** (`BuildWorkspaceContext`): channels, members, task counts + 5 active, 5 recent docs, 5 upcoming events
+
+### 4.3 Tools
+
+| Tool | Purpose |
+|------|---------|
+| `create_task` | Create a task |
+| `list_tasks` | List/filter tasks |
+| `update_task` | Update task fields |
+| `delete_task` | Delete a task |
+| `search_workspace` | Full-text search messages, tasks, documents |
+| `create_document` | Create a markdown document |
+| `search_knowledge` | Search knowledge base |
+| `delegate_to_agent` | Hand off to a sub-agent |
+| `ask_agent` | Quick question to a sub-agent |
+| `recall_memory` | FTS5 search of memories |
+| `save_memory` | Save fact/decision/commitment/person |
+| `generate_image` | Generate image via Gemini API |
+| `send_email` | Send email via SMTP |
+| `send_telegram` | Send to linked Telegram chat |
+| `create_calendar_event` | Create calendar event |
+| `list_calendar_events` | List upcoming events |
+| `update_calendar_event` | Modify event |
+| `delete_calendar_event` | Cancel event |
+| `web_search` | Search the internet |
+| `search_x` | Search X/Twitter via Grok xAI |
+| `fetch_url` | Fetch and extract URL content |
+| `trace_knowledge` | Look up provenance of something Brain knows |
+
+MCP tools added dynamically from connected external servers.
+
+### 4.4 Memory Extraction
+
+**Rule-based** (zero-LLM, every message):
+- Regex patterns for decisions (`we decided`, `let's go with`...), commitments (`I'll`, `I will`...), people (`@name is/handles/works on`...)
+- Saves with confidence 0.8, source `"rule"`
+- Fuzzy dedup: skip if >80% word overlap with existing
+
+**LLM extraction** (every 15 messages per channel):
+- Extracts `decision`, `commitment`, `policy`, `person` types with confidence scores
+- Filter: "Would someone search for this 3 months from now?"
+
+**Memory consolidation** (periodic LLM pass):
+- Dedup -> supersede old with `superseded_by`
+- Detect outdated facts -> set `valid_until`
+- Generate `insight` memories from cross-memory patterns
+
+**Memory types:** `fact` (0.5), `decision` (0.8), `commitment` (0.7), `policy` (0.8), `person` (0.6), `insight` (0.7)
+
+### 4.5 Knowledge Provenance
+
+Each knowledge article stores `source_type`, `source_name`, `source_url`, `created_by`, `created_at`. The `trace_knowledge` tool surfaces attribution. Memories store `source_channel` and `source_message_id` linking to the original message.
+
+### 4.6 Knowledge Base
+
+Three ingestion paths: manual text, file upload (PDF extraction), URL import. Below 5000 tokens all articles are in system prompt; above that, keyword or Qdrant semantic search.
+
+### 4.7 Skills System
+
+Markdown files with YAML frontmatter at `workspaces/{slug}/brain/skills/`. Metadata: name, description, trigger (mention/schedule/keyword), channels, roles, autonomy.
+
+15 bundled skills: daily-standup, meeting-notes, decision-logger, new-hire-buddy, client-onboarding, deal-tracker, support-triage, campaign-manager, content-calendar, retro-facilitator, proposal-tracker, invoice-reminder, competitive-intel, hiring-pipeline, release-notes.
+
+### 4.8 Heartbeat Scheduler
+
+`HEARTBEAT.md` defines cron-like schedules (`daily HH:MM`, `weekly {day} HH:MM`, `hourly :MM`). Server cron fires every minute and triggers Brain completions for matching schedules.
+
+### 4.9 Reflection Cycles
+
+Daily/weekly reflection: aggregate metrics -> LLM analysis -> written to `REFLECTIONS.md` + `reflection_history` table. Included in Brain's system prompt for self-awareness.
+
+### 4.10 Sub-Agents
+
+Custom AI agents with full personality: role, goal, backstory, instructions, constraints, escalation prompt. Own model, temperature, tool allowlist, trigger modes (mention/always/all). Per-agent skills. Agent templates available (Sales, Support, Meeting Scribe, etc.) or AI-generated from a description.
+
+### 4.11 Living Briefs
+
+AI-generated intelligence reports: scheduled or on-demand, shareable via public URL, template system.
+
+### 4.12 Social Pulse
+
+Social media intelligence: topic + query -> Grok xAI or web search -> sentiment score, themes, key posts, recommendations, predictions, risks.
+
+### 4.13 LLM Usage Tracking
+
+All LLM calls tracked: model, tokens, cost (USD), action type, channel, member. Admin dashboard shows per-workspace spend.
+
+---
+
+## 5. API Endpoints
+
+All workspace endpoints: `/api/workspaces/{slug}/...`. Auth via JWT.
+
+### Auth
+- `POST /api/auth/register` — Register
+- `POST /api/auth/login` — Login
+- `GET /api/auth/config` — Auth mode
+- `POST /api/auth/forgot` — Request reset
+- `POST /api/auth/reset` — Reset password
+- `POST /api/auth/verify` — Verify email
+- `GET /api/auth/me` — Current user
+- `PUT /api/auth/me` — Update profile
+- `PUT /api/auth/me/password` — Change password
+- `GET /api/auth/workspaces` — List workspaces
+- `POST /api/auth/switch-workspace` — Switch workspace token
+
+### Workspaces
+- `POST /api/workspaces` — Create
+- `POST /api/workspaces/{slug}/join` — Join
+- `POST /api/join` — Join by code
+- `GET /api/workspaces/{slug}` — Details
+- `GET /api/workspaces/{slug}/info` — Info + plan
+- `POST /api/workspaces/{slug}/invite` — Create invite link
+- `POST /api/workspaces/{slug}/invite/email` — Email invite
+- `GET /api/workspaces/{slug}/search` — Full-text search
+- `GET /api/workspaces/{slug}/export` — Export JSON
+- `POST /api/workspaces/import` — Import JSON
+- `DELETE /api/workspaces/{slug}/destroy` — Destroy
+- `GET /api/workspaces/{slug}/usage` — LLM usage stats
+
+### Channels
+- `GET/POST /api/workspaces/{slug}/channels` — List/create
+- `DELETE /api/workspaces/{slug}/channels/{id}` — Delete
+- `GET /api/workspaces/{slug}/channels/{id}/messages` — History
+- `GET /api/workspaces/{slug}/channels/{id}/messages/{id}/thread` — Thread
+- `PUT /api/workspaces/{slug}/channels/{id}/favorite` — Toggle favorite
+
+### Members
+- `GET /api/roles` — List roles
+- `GET /api/workspaces/{slug}/members/{id}` — Get member
+- `PUT /api/workspaces/{slug}/members/role` — Update role
+- `PUT /api/workspaces/{slug}/members/permission` — Override permission
+- `DELETE /api/workspaces/{slug}/members/{id}` — Kick
+- `PUT /api/workspaces/{slug}/members/{id}/profile` — Update profile
+
+### Tasks
+- `POST/GET /api/workspaces/{slug}/tasks` — Create/list
+- `GET/PUT/DELETE /api/workspaces/{slug}/tasks/{id}` — Get/update/delete
+
+### Documents
+- `POST/GET /api/workspaces/{slug}/documents` — Create/list
+- `GET/PUT/DELETE /api/workspaces/{slug}/documents/{id}` — Get/update/delete
+
+### Files & Folders
+- `POST /api/workspaces/{slug}/channels/{id}/files` — Upload to channel
+- `POST /api/workspaces/{slug}/folders/{id}/files` — Upload to folder
+- `GET /api/workspaces/{slug}/files` — List
+- `GET /api/workspaces/{slug}/files/{hash}` — Download (public)
+- `PUT /api/workspaces/{slug}/files/{id}/update` — Rename
+- `PUT /api/workspaces/{slug}/files/{id}/move` — Move
+- `DELETE /api/workspaces/{slug}/files/{id}/delete` — Delete
+- `POST /api/workspaces/{slug}/files/{id}/duplicate` — Duplicate
+- `POST/GET/PUT/DELETE /api/workspaces/{slug}/folders[/{id}]` — Folder CRUD
+
+### Brain
+- `GET/PUT /api/workspaces/{slug}/brain/settings` — Settings
+- `GET/PUT /api/workspaces/{slug}/brain/definitions/{file}` — Definition files
+- `GET /api/workspaces/{slug}/brain/prompt` — Compiled system prompt
+- `GET /api/workspaces/{slug}/brain/tools` — Available tools
+- `POST /api/workspaces/{slug}/brain/execute-tool` — Execute tool directly
+- `POST /api/workspaces/{slug}/brain/welcome` — Post welcome message
+- `GET /api/workspaces/{slug}/brain/memories` — List memories
+- `DELETE /api/workspaces/{slug}/brain/memories[/{id}]` — Delete memory/all
+- `POST /api/workspaces/{slug}/brain/memories/pin` — Pin memory
+- `POST /api/workspaces/{slug}/brain/memories/extract` — Trigger extraction
+- `POST /api/workspaces/{slug}/brain/reflect` — Trigger reflection
+- `GET /api/workspaces/{slug}/brain/reflections` — Reflection history
+- `GET /api/workspaces/{slug}/brain/actions` — Action log
+- `GET/POST/PUT/DELETE /api/workspaces/{slug}/brain/skills/{file}` — Skill CRUD
+- `PUT /api/workspaces/{slug}/brain/skills/{file}/toggle` — Enable/disable
+- `POST /api/workspaces/{slug}/brain/skills/generate` — AI-generate skill
+- `POST/GET/PUT/DELETE /api/workspaces/{slug}/brain/knowledge[/{id}]` — Knowledge CRUD
+- `POST /api/workspaces/{slug}/brain/knowledge/upload` — Upload file
+- `POST /api/workspaces/{slug}/brain/knowledge/import-url` — Import URL
+
+### Agents
+- `POST/GET/PUT/DELETE /api/workspaces/{slug}/agents[/{id}]` — CRUD
+- `GET /api/workspaces/{slug}/agents/templates` — Templates
+- `POST /api/workspaces/{slug}/agents/generate` — AI-generate config
+- `POST /api/workspaces/{slug}/agents/from-template` — Create from template
+- `GET/PUT/DELETE /api/workspaces/{slug}/agents/{id}/skills/{file}` — Agent skills
+
+### Calendar
+- `POST/GET /api/workspaces/{slug}/calendar/events` — Create/list
+- `GET/PUT/DELETE /api/workspaces/{slug}/calendar/events/{id}` — Get/update/delete
+
+### Integrations
+- `POST /w/{slug}/hook/{token}` — Incoming webhook
+- `POST/GET/DELETE /api/workspaces/{slug}/brain/webhooks[/{id}]` — Webhook management
+- `POST /api/telegram/{slug}/update` — Telegram webhook
+- `GET/POST/PUT/DELETE /api/workspaces/{slug}/mcp-servers[/{id}]` — MCP servers
+
+### Living Briefs
+- `GET/POST /api/workspaces/{slug}/briefs` — List/create
+- `GET/DELETE /api/workspaces/{slug}/briefs/{id}` — Get/delete
+- `POST /api/workspaces/{slug}/briefs/{id}/generate` — Generate content
+- `POST/DELETE /api/workspaces/{slug}/briefs/{id}/share` — Public share
+- `GET /api/briefs/public/{token}` — View shared brief
+
+### Social Pulse
+- `POST/GET/DELETE /api/workspaces/{slug}/social-pulse[/{id}]` — CRUD
+
+### Superadmin
+- `GET /api/admin/stats` — Platform stats
+- `GET /api/admin/workspaces` — All workspaces
+- `GET /api/admin/accounts` — All accounts
+- `PUT /api/admin/workspaces/{slug}/suspend` — Suspend
+- `DELETE /api/admin/workspaces/{slug}` — Delete
+- `PUT /api/admin/accounts/{id}/ban` — Ban
+- `POST /api/admin/impersonate` — Impersonate
+- `GET /api/admin/waitlist` — Waitlist entries
+
+### System
+- `GET /health` — Health check
+- `GET /metrics` — Prometheus metrics
+- `GET /ws` — WebSocket
+- `POST /api/waitlist` — Join waitlist
+
+---
+
+## 6. Monetization
+
+### Free Tier (default)
+- Unlimited workspaces
+- **5 members per workspace** (agents/Brain excluded)
+- All features available
+- Enforced in Go binary for all deployments
+
+### Pro Tier
+- Unlimited members
+- Activated by `NEXUS_LICENSE` env var or `license_key` in config
+- Binary unlock model (no per-seat pricing)
+
+### Waitlist
+- `POST /api/waitlist` (public) — email + plan
+- `GET /api/admin/waitlist` (superadmin) — view entries
+
+---
+
+## 7. Tech Stack
+
+### Backend (Go)
+| Component | Library |
+|-----------|---------|
+| HTTP server | `net/http` stdlib |
+| WebSocket | `nhooyr.io/websocket` |
+| SQLite | `mattn/go-sqlite3` (CGO) |
+| JWT | `golang-jwt/jwt/v5` (HS256) |
+| Bcrypt | `golang.org/x/crypto/bcrypt` |
+| Auto-TLS | `golang.org/x/crypto/acme/autocert` |
+| Config | `BurntSushi/toml` |
+| Logging | `rs/zerolog` |
+| Metrics | `prometheus/client_golang` |
+| Task queue | `hibiken/asynq` (Redis, goroutine fallback) |
+| Full-text search | `blevesearch/bleve/v2` |
+| Vector search | `qdrant/go-client` (optional) |
+| MCP | `modelcontextprotocol/go-sdk` |
+| Cron | `robfig/cron/v3` |
+| PDF | `ledongthuc/pdf` |
+
+### Frontend (SvelteKit 2)
+| Component | Library |
+|-----------|---------|
+| Framework | SvelteKit 2, Svelte 5, static adapter |
+| Rich text | Tiptap (ProseMirror) |
+| Org chart | D3.js + d3-org-chart |
+| Build | Vite |
+
+### LLM / AI
+| Service | Purpose |
+|---------|---------|
+| OpenRouter | Primary LLM provider |
+| Google Gemini | Image generation |
+| xAI Grok | X/Twitter + web search |
+| OpenAI embeddings | Knowledge vectorization (via OpenRouter) |
+
+### Data Directory
+```
+~/.nexus/
+├── nexus.toml
+├── nexus.db
+└── workspaces/{slug}/
+    ├── workspace.db
+    ├── blobs/{2-char}/{sha256-hash}
+    └── brain/
+        ├── SOUL.md, INSTRUCTIONS.md, TEAM.md
+        ├── MEMORY.md, REFLECTIONS.md, HEARTBEAT.md
+        ├── skills/*.md (15 bundled)
+        └── agents/{id}/skills/
+```

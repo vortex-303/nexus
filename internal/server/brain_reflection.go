@@ -354,6 +354,11 @@ func (s *Server) runReflection(slug string, period string, checkEnabled ...bool)
 		return
 	}
 
+	// Save to reflection history
+	if wdb, err := s.ws.Open(slug); err == nil {
+		_, _ = wdb.DB.Exec("INSERT INTO reflection_history (period, content) VALUES (?, ?)", period, result)
+	}
+
 	log.Info().Str("workspace", slug).Str("period", period).Int("chars", len(result)).Msg("reflection complete")
 }
 
@@ -442,4 +447,40 @@ func (s *Server) handleReflectNow(w http.ResponseWriter, r *http.Request) {
 	go s.runReflection(slug, "daily", false)
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "started"})
+}
+
+// handleReflectionHistory returns all past reflections.
+// GET /api/workspaces/{slug}/brain/reflections
+func (s *Server) handleReflectionHistory(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		http.Error(w, "workspace not found", http.StatusNotFound)
+		return
+	}
+
+	rows, err := wdb.DB.Query("SELECT id, period, content, created_at FROM reflection_history ORDER BY created_at DESC")
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"reflections": []any{}})
+		return
+	}
+	defer rows.Close()
+
+	type ReflectionEntry struct {
+		ID        int    `json:"id"`
+		Period    string `json:"period"`
+		Content   string `json:"content"`
+		CreatedAt string `json:"created_at"`
+	}
+
+	var entries []ReflectionEntry
+	for rows.Next() {
+		var e ReflectionEntry
+		rows.Scan(&e.ID, &e.Period, &e.Content, &e.CreatedAt)
+		entries = append(entries, e)
+	}
+	if entries == nil {
+		entries = []ReflectionEntry{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"reflections": entries})
 }

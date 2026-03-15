@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -24,14 +25,16 @@ type knowledgeArticle struct {
 	Content    string `json:"content,omitempty"`
 	SourceType string `json:"source_type"`
 	SourceName string `json:"source_name,omitempty"`
+	SourceURL  string `json:"source_url,omitempty"`
 	Tokens     int    `json:"tokens"`
 	CreatedBy  string `json:"created_by"`
 	CreatedAt  string `json:"created_at"`
 }
 
 type createKnowledgeReq struct {
-	Title   string `json:"title"`
-	Content string `json:"content"`
+	Title     string `json:"title"`
+	Content   string `json:"content"`
+	SourceURL string `json:"source_url"`
 }
 
 func (s *Server) handleCreateKnowledge(w http.ResponseWriter, r *http.Request) {
@@ -57,9 +60,13 @@ func (s *Server) handleCreateKnowledge(w http.ResponseWriter, r *http.Request) {
 	articleID := id.New()
 	tokens := len(req.Content) / 4
 
+	sourceType := "text"
+	if req.SourceURL != "" {
+		sourceType = "url"
+	}
 	_, err = wdb.DB.Exec(
-		"INSERT INTO brain_knowledge (id, title, content, source_type, tokens, created_by) VALUES (?, ?, ?, 'text', ?, ?)",
-		articleID, req.Title, req.Content, tokens, claims.UserID,
+		"INSERT INTO brain_knowledge (id, title, content, source_type, source_url, tokens, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		articleID, req.Title, req.Content, sourceType, req.SourceURL, tokens, claims.UserID,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create article")
@@ -178,7 +185,7 @@ func (s *Server) handleListKnowledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := wdb.DB.Query("SELECT id, title, source_type, COALESCE(source_name, ''), tokens, created_by, created_at FROM brain_knowledge ORDER BY created_at DESC")
+	rows, err := wdb.DB.Query("SELECT id, title, source_type, COALESCE(source_name, ''), COALESCE(source_url, ''), tokens, created_by, created_at FROM brain_knowledge ORDER BY created_at DESC")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list knowledge")
 		return
@@ -188,7 +195,7 @@ func (s *Server) handleListKnowledge(w http.ResponseWriter, r *http.Request) {
 	var articles []knowledgeArticle
 	for rows.Next() {
 		var a knowledgeArticle
-		if err := rows.Scan(&a.ID, &a.Title, &a.SourceType, &a.SourceName, &a.Tokens, &a.CreatedBy, &a.CreatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.Title, &a.SourceType, &a.SourceName, &a.SourceURL, &a.Tokens, &a.CreatedBy, &a.CreatedAt); err != nil {
 			continue
 		}
 		articles = append(articles, a)
@@ -212,9 +219,9 @@ func (s *Server) handleGetKnowledge(w http.ResponseWriter, r *http.Request) {
 
 	var a knowledgeArticle
 	err = wdb.DB.QueryRow(
-		"SELECT id, title, content, source_type, COALESCE(source_name, ''), tokens, created_by, created_at FROM brain_knowledge WHERE id = ?",
+		"SELECT id, title, content, source_type, COALESCE(source_name, ''), COALESCE(source_url, ''), tokens, created_by, created_at FROM brain_knowledge WHERE id = ?",
 		articleID,
-	).Scan(&a.ID, &a.Title, &a.Content, &a.SourceType, &a.SourceName, &a.Tokens, &a.CreatedBy, &a.CreatedAt)
+	).Scan(&a.ID, &a.Title, &a.Content, &a.SourceType, &a.SourceName, &a.SourceURL, &a.Tokens, &a.CreatedBy, &a.CreatedAt)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "article not found")
 		return
@@ -399,6 +406,61 @@ func extractHTMLText(rawHTML string) (string, string) {
 	return title, strings.Join(cleaned, "\n")
 }
 
+// embedDocument computes an embedding for a document and stores it in the vector store.
+func (s *Server) embedDocument(slug, docID, text string) {
+	if s.vectors == nil {
+		return
+	}
+	apiKey, _ := s.getBrainSettings(slug)
+	if apiKey == "" {
+		return
+	}
+
+	// Truncate to 50K chars
+	if len(text) > 50000 {
+		text = text[:50000]
+	}
+
+	client := brain.NewClient(apiKey, "")
+	vector, err := client.Embed(text)
+	if err != nil {
+		logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Str("doc_id", docID).Msg("document embedding failed")
+		return
+	}
+
+	if err := s.vectors.Upsert(slug, docID, vector, map[string]any{"type": "document"}); err != nil {
+		logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Str("doc_id", docID).Msg("document vector upsert failed")
+	}
+}
+
+// embedFile computes an embedding for a text file and stores it in the vector store.
+func (s *Server) embedFile(slug, fileID, name, content string) {
+	if s.vectors == nil {
+		return
+	}
+	apiKey, _ := s.getBrainSettings(slug)
+	if apiKey == "" {
+		return
+	}
+
+	// Truncate to 50K chars
+	if len(content) > 50000 {
+		content = content[:50000]
+	}
+
+	text := name + " " + content
+	client := brain.NewClient(apiKey, "")
+	vector, err := client.Embed(text)
+	if err != nil {
+		logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Str("file_id", fileID).Msg("file embedding failed")
+		return
+	}
+
+	if err := s.vectors.Upsert(slug, fileID, vector, map[string]any{"type": "file"}); err != nil {
+		logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Str("file_id", fileID).Msg("file vector upsert failed")
+	}
+}
+
 // embedKnowledge computes an embedding for a knowledge article and stores it in the vector store.
 func (s *Server) embedKnowledge(slug, articleID, text string) {
 	if s.vectors == nil {
@@ -419,5 +481,82 @@ func (s *Server) embedKnowledge(slug, articleID, text string) {
 	if err := s.vectors.Upsert(slug, articleID, vector, map[string]any{"type": "knowledge"}); err != nil {
 		logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Str("article_id", articleID).Msg("vector upsert failed")
 	}
+}
+
+// handleReindexEmbeddings re-embeds all knowledge articles, documents, and text-like files.
+func (s *Server) handleReindexEmbeddings(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	log := logger.WithCategory(logger.CatBrain)
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	go func() {
+		log.Info().Str("workspace", slug).Msg("reindex: starting embedding backfill")
+
+		// 1. Knowledge articles
+		kRows, err := wdb.DB.Query("SELECT id, title, content FROM brain_knowledge")
+		if err == nil {
+			var count int
+			for kRows.Next() {
+				var id, title, content string
+				kRows.Scan(&id, &title, &content)
+				s.embedKnowledge(slug, id, title+" "+content)
+				count++
+			}
+			kRows.Close()
+			log.Info().Str("workspace", slug).Int("count", count).Msg("reindex: knowledge articles done")
+		}
+
+		// 2. Documents
+		dRows, err := wdb.DB.Query("SELECT id, title, COALESCE(content, '') FROM documents")
+		if err == nil {
+			var count int
+			for dRows.Next() {
+				var id, title, content string
+				dRows.Scan(&id, &title, &content)
+				if content != "" {
+					s.embedDocument(slug, id, title+" "+content)
+					count++
+				}
+			}
+			dRows.Close()
+			log.Info().Str("workspace", slug).Int("count", count).Msg("reindex: documents done")
+		}
+
+		// 3. Text-like files — read blobs from disk
+		textExts := map[string]bool{".txt": true, ".md": true, ".json": true, ".csv": true, ".html": true, ".xml": true, ".yaml": true, ".yml": true, ".toml": true, ".js": true, ".ts": true, ".go": true, ".py": true, ".sh": true, ".css": true, ".svg": true, ".log": true}
+		textMimes := map[string]bool{"text/plain": true, "text/markdown": true, "text/html": true, "text/csv": true, "application/json": true, "application/xml": true}
+
+		fRows, err := wdb.DB.Query("SELECT id, name, hash, COALESCE(mime, '') FROM files")
+		if err == nil {
+			blobsDir := s.ws.BlobsDir(slug)
+			var count int
+			for fRows.Next() {
+				var id, name, hash, mime string
+				fRows.Scan(&id, &name, &hash, &mime)
+				ext := strings.ToLower(filepath.Ext(name))
+				if !textExts[ext] && !textMimes[mime] {
+					continue
+				}
+				blobPath := filepath.Join(blobsDir, hash[:2], hash)
+				data, err := os.ReadFile(blobPath)
+				if err != nil {
+					continue
+				}
+				s.embedFile(slug, id, name, string(data))
+				count++
+			}
+			fRows.Close()
+			log.Info().Str("workspace", slug).Int("count", count).Msg("reindex: files done")
+		}
+
+		log.Info().Str("workspace", slug).Msg("reindex: embedding backfill complete")
+	}()
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reindex started"})
 }
 

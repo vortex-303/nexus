@@ -4,7 +4,7 @@
 	interface Props {
 		slug: string;
 		onclose: () => void;
-		onnavigate?: (type: string, id: string) => void;
+		onnavigate?: (type: string, id: string, result?: any) => void;
 	}
 
 	let { slug, onclose, onnavigate }: Props = $props();
@@ -78,7 +78,7 @@
 
 	function navigateToResult(result: any) {
 		if (onnavigate) {
-			onnavigate(result.type, result.id);
+			onnavigate(result.type, result.id, result);
 		}
 		onclose();
 	}

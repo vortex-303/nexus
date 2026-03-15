@@ -5,9 +5,41 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/nexus-chat/nexus/internal/vectorstore"
 )
+
+// formatAttribution builds a human-readable source attribution line.
+func formatAttribution(sourceType, sourceName, sourceURL, createdBy, createdAt string) string {
+	var parts []string
+
+	// Source identification
+	if sourceURL != "" {
+		parts = append(parts, sourceURL)
+	} else if sourceName != "" {
+		parts = append(parts, sourceName)
+	} else if sourceType != "" && sourceType != "text" {
+		parts = append(parts, sourceType)
+	}
+
+	// Author
+	if createdBy != "" {
+		parts = append(parts, "added by "+createdBy)
+	}
+
+	// Date
+	if createdAt != "" {
+		if t, err := time.Parse(time.RFC3339, createdAt); err == nil {
+			parts = append(parts, "on "+t.Format("Jan 2"))
+		}
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Source: " + strings.Join(parts, ", ")
+}
 
 // SemanticOpts holds optional parameters for semantic knowledge search.
 type SemanticOpts struct {
@@ -36,7 +68,7 @@ func buildKnowledgeContextInner(db *sql.DB, query string, opt SemanticOpts) stri
 
 	var rows *sql.Rows
 	if totalTokens <= 5000 {
-		rows, err = db.Query("SELECT title, content FROM brain_knowledge ORDER BY created_at")
+		rows, err = db.Query("SELECT title, content, COALESCE(source_type,''), COALESCE(source_name,''), COALESCE(source_url,''), COALESCE(created_by,''), COALESCE(created_at,'') FROM brain_knowledge ORDER BY created_at")
 	} else {
 		// Try semantic search if vector store and API key are available
 		if opt.VectorStore != nil && opt.APIKey != "" {
@@ -58,8 +90,8 @@ func buildKnowledgeContextInner(db *sql.DB, query string, opt SemanticOpts) stri
 
 	var parts []string
 	for rows.Next() {
-		var title, content string
-		if err := rows.Scan(&title, &content); err != nil {
+		var title, content, sourceType, sourceName, sourceURL, createdBy, createdAt string
+		if err := rows.Scan(&title, &content, &sourceType, &sourceName, &sourceURL, &createdBy, &createdAt); err != nil {
 			continue
 		}
 		// Truncate individual knowledge entries to prevent token overflow
@@ -68,7 +100,12 @@ func buildKnowledgeContextInner(db *sql.DB, query string, opt SemanticOpts) stri
 			content = content[:5000] + "\n[...truncated]"
 		}
 		log.Printf("[knowledge] entry: title=%q, content_len=%d", title, len(content))
-		parts = append(parts, fmt.Sprintf("### %s\n%s", title, content))
+		attribution := formatAttribution(sourceType, sourceName, sourceURL, createdBy, createdAt)
+		if attribution != "" {
+			parts = append(parts, fmt.Sprintf("### %s\n_%s_\n\n%s", title, attribution, content))
+		} else {
+			parts = append(parts, fmt.Sprintf("### %s\n%s", title, content))
+		}
 	}
 
 	if len(parts) == 0 {
@@ -112,15 +149,20 @@ func SearchKnowledgeForTool(db *sql.DB, query string, opts ...SemanticOpts) stri
 
 	var parts []string
 	for rows.Next() {
-		var title, content string
-		if err := rows.Scan(&title, &content); err != nil {
+		var title, content, sourceType, sourceName, sourceURL, createdBy, createdAt string
+		if err := rows.Scan(&title, &content, &sourceType, &sourceName, &sourceURL, &createdBy, &createdAt); err != nil {
 			continue
 		}
 		// Truncate long content
 		if len(content) > 500 {
 			content = content[:497] + "..."
 		}
-		parts = append(parts, fmt.Sprintf("### %s\n%s", title, content))
+		attribution := formatAttribution(sourceType, sourceName, sourceURL, createdBy, createdAt)
+		if attribution != "" {
+			parts = append(parts, fmt.Sprintf("### %s\n_%s_\n%s", title, attribution, content))
+		} else {
+			parts = append(parts, fmt.Sprintf("### %s\n%s", title, content))
+		}
 	}
 
 	if len(parts) == 0 {
@@ -145,15 +187,35 @@ func searchKnowledge(db *sql.DB, query string, limit int) (*sql.Rows, error) {
 	}
 
 	if len(conditions) == 0 {
-		// Fallback: return most recent
-		return db.Query("SELECT title, content FROM brain_knowledge ORDER BY created_at DESC LIMIT ?", limit)
+		// Fallback: return most recent from all sources
+		q := `SELECT title, content, source_type, source_name, source_url, created_by, created_at FROM (
+			SELECT title, content, COALESCE(source_type,'') as source_type, COALESCE(source_name,'') as source_name, COALESCE(source_url,'') as source_url, COALESCE(created_by,'') as created_by, COALESCE(created_at,'') as created_at FROM brain_knowledge
+			UNION ALL
+			SELECT title, content, 'document' as source_type, '' as source_name, '' as source_url, COALESCE(created_by,'') as created_by, COALESCE(created_at,'') as created_at FROM documents
+			UNION ALL
+			SELECT name as title, '' as content, 'file' as source_type, name as source_name, '' as source_url, COALESCE(uploader_id,'') as created_by, COALESCE(created_at,'') as created_at FROM files WHERE mime LIKE 'text/%' OR name LIKE '%.md' OR name LIKE '%.txt' OR name LIKE '%.csv' OR name LIKE '%.json'
+		) combined ORDER BY created_at DESC LIMIT ?`
+		return db.Query(q, limit)
 	}
 
-	q := "SELECT title, content FROM brain_knowledge WHERE " +
-		strings.Join(conditions, " OR ") +
-		" ORDER BY created_at DESC LIMIT ?"
-	args = append(args, limit)
-	return db.Query(q, args...)
+	whereClause := strings.Join(conditions, " OR ")
+
+	// Build args for 3 copies of the WHERE clause (knowledge, documents, files)
+	var allArgs []any
+	allArgs = append(allArgs, args...)
+	allArgs = append(allArgs, args...)
+	allArgs = append(allArgs, args...)
+	allArgs = append(allArgs, limit)
+
+	q := fmt.Sprintf(`SELECT title, content, source_type, source_name, source_url, created_by, created_at FROM (
+		SELECT title, content, COALESCE(source_type,'') as source_type, COALESCE(source_name,'') as source_name, COALESCE(source_url,'') as source_url, COALESCE(created_by,'') as created_by, COALESCE(created_at,'') as created_at FROM brain_knowledge WHERE %s
+		UNION ALL
+		SELECT title, content, 'document' as source_type, '' as source_name, '' as source_url, COALESCE(created_by,'') as created_by, COALESCE(created_at,'') as created_at FROM documents WHERE %s
+		UNION ALL
+		SELECT name as title, '' as content, 'file' as source_type, name as source_name, '' as source_url, COALESCE(uploader_id,'') as created_by, COALESCE(created_at,'') as created_at FROM files WHERE (%s) AND (mime LIKE 'text/%%' OR name LIKE '%%.md' OR name LIKE '%%.txt' OR name LIKE '%%.csv' OR name LIKE '%%.json')
+	) combined ORDER BY created_at DESC LIMIT ?`, whereClause, whereClause, whereClause)
+
+	return db.Query(q, allArgs...)
 }
 
 // SearchKnowledgeSemanticWithSlug does semantic search with an explicit workspace slug.
@@ -169,7 +231,7 @@ func SearchKnowledgeSemanticWithSlug(sqlDB *sql.DB, vs *vectorstore.VectorStore,
 		return nil, fmt.Errorf("vector search: %w", err)
 	}
 	if len(results) == 0 {
-		return sqlDB.Query("SELECT title, content FROM brain_knowledge WHERE 1=0")
+		return sqlDB.Query("SELECT title, content, '', '', '', '', '' FROM brain_knowledge WHERE 1=0")
 	}
 
 	placeholders := make([]string, len(results))
@@ -179,7 +241,22 @@ func SearchKnowledgeSemanticWithSlug(sqlDB *sql.DB, vs *vectorstore.VectorStore,
 		args[i] = r.ID
 	}
 
-	q := "SELECT title, content FROM brain_knowledge WHERE id IN (" +
-		strings.Join(placeholders, ",") + ")"
-	return sqlDB.Query(q, args...)
+	inClause := strings.Join(placeholders, ",")
+
+	// Search across all three tables by the same IDs
+	// Build args: 3 copies for UNION ALL
+	var allArgs []any
+	allArgs = append(allArgs, args...)
+	allArgs = append(allArgs, args...)
+	allArgs = append(allArgs, args...)
+
+	q := fmt.Sprintf(`SELECT title, content, source_type, source_name, source_url, created_by, created_at FROM (
+		SELECT title, content, COALESCE(source_type,'') as source_type, COALESCE(source_name,'') as source_name, COALESCE(source_url,'') as source_url, COALESCE(created_by,'') as created_by, COALESCE(created_at,'') as created_at FROM brain_knowledge WHERE id IN (%s)
+		UNION ALL
+		SELECT title, content, 'document' as source_type, '' as source_name, '' as source_url, COALESCE(created_by,'') as created_by, COALESCE(created_at,'') as created_at FROM documents WHERE id IN (%s)
+		UNION ALL
+		SELECT name as title, '' as content, 'file' as source_type, name as source_name, '' as source_url, COALESCE(uploader_id,'') as created_by, COALESCE(created_at,'') as created_at FROM files WHERE id IN (%s)
+	) combined`, inClause, inClause, inClause)
+
+	return sqlDB.Query(q, allArgs...)
 }

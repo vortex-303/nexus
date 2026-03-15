@@ -35,6 +35,7 @@ type SearchResult struct {
 	Title     string  `json:"title,omitempty"`
 	Content   string  `json:"content"`
 	Sender    string  `json:"sender,omitempty"`
+	ChannelID string  `json:"channel_id,omitempty"`
 	Highlight string  `json:"highlight,omitempty"`
 	Score     float64 `json:"score"`
 }
@@ -169,7 +170,7 @@ func (m *IndexManager) Search(slug, query string, types []string, limit int) ([]
 
 	q := bleve.NewQueryStringQuery(query)
 	req := bleve.NewSearchRequestOptions(q, limit, 0, false)
-	req.Fields = []string{"type", "title", "content", "sender", "created_at"}
+	req.Fields = []string{"type", "title", "content", "sender", "channel_id", "created_at"}
 
 	// Enable highlighting
 	req.Highlight = bleve.NewHighlightWithStyle("html")
@@ -187,7 +188,7 @@ func (m *IndexManager) Search(slug, query string, types []string, limit int) ([]
 		typeFilter := bleve.NewDisjunctionQuery(typeQueries...)
 		combined := bleve.NewConjunctionQuery(q, typeFilter)
 		req = bleve.NewSearchRequestOptions(combined, limit, 0, false)
-		req.Fields = []string{"type", "title", "content", "sender", "created_at"}
+		req.Fields = []string{"type", "title", "content", "sender", "channel_id", "created_at"}
 		req.Highlight = bleve.NewHighlightWithStyle("html")
 		req.Highlight.AddField("content")
 		req.Highlight.AddField("title")
@@ -212,6 +213,9 @@ func (m *IndexManager) Search(slug, query string, types []string, limit int) ([]
 		}
 		if v, ok := hit.Fields["sender"].(string); ok {
 			r.Sender = v
+		}
+		if v, ok := hit.Fields["channel_id"].(string); ok {
+			r.ChannelID = v
 		}
 
 		// Use highlighted fragments if available, otherwise truncate content

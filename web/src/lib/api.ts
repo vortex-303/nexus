@@ -276,6 +276,15 @@ export async function updateBrainSettings(slug: string, settings: Record<string,
 	return request('PUT', `/api/workspaces/${slug}/brain/settings`, settings);
 }
 
+// Ollama Bridge
+export async function getBridgeStatus(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/bridge/status`);
+}
+
+export async function getOllamaModels(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/ollama/models`);
+}
+
 export async function getUsage(slug: string, period: string = 'month') {
 	return request('GET', `/api/workspaces/${slug}/usage?period=${period}`);
 }
@@ -374,6 +383,18 @@ export async function register(email: string, password: string, displayName: str
 	return request('POST', '/api/auth/register', { email, password, display_name: displayName });
 }
 
+export async function forgotPassword(email: string) {
+	return request('POST', '/api/auth/forgot', { email });
+}
+
+export async function resetPassword(token: string, newPassword: string) {
+	return request('POST', '/api/auth/reset', { token, new_password: newPassword });
+}
+
+export async function verifyEmail(email: string, code: string) {
+	return request('POST', '/api/auth/verify', { email, code });
+}
+
 export async function login(email: string, password: string, workspaceSlug?: string) {
 	const data = await request('POST', '/api/auth/login', { email, password, workspace_slug: workspaceSlug || '' });
 	setToken(data.token);
@@ -424,6 +445,10 @@ export async function deleteKnowledge(slug: string, id: string) {
 	return request('DELETE', `/api/workspaces/${slug}/brain/knowledge/${id}`);
 }
 
+export async function reindexEmbeddings(slug: string) {
+	return request('POST', `/api/workspaces/${slug}/brain/reindex`);
+}
+
 // Knowledge URL Import
 export async function importKnowledgeURL(slug: string, url: string) {
 	return request('POST', `/api/workspaces/${slug}/brain/knowledge/import-url`, { url });
@@ -440,6 +465,10 @@ export async function extractMemoriesNow(slug: string, channelId: string) {
 
 export async function triggerReflection(slug: string) {
 	return request('POST', `/api/workspaces/${slug}/brain/reflect`, {});
+}
+
+export async function getReflectionHistory(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/brain/reflections`);
 }
 
 // Living Briefs

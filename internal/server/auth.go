@@ -1,13 +1,18 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/nexus-chat/nexus/internal/auth"
 	"github.com/nexus-chat/nexus/internal/id"
+	"github.com/nexus-chat/nexus/internal/logger"
 )
 
 type registerReq struct {
@@ -42,13 +47,32 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	accountID := id.New()
+	emailVerified := true
+	if s.accountRequired() {
+		emailVerified = false
+	}
 	_, err = s.global.DB.Exec(
-		"INSERT INTO accounts (id, email, password_hash, display_name) VALUES (?, ?, ?, ?)",
-		accountID, req.Email, string(hash), req.DisplayName,
+		"INSERT INTO accounts (id, email, password_hash, display_name, email_verified) VALUES (?, ?, ?, ?, ?)",
+		accountID, req.Email, string(hash), req.DisplayName, emailVerified,
 	)
 	if err != nil {
 		writeError(w, http.StatusConflict, "email already registered")
 		return
+	}
+
+	// Send verification email when account is required
+	if s.accountRequired() {
+		code := fmt.Sprintf("%06d", randomInt(1000000))
+		expiresAt := time.Now().UTC().Add(15 * time.Minute).Format(time.RFC3339)
+		_, _ = s.global.DB.Exec(
+			"INSERT INTO email_verifications (id, email, code, expires_at) VALUES (?, ?, ?, ?)",
+			id.New(), req.Email, code, expiresAt,
+		)
+		go func() {
+			if err := s.sendVerificationEmail(req.Email, code); err != nil {
+				logger.WithCategory(logger.CatSystem).Error().Err(err).Msg("verification email failed")
+			}
+		}()
 	}
 
 	writeJSON(w, http.StatusCreated, registerResp{AccountID: accountID})
@@ -78,11 +102,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var accountID, hash, displayName string
-	var isSuperadmin, isBanned bool
+	var isSuperadmin, isBanned, emailVerified bool
 	err := s.global.DB.QueryRow(
-		"SELECT id, password_hash, display_name, is_superadmin, banned FROM accounts WHERE email = ?",
+		"SELECT id, password_hash, display_name, is_superadmin, banned, email_verified FROM accounts WHERE email = ?",
 		req.Email,
-	).Scan(&accountID, &hash, &displayName, &isSuperadmin, &isBanned)
+	).Scan(&accountID, &hash, &displayName, &isSuperadmin, &isBanned, &emailVerified)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
@@ -95,6 +119,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+
+	if s.accountRequired() && !emailVerified {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "verify_email",
+			"message": "Please verify your email address before logging in",
+			"email": req.Email,
+		})
 		return
 	}
 
@@ -364,7 +397,169 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Send confirmation email
+	if s.accountRequired() {
+		var email string
+		if s.global.DB.QueryRow("SELECT email FROM accounts WHERE id = ?", claims.AccountID).Scan(&email) == nil {
+			go s.sendPasswordChangedEmail(email)
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleForgotPassword initiates a password reset flow.
+// POST /api/auth/forgot
+func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := readJSON(r, &req); err != nil || req.Email == "" {
+		writeError(w, http.StatusBadRequest, "email required")
+		return
+	}
+
+	// Always return 200 to not leak account existence
+	defer writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+
+	var accountID string
+	err := s.global.DB.QueryRow("SELECT id FROM accounts WHERE email = ?", req.Email).Scan(&accountID)
+	if err != nil {
+		return // account doesn't exist, but don't reveal that
+	}
+
+	// Generate secure token
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return
+	}
+	token := hex.EncodeToString(tokenBytes)
+	expiresAt := time.Now().UTC().Add(1 * time.Hour).Format(time.RFC3339)
+
+	_, err = s.global.DB.Exec(
+		"INSERT INTO password_resets (id, email, token, expires_at) VALUES (?, ?, ?, ?)",
+		id.New(), req.Email, token, expiresAt,
+	)
+	if err != nil {
+		return
+	}
+
+	go func() {
+		if err := s.sendPasswordResetEmail(req.Email, token); err != nil {
+			logger.WithCategory(logger.CatSystem).Error().Err(err).Msg("password reset email failed")
+		}
+	}()
+}
+
+// handleResetPassword completes a password reset using a token.
+// POST /api/auth/reset
+func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token       string `json:"token"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Token == "" || req.NewPassword == "" {
+		writeError(w, http.StatusBadRequest, "token and new_password required")
+		return
+	}
+
+	var resetID, email, expiresAt string
+	var used bool
+	err := s.global.DB.QueryRow(
+		"SELECT id, email, expires_at, used FROM password_resets WHERE token = ?", req.Token,
+	).Scan(&resetID, &email, &expiresAt, &used)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid or expired reset link")
+		return
+	}
+
+	if used {
+		writeError(w, http.StatusBadRequest, "this reset link has already been used")
+		return
+	}
+
+	expires, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil || time.Now().UTC().After(expires) {
+		writeError(w, http.StatusBadRequest, "this reset link has expired")
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to hash password")
+		return
+	}
+
+	_, err = s.global.DB.Exec("UPDATE accounts SET password_hash = ? WHERE email = ?", string(hash), email)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update password")
+		return
+	}
+
+	// Mark token as used
+	s.global.DB.Exec("UPDATE password_resets SET used = TRUE WHERE id = ?", resetID)
+
+	// Send confirmation
+	go s.sendPasswordChangedEmail(email)
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleVerifyEmail verifies an email address with a 6-digit code.
+// POST /api/auth/verify
+func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+		Code  string `json:"code"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Email == "" || req.Code == "" {
+		writeError(w, http.StatusBadRequest, "email and code required")
+		return
+	}
+
+	var verID, expiresAt string
+	var verified bool
+	err := s.global.DB.QueryRow(
+		"SELECT id, expires_at, verified FROM email_verifications WHERE email = ? AND code = ? ORDER BY created_at DESC LIMIT 1",
+		req.Email, req.Code,
+	).Scan(&verID, &expiresAt, &verified)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid verification code")
+		return
+	}
+
+	if verified {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "already_verified"})
+		return
+	}
+
+	expires, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil || time.Now().UTC().After(expires) {
+		writeError(w, http.StatusBadRequest, "verification code has expired")
+		return
+	}
+
+	// Mark verification as verified
+	s.global.DB.Exec("UPDATE email_verifications SET verified = TRUE WHERE id = ?", verID)
+	// Mark account as verified
+	s.global.DB.Exec("UPDATE accounts SET email_verified = TRUE WHERE email = ?", req.Email)
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// randomInt returns a random integer in [0, max) using crypto/rand.
+func randomInt(max int) int {
+	b := make([]byte, 4)
+	rand.Read(b)
+	return int(uint32(b[0])<<24|uint32(b[1])<<16|uint32(b[2])<<8|uint32(b[3])) % max
 }
 
 type workspaceEntry struct {

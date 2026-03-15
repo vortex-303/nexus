@@ -74,6 +74,8 @@ func (s *Server) handleCreateDoc(w http.ResponseWriter, r *http.Request) {
 		ID: docID, Type: "document", Title: req.Title, Content: req.Content, CreatedAt: now,
 	})
 
+	go s.embedDocument(slug, docID, req.Title+" "+req.Content)
+
 	doc := docResp{
 		ID:        docID,
 		Title:     req.Title,
@@ -237,6 +239,8 @@ func (s *Server) handleUpdateDoc(w http.ResponseWriter, r *http.Request) {
 		ID: d.ID, Type: "document", Title: d.Title, Content: d.Content,
 	})
 
+	go s.embedDocument(slug, d.ID, d.Title+" "+d.Content)
+
 	h := s.hubs.Get(slug)
 	h.BroadcastAll(hub.MakeEnvelope("doc.updated", d), "")
 
@@ -274,6 +278,10 @@ func (s *Server) handleDeleteDoc(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.search.Delete(slug, docID)
+
+	if s.vectors != nil {
+		go s.vectors.Delete(slug, docID)
+	}
 
 	h := s.hubs.Get(slug)
 	h.BroadcastAll(hub.MakeEnvelope("doc.deleted", map[string]string{"id": docID}), "")

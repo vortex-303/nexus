@@ -387,17 +387,26 @@ func (s *Server) handleGetWorkspaceInfo(w http.ResponseWriter, r *http.Request) 
 		onlineCount = len(h.OnlineMembers())
 	}
 
+	plan := "free"
+	maxMembers := freePlanMemberLimit
+	if s.cfg.LicenseKey != "" {
+		plan = "pro"
+		maxMembers = -1
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"slug":         slug,
-		"name":         wsName,
-		"created_at":   createdAt,
-		"created_by":   creatorName,
-		"counts":       counts,
-		"files_bytes":  filesSize,
-		"disk_bytes":   diskBytes,
-		"online_count": onlineCount,
-		"disk_display": formatBytes(diskBytes),
+		"slug":          slug,
+		"name":          wsName,
+		"created_at":    createdAt,
+		"created_by":    creatorName,
+		"counts":        counts,
+		"files_bytes":   filesSize,
+		"disk_bytes":    diskBytes,
+		"online_count":  onlineCount,
+		"disk_display":  formatBytes(diskBytes),
 		"files_display": formatBytes(filesSize),
+		"plan":          plan,
+		"max_members":   maxMembers,
 	})
 }
 

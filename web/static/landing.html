@@ -430,89 +430,267 @@ html.js-ready .reveal.visible {
   line-height: 1.6;
 }
 
-/* ---- Screenshot carousel ---- */
-.carousel {
-  position: relative;
+/* ---- Feature Vignettes ---- */
+.vignette-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-xl);
   max-width: 1100px;
   margin: 0 auto;
-  border-radius: var(--radius-xl);
+}
+.vignette-card {
+  border-radius: var(--radius-lg);
   overflow: hidden;
   border: 1px solid var(--border-subtle);
-  background: #0a0a12;
+  background: var(--bg-surface);
+  transition: border-color 0.3s, transform 0.3s, box-shadow 0.3s;
+  display: flex;
+  flex-direction: column;
 }
-.carousel-track {
+.vignette-card:hover {
+  border-color: var(--accent-border);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-glow);
+}
+.vignette-stage {
+  height: 200px;
+  padding: 20px;
   position: relative;
-  width: 100%;
+  overflow: hidden;
+  background: var(--bg-root);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.carousel-slide {
-  display: none;
+.vignette-info {
+  padding: 14px 18px;
 }
-.carousel-slide.active { display: block; }
-.carousel-slide img {
-  width: 100%;
-  height: auto;
-  display: block;
-}
-.carousel-caption {
-  padding: 12px 20px;
-  background: #0a0a12;
-  color: var(--text-secondary);
+.vignette-title {
   font-size: var(--text-sm);
-  font-weight: 500;
-  letter-spacing: 0.3px;
-  text-align: center;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
 }
-.carousel-nav {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  padding: 10px 0 14px;
-  background: #0a0a12;
+.vignette-desc {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  line-height: 1.5;
 }
-.carousel-arrow {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
+@media (max-width: 960px) {
+  .vignette-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 640px) {
+  .vignette-grid { grid-template-columns: 1fr; }
+}
+
+/* -- Vignette 1: Brain Knowledge -- */
+.v-brain { position: relative; width: 180px; height: 180px; }
+.v-brain-center {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 44px; height: 44px; border-radius: 50%;
+  background: radial-gradient(circle, var(--accent-glow-strong) 0%, transparent 70%);
+  border: 2px solid var(--accent);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; z-index: 2;
+}
+.v-brain-ring {
+  position: absolute; top: 50%; left: 50%;
+  border: 1px solid rgba(249,115,22,0.12);
   border-radius: 50%;
-  border: 1px solid var(--border-subtle);
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 1.1rem;
-  transition: border-color 0.2s, color 0.2s;
-  flex-shrink: 0;
 }
-.carousel-arrow:hover {
-  border-color: var(--accent);
+.v-brain-ring-1 { width: 100px; height: 100px; margin: -50px 0 0 -50px; animation: v-orbit 30s linear infinite; }
+.v-brain-ring-2 { width: 150px; height: 150px; margin: -75px 0 0 -75px; animation: v-orbit 45s linear infinite reverse; }
+.v-brain-node {
+  position: absolute;
+  font-size: 9px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase;
+  color: var(--text-tertiary);
+  padding: 3px 7px; border-radius: var(--radius-sm);
+  background: var(--bg-raised); border: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+.v-brain-node::before {
+  content: ''; position: absolute; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent); top: 50%; transform: translateY(-50%);
+}
+.v-brain-node.n1 { top: 8px; left: 50%; transform: translateX(-50%); }
+.v-brain-node.n1::before { left: -10px; }
+.v-brain-node.n2 { bottom: 8px; left: 50%; transform: translateX(-50%); }
+.v-brain-node.n2::before { left: -10px; }
+.v-brain-node.n3 { top: 50%; left: 0; transform: translate(-30%, -50%); }
+.v-brain-node.n3::before { right: -10px; left: auto; }
+.v-brain-node.n4 { top: 50%; right: 0; transform: translate(30%, -50%); }
+.v-brain-node.n4::before { left: -10px; }
+.v-brain-node.n5 { top: 22%; right: 2px; }
+.v-brain-node.n5::before { left: -10px; }
+.v-brain-line {
+  position: absolute; top: 50%; left: 50%;
+  height: 1px; transform-origin: 0 0;
+  background: linear-gradient(90deg, var(--accent-border), transparent);
+  animation: v-line-pulse 3s ease-in-out infinite;
+}
+@keyframes v-orbit { to { transform: rotate(360deg); } }
+@keyframes v-line-pulse { 0%, 100% { opacity: 0.2; } 50% { opacity: 0.6; } }
+
+/* -- Vignette 2: Agent Calendar -- */
+.v-calendar { width: 100%; max-width: 240px; }
+.v-cal-days {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px;
+  margin-bottom: 12px;
+}
+.v-cal-day-label {
+  text-align: center; font-size: 9px; font-weight: 600;
+  color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px;
+  padding-bottom: 4px;
+}
+.v-cal-cell {
+  aspect-ratio: 1; border-radius: var(--radius-sm);
+  background: var(--bg-raised); border: 1px solid var(--border-subtle);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; color: var(--text-tertiary); font-weight: 500;
+}
+.v-cal-cell.active {
+  background: var(--accent-glow); border-color: var(--accent-border);
   color: var(--accent);
 }
-.carousel-dots {
-  display: flex;
-  gap: 8px;
+.v-cal-cell.today { border-color: var(--accent); color: var(--text-primary); }
+.v-cal-events { display: flex; flex-direction: column; gap: 5px; }
+.v-cal-event {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 10px; font-family: var(--font-mono);
+  color: var(--text-secondary); padding: 5px 8px;
+  background: var(--bg-raised); border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
 }
-.carousel-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: none;
+.v-cal-event .dot {
+  width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0;
   background: var(--text-tertiary);
-  opacity: 0.3;
-  cursor: pointer;
-  padding: 0;
-  transition: opacity 0.3s, background 0.3s;
 }
-.carousel-dot.active {
-  opacity: 1;
-  background: var(--accent);
+.v-cal-event.running .dot {
+  background: var(--green);
+  animation: v-dot-pulse 1.5s ease-in-out infinite;
 }
-.carousel-dot:hover { opacity: 0.7; }
-@media (max-width: 480px) {
-  .carousel { border-radius: var(--radius-md); }
-  .carousel-arrow { width: 30px; height: 30px; font-size: 0.9rem; }
-  .carousel-caption { font-size: 0.75rem; padding: 8px 12px; }
+.v-cal-event .time { color: var(--text-tertiary); }
+@keyframes v-dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* -- Vignette 3: Cost Ticker -- */
+.v-cost { width: 100%; max-width: 230px; font-family: var(--font-mono); }
+.v-cost-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 5px 0; font-size: 10px; color: var(--text-secondary);
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.v-cost-row:last-child { border-bottom: none; }
+.v-cost-model { color: var(--text-tertiary); }
+.v-cost-amount { color: var(--green); font-weight: 500; }
+.v-cost-bar {
+  flex: 1; margin: 0 10px; height: 3px;
+  background: var(--bg-overlay); border-radius: 2px; overflow: hidden;
+  max-width: 60px;
+}
+.v-cost-bar-fill {
+  height: 100%; border-radius: 2px;
+  background: var(--accent); opacity: 0.5;
+}
+.v-cost-total {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 0 0; margin-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 11px; font-weight: 600;
+}
+.v-cost-total .label { color: var(--text-secondary); }
+.v-cost-total .amount { color: var(--accent); font-size: 14px; }
+.v-cost-header {
+  font-size: 9px; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--text-tertiary); margin-bottom: 10px; font-weight: 600;
+}
+
+/* -- Vignette 4: Chat Fragment -- */
+.v-chat { width: 100%; max-width: 250px; display: flex; flex-direction: column; gap: 8px; }
+.v-chat-msg {
+  display: flex; gap: 8px; align-items: flex-start;
+}
+.v-chat-avatar {
+  width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700;
+}
+.v-chat-avatar.user { background: #2a2a35; color: var(--text-secondary); }
+.v-chat-avatar.brain { background: var(--accent-glow-strong); color: var(--accent); border: 1px solid var(--accent-border); }
+.v-chat-bubble {
+  flex: 1; min-width: 0;
+}
+.v-chat-name {
+  font-size: 10px; font-weight: 600; color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+.v-chat-name.brain-name { color: var(--accent); }
+.v-chat-text {
+  font-size: 10px; color: var(--text-tertiary); line-height: 1.5;
+}
+.v-chat-tool {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 9px; font-family: var(--font-mono);
+  color: var(--accent); opacity: 0.6;
+  margin-top: 3px;
+  padding: 2px 6px; background: var(--accent-glow);
+  border-radius: var(--radius-sm);
+}
+
+/* -- Vignette 5: Task Board -- */
+.v-board { width: 100%; max-width: 250px; display: flex; gap: 6px; }
+.v-board-col {
+  flex: 1; display: flex; flex-direction: column; gap: 4px;
+}
+.v-board-col-header {
+  font-size: 8px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.8px; color: var(--text-tertiary);
+  padding: 4px 6px; text-align: center;
+  border-bottom: 2px solid var(--border-subtle);
+  margin-bottom: 2px;
+}
+.v-board-col-header.done-col { border-color: var(--green); color: var(--green); opacity: 0.6; }
+.v-board-col-header.prog-col { border-color: var(--accent); color: var(--accent); opacity: 0.6; }
+.v-task-chip {
+  padding: 6px 7px; border-radius: var(--radius-sm);
+  background: var(--bg-raised); border: 1px solid var(--border-subtle);
+  font-size: 9px; color: var(--text-secondary); line-height: 1.3;
+}
+.v-task-chip.priority { border-left: 2px solid var(--accent); }
+.v-task-chip.done-chip { opacity: 0.5; text-decoration: line-through; }
+.v-task-chip .v-task-assignee {
+  font-size: 8px; color: var(--text-tertiary); margin-top: 3px;
+}
+.v-task-slide {
+  animation: v-task-slide-in 4s ease-in-out infinite;
+}
+@keyframes v-task-slide-in {
+  0%, 40% { opacity: 1; transform: translateX(0); }
+  50% { opacity: 0; transform: translateX(10px); }
+  60%, 100% { opacity: 1; transform: translateX(0); }
+}
+
+/* -- Vignette 6: Data Sovereignty -- */
+.v-shield { text-align: center; width: 100%; max-width: 220px; }
+.v-shield-icon {
+  width: 48px; height: 48px; margin: 0 auto 14px;
+  border-radius: 50%; border: 2px solid var(--accent-border);
+  background: var(--accent-glow);
+  display: flex; align-items: center; justify-content: center;
+}
+.v-shield-badges {
+  display: flex; flex-direction: column; gap: 6px;
+  align-items: center;
+}
+.v-shield-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 10px; font-weight: 500; color: var(--text-secondary);
+  padding: 5px 12px; border-radius: var(--radius-full);
+  background: var(--bg-raised); border: 1px solid var(--border-subtle);
+}
+.v-shield-badge .check { color: var(--green); font-size: 11px; }
+.v-shield-map {
+  margin-top: 12px; opacity: 0.15;
 }
 
 /* ---- Cards ---- */
@@ -824,7 +1002,7 @@ html.js-ready .reveal.visible {
 }
 
 /* ---- Plans grid ---- */
-.plans-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2xl); max-width: 720px; margin: 0 auto; }
+.plans-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2xl); max-width: 1080px; margin: 0 auto; }
 .plan-card {
   background: var(--bg-root);
   border: 2px solid var(--accent-border);
@@ -834,6 +1012,12 @@ html.js-ready .reveal.visible {
   box-shadow: 0 0 30px rgba(249, 115, 22, 0.05);
 }
 .plan-card-outline { border-color: var(--border-default); box-shadow: none; }
+.plan-card-pro { border-color: var(--accent); box-shadow: 0 0 40px rgba(249, 115, 22, 0.15); }
+.plan-waitlist-form { display: flex; gap: 8px; margin-bottom: var(--space-xl); }
+.plan-waitlist-form input { flex: 1; padding: 10px 14px; border-radius: var(--radius-md); border: 1px solid var(--border-default); background: var(--bg-secondary); color: var(--text-primary); font-size: var(--text-sm); }
+.plan-waitlist-form input::placeholder { color: var(--text-tertiary); }
+.plan-waitlist-form button { white-space: nowrap; }
+.plan-waitlist-success { color: var(--accent); font-size: var(--text-sm); font-weight: 600; text-align: center; padding: var(--space-md) 0; margin-bottom: var(--space-xl); }
 .plan-badge {
   position: absolute;
   top: -12px; left: 50%;
@@ -1036,7 +1220,7 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
   .data-flow-grid { grid-template-columns: 1fr; }
   .hex-decoration { display: none; }
   .hero-stats { gap: var(--space-xl); }
-  .plans-grid { grid-template-columns: 1fr; max-width: 400px; }
+  .plans-grid { grid-template-columns: 1fr; max-width: 440px; }
   .deploy-grid { grid-template-columns: 1fr; gap: var(--space-lg); }
   .deploy-grid-4 { grid-template-columns: 1fr 1fr; }
   .deploy-or { text-align: center; }
@@ -1089,7 +1273,8 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
       <a href="#pricing" class="nav-link">Pricing</a>
       <a href="#compare" class="nav-link">Compare</a>
       <a href="https://github.com/vortex-303/nexus" class="nav-link" target="_blank" rel="noopener">GitHub</a>
-      <a href="/" class="btn btn-primary btn-sm nav-cta">Get Started</a>
+      <a href="/login?mode=login" class="nav-link">Log In</a>
+      <a href="/login" class="btn btn-primary btn-sm nav-cta">Get Started</a>
     </div>
   </nav>
 
@@ -1105,7 +1290,7 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
       </div>
       <h1 class="hero-headline">Your team's brain.<br><span class="accent-text">Not a chatbot.</span></h1>
       <p class="hero-sub">The AI workspace that coordinates humans and agents. Every decision, task, and commitment is extracted, attributed, and searchable &mdash; building team knowledge that compounds over time.</p>
-      <form class="hero-form" action="/" method="GET" onsubmit="if(this.querySelector('input').value.trim()){window.location.href='/';return false;}">
+      <form class="hero-form" action="/login" method="GET" onsubmit="window.location.href='/login';return false;">
         <input type="text" class="hero-input" placeholder="your-workspace-name" aria-label="Workspace name" />
         <button type="submit" class="btn btn-primary btn-lg hero-form-btn">
           Create Workspace
@@ -1189,48 +1374,178 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
     </div>
   </section>
 
-  <!-- ============ SCREENSHOT ============ -->
+  <!-- ============ FEATURE VIGNETTES ============ -->
   <section class="section">
     <div class="container">
-      <div class="carousel reveal" id="screenshot-carousel">
-        <div class="carousel-track">
-          <div class="carousel-slide active">
-            <img src="/screenshots/creative-director.png" alt="Creative Director agent generating ad campaigns with images" loading="lazy" />
-            <div class="carousel-caption">Creative Director &mdash; AI agent generating campaigns with images</div>
+      <div class="vignette-grid reveal">
+
+        <!-- 1. Brain Knowledge Graph -->
+        <div class="vignette-card">
+          <div class="vignette-stage">
+            <div class="v-brain">
+              <div class="v-brain-ring v-brain-ring-2"></div>
+              <div class="v-brain-ring v-brain-ring-1"></div>
+              <div class="v-brain-center">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5"><path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.5 4.5-3 6l-1 4H9l-1-4c-1.5-1.5-3-3.5-3-6a7 7 0 0 1 7-7z"/><path d="M9 19h6M10 22h4" stroke-linecap="round"/></svg>
+              </div>
+              <div class="v-brain-node n1">Decisions</div>
+              <div class="v-brain-node n2">People</div>
+              <div class="v-brain-node n3">Memory</div>
+              <div class="v-brain-node n4">Tasks</div>
+              <div class="v-brain-node n5">Facts</div>
+            </div>
           </div>
-          <div class="carousel-slide">
-            <img src="/screenshots/social-pulse.png" alt="Social Pulse with sentiment analysis and predictions" loading="lazy" />
-            <div class="carousel-caption">Social Pulse &mdash; Real-time sentiment analysis with predictions</div>
-          </div>
-          <div class="carousel-slide">
-            <img src="/screenshots/living-briefs.png" alt="Living Briefs workspace pulse report" loading="lazy" />
-            <div class="carousel-caption">Living Briefs &mdash; AI-generated workspace intelligence reports</div>
-          </div>
-          <div class="carousel-slide">
-            <img src="/screenshots/tasks.png" alt="Kanban task board" loading="lazy" />
-            <div class="carousel-caption">Tasks &mdash; Kanban boards with AI-powered task management</div>
-          </div>
-          <div class="carousel-slide">
-            <img src="/screenshots/calendar.png" alt="Calendar with scheduled AI agents" loading="lazy" />
-            <div class="carousel-caption">Calendar &mdash; Schedule AI agents to run autonomously</div>
-          </div>
-          <div class="carousel-slide">
-            <img src="/screenshots/schedule-agent.png" alt="Schedule Agent dialog" loading="lazy" />
-            <div class="carousel-caption">Agent Scheduling &mdash; Set any agent to run on a timer</div>
+          <div class="vignette-info">
+            <div class="vignette-title">Brain Knowledge Graph</div>
+            <div class="vignette-desc">Remembers everything. Connects the dots.</div>
           </div>
         </div>
-        <div class="carousel-nav">
-          <button class="carousel-arrow" onclick="prevSlide()" aria-label="Previous">&#8249;</button>
-          <div class="carousel-dots">
-            <button class="carousel-dot active" onclick="goToSlide(0)"></button>
-            <button class="carousel-dot" onclick="goToSlide(1)"></button>
-            <button class="carousel-dot" onclick="goToSlide(2)"></button>
-            <button class="carousel-dot" onclick="goToSlide(3)"></button>
-            <button class="carousel-dot" onclick="goToSlide(4)"></button>
-            <button class="carousel-dot" onclick="goToSlide(5)"></button>
+
+        <!-- 2. Agent Calendar -->
+        <div class="vignette-card">
+          <div class="vignette-stage">
+            <div class="v-calendar">
+              <div class="v-cal-days">
+                <div class="v-cal-day-label">M</div><div class="v-cal-day-label">T</div><div class="v-cal-day-label">W</div><div class="v-cal-day-label">T</div><div class="v-cal-day-label">F</div>
+                <div class="v-cal-cell">10</div><div class="v-cal-cell active">11</div><div class="v-cal-cell">12</div><div class="v-cal-cell today">13</div><div class="v-cal-cell active">14</div>
+                <div class="v-cal-cell">17</div><div class="v-cal-cell">18</div><div class="v-cal-cell active">19</div><div class="v-cal-cell">20</div><div class="v-cal-cell">21</div>
+              </div>
+              <div class="v-cal-events">
+                <div class="v-cal-event running"><span class="dot"></span><span class="time">09:00</span> Weekly digest</div>
+                <div class="v-cal-event"><span class="dot"></span><span class="time">14:00</span> Pipeline check</div>
+                <div class="v-cal-event"><span class="dot"></span><span class="time">18:00</span> News roundup</div>
+              </div>
+            </div>
           </div>
-          <button class="carousel-arrow" onclick="nextSlide()" aria-label="Next">&#8250;</button>
+          <div class="vignette-info">
+            <div class="vignette-title">Scheduled Intelligence</div>
+            <div class="vignette-desc">Agents that work while you sleep.</div>
+          </div>
         </div>
+
+        <!-- 3. Transparent Cost Ticker -->
+        <div class="vignette-card">
+          <div class="vignette-stage">
+            <div class="v-cost">
+              <div class="v-cost-header">Today's usage</div>
+              <div class="v-cost-row">
+                <span class="v-cost-model">grok-3-mini</span>
+                <span class="v-cost-bar"><span class="v-cost-bar-fill" style="width: 15%"></span></span>
+                <span class="v-cost-amount">$0.003</span>
+              </div>
+              <div class="v-cost-row">
+                <span class="v-cost-model">gemini-2.5-pro</span>
+                <span class="v-cost-bar"><span class="v-cost-bar-fill" style="width: 55%"></span></span>
+                <span class="v-cost-amount">$0.021</span>
+              </div>
+              <div class="v-cost-row">
+                <span class="v-cost-model">claude-sonnet</span>
+                <span class="v-cost-bar"><span class="v-cost-bar-fill" style="width: 80%"></span></span>
+                <span class="v-cost-amount">$0.034</span>
+              </div>
+              <div class="v-cost-row">
+                <span class="v-cost-model">llama-3.3-70b</span>
+                <span class="v-cost-bar"><span class="v-cost-bar-fill" style="width: 8%"></span></span>
+                <span class="v-cost-amount">$0.000</span>
+              </div>
+              <div class="v-cost-total">
+                <span class="label">Total today</span>
+                <span class="amount" id="v-cost-counter">$0.058</span>
+              </div>
+            </div>
+          </div>
+          <div class="vignette-info">
+            <div class="vignette-title">Transparent Costs</div>
+            <div class="vignette-desc">Every token accounted for.</div>
+          </div>
+        </div>
+
+        <!-- 4. Live Chat Fragment -->
+        <div class="vignette-card">
+          <div class="vignette-stage">
+            <div class="v-chat">
+              <div class="v-chat-msg">
+                <div class="v-chat-avatar user">N</div>
+                <div class="v-chat-bubble">
+                  <div class="v-chat-name">Nico</div>
+                  <div class="v-chat-text">schedule the standup for every Monday at 9am</div>
+                </div>
+              </div>
+              <div class="v-chat-msg">
+                <div class="v-chat-avatar brain">B</div>
+                <div class="v-chat-bubble">
+                  <div class="v-chat-name brain-name">Brain</div>
+                  <div class="v-chat-text">Done! Recurring event created: "Standup" every Monday 9:00 AM.</div>
+                  <div class="v-chat-tool">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                    create_calendar_event
+                  </div>
+                </div>
+              </div>
+              <div class="v-chat-msg">
+                <div class="v-chat-avatar user">A</div>
+                <div class="v-chat-bubble">
+                  <div class="v-chat-name">Alex</div>
+                  <div class="v-chat-text">also create a task to prep the agenda</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="vignette-info">
+            <div class="vignette-title">AI That Acts</div>
+            <div class="vignette-desc">Not just chat. Tools, tasks, and real actions.</div>
+          </div>
+        </div>
+
+        <!-- 5. Task Board -->
+        <div class="vignette-card">
+          <div class="vignette-stage">
+            <div class="v-board">
+              <div class="v-board-col">
+                <div class="v-board-col-header">Todo</div>
+                <div class="v-task-chip priority">Design landing page<div class="v-task-assignee">Alex</div></div>
+                <div class="v-task-chip">Write API docs</div>
+                <div class="v-task-chip">Setup CI pipeline</div>
+              </div>
+              <div class="v-board-col">
+                <div class="v-board-col-header prog-col">In Progress</div>
+                <div class="v-task-chip priority v-task-slide">Auth flow<div class="v-task-assignee">Nico</div></div>
+                <div class="v-task-chip">DB migrations</div>
+              </div>
+              <div class="v-board-col">
+                <div class="v-board-col-header done-col">Done</div>
+                <div class="v-task-chip done-chip">Init repo</div>
+                <div class="v-task-chip done-chip">Deploy staging</div>
+              </div>
+            </div>
+          </div>
+          <div class="vignette-info">
+            <div class="vignette-title">Task Management</div>
+            <div class="vignette-desc">From conversation to completion.</div>
+          </div>
+        </div>
+
+        <!-- 6. Data Sovereignty -->
+        <div class="vignette-card">
+          <div class="vignette-stage">
+            <div class="v-shield">
+              <div class="v-shield-icon">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+              </div>
+              <div class="v-shield-badges">
+                <div class="v-shield-badge"><span class="check">&#10003;</span> Your server, your data</div>
+                <div class="v-shield-badge"><span class="check">&#10003;</span> Zero telemetry</div>
+                <div class="v-shield-badge"><span class="check">&#10003;</span> Instant delete</div>
+                <div class="v-shield-badge"><span class="check">&#10003;</span> No training on your data</div>
+              </div>
+            </div>
+          </div>
+          <div class="vignette-info">
+            <div class="vignette-title">Data Sovereignty</div>
+            <div class="vignette-desc">Your data. Your rules. Period.</div>
+          </div>
+        </div>
+
       </div>
     </div>
   </section>
@@ -1309,9 +1624,9 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           </div>
           <h3>Portable workspace</h3>
-          <p>Download your entire workspace as a single file. Messages, tasks, documents, files, Brain memory &mdash; everything. Import it on any Nexus instance. Your workspace is a file, not a subscription.</p>
+          <p>Download your entire workspace as a single file. Messages, tasks, documents, files, Brain memory &mdash; everything. Import it on any Nexus instance. Your workspace is a file, not a subscription. One-click kill switch to permanently erase everything &mdash; instant, irreversible.</p>
           <div class="card-footer">
-            <code>workspace.nexus &middot; one file</code>
+            <code>workspace.nexus &middot; one file &middot; kill switch</code>
           </div>
         </div>
         <div class="card card-accent-top reveal">
@@ -1332,16 +1647,6 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
           <p>Every AI call tracked with exact token counts and costs. See what you spend per model, per action, per day. Slack AI charges $10/user/month &mdash; Nexus averages $0.10. Full cost dashboard built in.</p>
           <div class="card-footer">
             <code>~100x cheaper than Slack AI</code>
-          </div>
-        </div>
-        <div class="card card-accent-top reveal">
-          <div class="card-icon-wrap">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-          </div>
-          <h3>Kill switch</h3>
-          <p>One button. Everything gone. Not a 30-day GDPR request. Not a support ticket. Instant, irreversible deletion of all workspace data. We have nothing to gain from keeping it.</p>
-          <div class="card-footer">
-            <code>instant &middot; irreversible</code>
           </div>
         </div>
       </div>
@@ -1445,78 +1750,159 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
         </div>
         <div class="brain-viz reveal">
           <svg viewBox="0 0 320 320" fill="none" class="brain-svg">
-            <!-- Outer orbit -->
-            <circle cx="160" cy="160" r="120" stroke="var(--border-subtle)" stroke-width="1" stroke-dasharray="4 6" opacity="0.3">
-              <animateTransform attributeName="transform" type="rotate" from="0 160 160" to="360 160 160" dur="60s" repeatCount="indefinite"/>
+            <defs>
+              <radialGradient id="brainGlow" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.15"/>
+                <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
+              </radialGradient>
+            </defs>
+            <!-- Radial glow behind center -->
+            <circle cx="160" cy="160" r="80" fill="url(#brainGlow)"/>
+            <!-- Orbit rings -->
+            <circle cx="160" cy="160" r="140" stroke="var(--border-subtle)" stroke-width="0.5" stroke-dasharray="3 8" opacity="0.2">
+              <animateTransform attributeName="transform" type="rotate" from="0 160 160" to="360 160 160" dur="90s" repeatCount="indefinite"/>
             </circle>
-            <!-- Inner orbit -->
-            <circle cx="160" cy="160" r="70" stroke="var(--border-subtle)" stroke-width="1" stroke-dasharray="2 4" opacity="0.2">
-              <animateTransform attributeName="transform" type="rotate" from="360 160 160" to="0 160 160" dur="45s" repeatCount="indefinite"/>
+            <circle cx="160" cy="160" r="100" stroke="var(--border-subtle)" stroke-width="0.75" stroke-dasharray="4 6" opacity="0.25">
+              <animateTransform attributeName="transform" type="rotate" from="360 160 160" to="0 160 160" dur="60s" repeatCount="indefinite"/>
             </circle>
-            <!-- Connection lines -->
-            <line x1="160" y1="160" x2="160" y2="40" stroke="var(--accent)" stroke-width="1" opacity="0.2"/>
-            <line x1="160" y1="160" x2="264" y2="100" stroke="var(--accent)" stroke-width="1" opacity="0.2"/>
-            <line x1="160" y1="160" x2="264" y2="220" stroke="var(--accent)" stroke-width="1" opacity="0.2"/>
-            <line x1="160" y1="160" x2="160" y2="280" stroke="var(--accent)" stroke-width="1" opacity="0.2"/>
-            <line x1="160" y1="160" x2="56" y2="220" stroke="var(--accent)" stroke-width="1" opacity="0.2"/>
-            <line x1="160" y1="160" x2="56" y2="100" stroke="var(--accent)" stroke-width="1" opacity="0.2"/>
-            <!-- Glow ring -->
+            <circle cx="160" cy="160" r="60" stroke="var(--border-subtle)" stroke-width="1" stroke-dasharray="2 4" opacity="0.2">
+              <animateTransform attributeName="transform" type="rotate" from="0 160 160" to="360 160 160" dur="40s" repeatCount="indefinite"/>
+            </circle>
+            <!-- Connection lines with pulsing opacity -->
+            <line x1="160" y1="160" x2="160" y2="30" stroke="var(--accent)" stroke-width="0.75" opacity="0.15">
+              <animate attributeName="opacity" values="0.1;0.3;0.1" dur="4s" begin="0s" repeatCount="indefinite"/>
+            </line>
+            <line x1="160" y1="160" x2="272" y2="95" stroke="var(--accent)" stroke-width="0.75" opacity="0.15">
+              <animate attributeName="opacity" values="0.1;0.3;0.1" dur="4s" begin="0.7s" repeatCount="indefinite"/>
+            </line>
+            <line x1="160" y1="160" x2="272" y2="225" stroke="var(--accent)" stroke-width="0.75" opacity="0.15">
+              <animate attributeName="opacity" values="0.1;0.3;0.1" dur="4s" begin="1.4s" repeatCount="indefinite"/>
+            </line>
+            <line x1="160" y1="160" x2="160" y2="290" stroke="var(--accent)" stroke-width="0.75" opacity="0.15">
+              <animate attributeName="opacity" values="0.1;0.3;0.1" dur="4s" begin="2.1s" repeatCount="indefinite"/>
+            </line>
+            <line x1="160" y1="160" x2="48" y2="225" stroke="var(--accent)" stroke-width="0.75" opacity="0.15">
+              <animate attributeName="opacity" values="0.1;0.3;0.1" dur="4s" begin="2.8s" repeatCount="indefinite"/>
+            </line>
+            <line x1="160" y1="160" x2="48" y2="95" stroke="var(--accent)" stroke-width="0.75" opacity="0.15">
+              <animate attributeName="opacity" values="0.1;0.3;0.1" dur="4s" begin="3.5s" repeatCount="indefinite"/>
+            </line>
+            <!-- Pulse rings -->
             <circle cx="160" cy="160" r="32" fill="none" stroke="var(--accent)" stroke-width="0.5" opacity="0.15">
-              <animate attributeName="r" values="32;60;32" dur="4s" repeatCount="indefinite"/>
-              <animate attributeName="opacity" values="0.15;0;0.15" dur="4s" repeatCount="indefinite"/>
+              <animate attributeName="r" values="32;65;32" dur="5s" repeatCount="indefinite"/>
+              <animate attributeName="opacity" values="0.15;0;0.15" dur="5s" repeatCount="indefinite"/>
             </circle>
             <circle cx="160" cy="160" r="32" fill="none" stroke="var(--accent)" stroke-width="0.5" opacity="0.1">
-              <animate attributeName="r" values="32;80;32" dur="4s" begin="1s" repeatCount="indefinite"/>
-              <animate attributeName="opacity" values="0.1;0;0.1" dur="4s" begin="1s" repeatCount="indefinite"/>
+              <animate attributeName="r" values="32;90;32" dur="5s" begin="1.5s" repeatCount="indefinite"/>
+              <animate attributeName="opacity" values="0.1;0;0.1" dur="5s" begin="1.5s" repeatCount="indefinite"/>
             </circle>
             <!-- Center brain node -->
-            <circle cx="160" cy="160" r="32" fill="var(--bg-root)" stroke="var(--accent)" stroke-width="2"/>
+            <circle cx="160" cy="160" r="32" fill="var(--bg-root)" stroke="var(--accent)" stroke-width="2">
+              <animate attributeName="stroke-opacity" values="1;0.5;1" dur="3s" repeatCount="indefinite"/>
+            </circle>
             <text x="160" y="157" text-anchor="middle" fill="var(--accent)" font-size="10" font-weight="700" font-family="var(--font-sans)">BRAIN</text>
             <text x="160" y="170" text-anchor="middle" fill="var(--text-tertiary)" font-size="7" font-family="var(--font-sans)">knowledge graph</text>
-            <!-- Agent nodes -->
+            <!-- Concept nodes -->
+            <!-- Decisions (top) -->
             <g>
-              <circle cx="160" cy="40" r="18" fill="var(--bg-surface)" stroke="var(--border-strong)" stroke-width="1.5"/>
-              <text x="160" y="37" text-anchor="middle" fill="var(--accent)" font-size="12">&#9998;</text>
-              <text x="160" y="48" text-anchor="middle" fill="var(--text-secondary)" font-size="7" font-family="var(--font-sans)">Writer</text>
+              <animateTransform attributeName="transform" type="translate" values="0,0;0,-3;0,0" dur="4s" begin="0s" repeatCount="indefinite"/>
+              <circle cx="160" cy="30" r="18" fill="var(--bg-surface)" stroke="var(--border-strong)" stroke-width="1.5"/>
+              <g transform="translate(152,22) scale(0.65)" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+              </g>
+              <text x="160" y="48" text-anchor="middle" fill="var(--text-secondary)" font-size="6.5" font-family="var(--font-sans)">Decisions</text>
             </g>
+            <!-- Memories (top-right) -->
             <g>
-              <circle cx="264" cy="100" r="18" fill="var(--bg-surface)" stroke="var(--border-strong)" stroke-width="1.5"/>
-              <text x="264" y="97" text-anchor="middle" fill="var(--accent)" font-size="12">&lt;/&gt;</text>
-              <text x="264" y="108" text-anchor="middle" fill="var(--text-secondary)" font-size="7" font-family="var(--font-sans)">Coder</text>
+              <animateTransform attributeName="transform" type="translate" values="0,0;0,3;0,0" dur="4.5s" begin="0.5s" repeatCount="indefinite"/>
+              <circle cx="272" cy="95" r="18" fill="var(--bg-surface)" stroke="var(--border-strong)" stroke-width="1.5"/>
+              <g transform="translate(264,87) scale(0.65)" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2a7 7 0 017 7c0 2.5-1.5 4.5-3 6s-4 4-4 7"/><path d="M12 22v0"/><path d="M5 9a7 7 0 010-0"/>
+              </g>
+              <text x="272" y="113" text-anchor="middle" fill="var(--text-secondary)" font-size="6.5" font-family="var(--font-sans)">Memories</text>
             </g>
+            <!-- Tasks (bottom-right) -->
             <g>
-              <circle cx="264" cy="220" r="18" fill="var(--bg-surface)" stroke="var(--border-strong)" stroke-width="1.5"/>
-              <text x="264" y="218" text-anchor="middle" fill="var(--accent)" font-size="11">&#9776;</text>
-              <text x="264" y="229" text-anchor="middle" fill="var(--text-secondary)" font-size="7" font-family="var(--font-sans)">Analyst</text>
+              <animateTransform attributeName="transform" type="translate" values="0,0;0,-2;0,0" dur="3.8s" begin="1s" repeatCount="indefinite"/>
+              <circle cx="272" cy="225" r="18" fill="var(--bg-surface)" stroke="var(--border-strong)" stroke-width="1.5"/>
+              <g transform="translate(264,217) scale(0.65)" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+              </g>
+              <text x="272" y="243" text-anchor="middle" fill="var(--text-secondary)" font-size="6.5" font-family="var(--font-sans)">Tasks</text>
             </g>
+            <!-- Events (bottom) -->
             <g>
-              <circle cx="160" cy="280" r="18" fill="var(--bg-surface)" stroke="var(--border-strong)" stroke-width="1.5"/>
-              <text x="160" y="278" text-anchor="middle" fill="var(--accent)" font-size="11">&#9881;</text>
-              <text x="160" y="289" text-anchor="middle" fill="var(--text-secondary)" font-size="7" font-family="var(--font-sans)">Planner</text>
+              <animateTransform attributeName="transform" type="translate" values="0,0;0,3;0,0" dur="4.2s" begin="1.5s" repeatCount="indefinite"/>
+              <circle cx="160" cy="290" r="18" fill="var(--bg-surface)" stroke="var(--border-strong)" stroke-width="1.5"/>
+              <g transform="translate(152,282) scale(0.65)" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+              </g>
+              <text x="160" y="308" text-anchor="middle" fill="var(--text-secondary)" font-size="6.5" font-family="var(--font-sans)">Events</text>
             </g>
+            <!-- Knowledge (bottom-left) -->
             <g>
-              <circle cx="56" cy="220" r="18" fill="var(--bg-surface)" stroke="var(--border-strong)" stroke-width="1.5"/>
-              <text x="56" y="218" text-anchor="middle" fill="var(--accent)" font-size="11">&#128269;</text>
-              <text x="56" y="229" text-anchor="middle" fill="var(--text-secondary)" font-size="6" font-family="var(--font-sans)">Research</text>
+              <animateTransform attributeName="transform" type="translate" values="0,0;0,-3;0,0" dur="4.8s" begin="2s" repeatCount="indefinite"/>
+              <circle cx="48" cy="225" r="18" fill="var(--bg-surface)" stroke="var(--border-strong)" stroke-width="1.5"/>
+              <g transform="translate(40,217) scale(0.65)" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/>
+              </g>
+              <text x="48" y="243" text-anchor="middle" fill="var(--text-secondary)" font-size="6.5" font-family="var(--font-sans)">Knowledge</text>
             </g>
+            <!-- People (top-left) -->
             <g>
-              <circle cx="56" cy="100" r="18" fill="var(--bg-surface)" stroke="var(--border-strong)" stroke-width="1.5"/>
-              <text x="56" y="97" text-anchor="middle" fill="var(--accent)" font-size="11">+</text>
-              <text x="56" y="108" text-anchor="middle" fill="var(--text-secondary)" font-size="7" font-family="var(--font-sans)">Custom</text>
+              <animateTransform attributeName="transform" type="translate" values="0,0;0,2;0,0" dur="3.5s" begin="2.5s" repeatCount="indefinite"/>
+              <circle cx="48" cy="95" r="18" fill="var(--bg-surface)" stroke="var(--border-strong)" stroke-width="1.5"/>
+              <g transform="translate(40,87) scale(0.65)" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>
+              </g>
+              <text x="48" y="113" text-anchor="middle" fill="var(--text-secondary)" font-size="6.5" font-family="var(--font-sans)">People</text>
             </g>
-            <!-- Data flow particles -->
+            <!-- Data flow particles (one per node) -->
             <circle r="2" fill="var(--accent)" opacity="0.6">
-              <animateMotion dur="3s" repeatCount="indefinite" path="M160,160 L160,40"/>
-              <animate attributeName="opacity" values="0;0.6;0" dur="3s" repeatCount="indefinite"/>
+              <animateMotion dur="3s" repeatCount="indefinite" path="M160,160 L160,30"/>
+              <animate attributeName="opacity" values="0;0.7;0" dur="3s" repeatCount="indefinite"/>
             </circle>
             <circle r="2" fill="var(--accent)" opacity="0.6">
-              <animateMotion dur="3.5s" repeatCount="indefinite" path="M160,160 L264,220"/>
-              <animate attributeName="opacity" values="0;0.6;0" dur="3.5s" repeatCount="indefinite"/>
+              <animateMotion dur="3.5s" begin="0.5s" repeatCount="indefinite" path="M160,160 L272,95"/>
+              <animate attributeName="opacity" values="0;0.7;0" dur="3.5s" begin="0.5s" repeatCount="indefinite"/>
             </circle>
             <circle r="2" fill="var(--accent)" opacity="0.6">
-              <animateMotion dur="2.8s" repeatCount="indefinite" path="M160,160 L56,100"/>
-              <animate attributeName="opacity" values="0;0.6;0" dur="2.8s" repeatCount="indefinite"/>
+              <animateMotion dur="2.8s" begin="1s" repeatCount="indefinite" path="M160,160 L272,225"/>
+              <animate attributeName="opacity" values="0;0.7;0" dur="2.8s" begin="1s" repeatCount="indefinite"/>
             </circle>
+            <circle r="2" fill="var(--accent)" opacity="0.6">
+              <animateMotion dur="3.2s" begin="1.5s" repeatCount="indefinite" path="M160,160 L160,290"/>
+              <animate attributeName="opacity" values="0;0.7;0" dur="3.2s" begin="1.5s" repeatCount="indefinite"/>
+            </circle>
+            <circle r="2" fill="var(--accent)" opacity="0.6">
+              <animateMotion dur="2.6s" begin="2s" repeatCount="indefinite" path="M160,160 L48,225"/>
+              <animate attributeName="opacity" values="0;0.7;0" dur="2.6s" begin="2s" repeatCount="indefinite"/>
+            </circle>
+            <circle r="2" fill="var(--accent)" opacity="0.6">
+              <animateMotion dur="3.8s" begin="2.5s" repeatCount="indefinite" path="M160,160 L48,95"/>
+              <animate attributeName="opacity" values="0;0.7;0" dur="3.8s" begin="2.5s" repeatCount="indefinite"/>
+            </circle>
+            <!-- Floating text fragments -->
+            <text x="60" y="55" fill="var(--text-tertiary)" font-size="6" font-family="var(--font-sans)" opacity="0">
+              Q4 budget approved
+              <animate attributeName="opacity" values="0;0;0.5;0.5;0;0" dur="10s" begin="0s" repeatCount="indefinite"/>
+            </text>
+            <text x="220" y="45" fill="var(--text-tertiary)" font-size="6" font-family="var(--font-sans)" opacity="0">
+              Ship by March
+              <animate attributeName="opacity" values="0;0;0.5;0.5;0;0" dur="12s" begin="3s" repeatCount="indefinite"/>
+            </text>
+            <text x="250" y="170" fill="var(--text-tertiary)" font-size="6" font-family="var(--font-sans)" opacity="0">
+              Design review @ 3pm
+              <animate attributeName="opacity" values="0;0;0.5;0.5;0;0" dur="9s" begin="5s" repeatCount="indefinite"/>
+            </text>
+            <text x="30" y="170" fill="var(--text-tertiary)" font-size="6" font-family="var(--font-sans)" opacity="0">
+              Sarah joined eng
+              <animate attributeName="opacity" values="0;0;0.5;0.5;0;0" dur="11s" begin="7s" repeatCount="indefinite"/>
+            </text>
+            <text x="200" y="300" fill="var(--text-tertiary)" font-size="6" font-family="var(--font-sans)" opacity="0">
+              Onboarding complete
+              <animate attributeName="opacity" values="0;0;0.5;0.5;0;0" dur="8s" begin="2s" repeatCount="indefinite"/>
+            </text>
           </svg>
         </div>
       </div>
@@ -1733,44 +2119,63 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
   <section class="section section-dark" id="pricing">
     <div class="container">
       <div class="section-header reveal">
-        <span class="section-eyebrow">Choose your path</span>
-        <h2 class="section-title">Cloud or self-hosted.<br>Same brain, same privacy.</h2>
-        <p class="section-desc">Start on our cloud in 10 seconds. Move to self-hosted whenever you want. Or run both.</p>
+        <span class="section-eyebrow">Pricing</span>
+        <h2 class="section-title">Start free. Scale when you're ready.</h2>
+        <p class="section-desc">Every plan includes Brain AI, unlimited messages, and all features. Upgrade for more members, or self-host for total control.</p>
       </div>
       <div class="plans-grid">
         <div class="plan-card reveal">
-          <div class="plan-badge">Most popular</div>
-          <h3 class="plan-name">Nexus Cloud</h3>
+          <h3 class="plan-name">Free</h3>
           <div class="plan-price">
-            <span class="plan-amount">Free</span>
-            <span class="plan-period">to start</span>
+            <span class="plan-amount">$0</span>
+            <span class="plan-period">forever</span>
           </div>
-          <p class="plan-desc">We host it. You own the data. Start in seconds &mdash; no install, no config, no credit card.</p>
-          <a href="/" class="btn btn-primary plan-cta">Create Workspace</a>
+          <p class="plan-desc">Get started instantly. No credit card, no catch.</p>
+          <a href="/login" class="btn btn-primary plan-cta">Create Workspace</a>
           <ul class="plan-features">
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Managed hosting &mdash; zero ops
+              Up to 5 team members
             </li>
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Automatic updates &amp; backups
+              Brain AI + all features
             </li>
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Same privacy guarantees
+              Unlimited messages &amp; tasks
             </li>
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Data encrypted at rest
+              Community support
+            </li>
+          </ul>
+        </div>
+        <div class="plan-card plan-card-pro reveal">
+          <div class="plan-badge">Pro</div>
+          <h3 class="plan-name">Pro</h3>
+          <div class="plan-price">
+            <span class="plan-amount">$29</span>
+            <span class="plan-period">/mo</span>
+          </div>
+          <p class="plan-desc">Everything in Free, plus unlimited members and priority support.</p>
+          <form class="plan-waitlist-form" id="waitlist-form" onsubmit="return false;">
+            <input type="email" id="waitlist-email" placeholder="you@company.com" required />
+            <button type="submit" class="btn btn-primary" id="waitlist-btn">Join Waitlist</button>
+          </form>
+          <div class="plan-waitlist-success" id="waitlist-success" style="display:none">You're on the list! We'll reach out soon.</div>
+          <ul class="plan-features">
+            <li>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Unlimited members
             </li>
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Export or delete anytime
+              Priority support
             </li>
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              No signup required &mdash; just a name
+              SSO / SAML (coming soon)
             </li>
           </ul>
         </div>
@@ -1780,12 +2185,16 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
             <span class="plan-amount">$0</span>
             <span class="plan-period">forever</span>
           </div>
-          <p class="plan-desc">Download the binary, run it on your hardware. Full control, full source code, full freedom.</p>
+          <p class="plan-desc">Download the binary, run it on your hardware. Full control, full freedom.</p>
           <a href="#deploy" class="btn btn-secondary plan-cta">Download Binary</a>
           <ul class="plan-features">
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Everything in Cloud, plus:
+              Free forever · 5 members
+            </li>
+            <li>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Pro license for unlimited
             </li>
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -1793,19 +2202,11 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
             </li>
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Run local LLMs with llama.cpp
+              Run local LLMs
             </li>
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Air-gapped / compliance ready
-            </li>
-            <li>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Customize &amp; extend the source
-            </li>
-            <li>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              MIT licensed &mdash; no strings
+              Full source code
             </li>
           </ul>
         </div>
@@ -1968,7 +2369,7 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
             Nexus Cloud
           </h3>
           <p class="deploy-card-desc">Name your workspace, pick a display name, done. No install, no config.</p>
-          <a href="/" class="btn btn-primary deploy-card-btn">Open Nexus Cloud</a>
+          <a href="/login" class="btn btn-primary deploy-card-btn">Open Nexus Cloud</a>
           <span class="deploy-card-time">~10 seconds</span>
         </div>
         <!-- Install script -->
@@ -1992,7 +2393,7 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
           </h3>
           <p class="deploy-card-desc">Single command with Docker Compose. Add SSL with the production config.</p>
           <div class="deploy-terminal">
-            <div class="terminal-line"><span class="t-prompt">$</span> curl -fsSL https://nexus-workspace.fly.dev/install-docker.sh | bash</div>
+            <div class="terminal-line"><span class="t-prompt">$</span> curl -fsSL https://nexusteams.dev/install-docker.sh | bash</div>
           </div>
           <span class="deploy-card-time">~1 minute</span>
         </div>
@@ -2051,7 +2452,7 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
       <h2 class="cta-headline">Ready to give your team<br>a brain?</h2>
       <p class="cta-sub">Start on the cloud in 10 seconds or self-host forever. No credit card, no catch.</p>
       <div class="cta-buttons">
-        <a href="/" class="btn btn-primary btn-xl">
+        <a href="/login" class="btn btn-primary btn-xl">
           Try Nexus Cloud &mdash; Free
           <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6.5 3.5L11 8L6.5 12.5"/></svg>
         </a>
@@ -2086,6 +2487,43 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
 <script>
 document.addEventListener('DOMContentLoaded', function() {
   document.documentElement.classList.add('js-ready');
+
+  // Auto-redirect returning users to their workspace
+  try {
+    var storedSlug = localStorage.getItem('nexus_workspace');
+    if (storedSlug) { window.location.href = '/w/' + storedSlug; return; }
+  } catch(e) {}
+
+  // Waitlist form
+  var wForm = document.getElementById('waitlist-form');
+  if (wForm) {
+    wForm.addEventListener('submit', function(e) {
+      e.preventDefault();
+      var emailInput = document.getElementById('waitlist-email');
+      var btn = document.getElementById('waitlist-btn');
+      var success = document.getElementById('waitlist-success');
+      var email = emailInput.value.trim();
+      if (!email) return;
+      btn.disabled = true;
+      btn.textContent = 'Joining...';
+      fetch('/api/waitlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, plan: 'pro' })
+      }).then(function(res) {
+        if (res.ok) {
+          wForm.style.display = 'none';
+          success.style.display = 'block';
+        } else {
+          btn.disabled = false;
+          btn.textContent = 'Join Waitlist';
+        }
+      }).catch(function() {
+        btn.disabled = false;
+        btn.textContent = 'Join Waitlist';
+      });
+    });
+  }
 
   // Scroll reveal
   var els = document.querySelectorAll('.reveal');
@@ -2329,44 +2767,6 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 });
 
-// Screenshot carousel
-var carouselCurrent = 0;
-var carouselSlides = document.querySelectorAll('.carousel-slide');
-var carouselDots = document.querySelectorAll('.carousel-dot');
-var carouselTimer;
-
-function goToSlide(i) {
-  carouselSlides[carouselCurrent].classList.remove('active');
-  carouselDots[carouselCurrent].classList.remove('active');
-  carouselCurrent = i;
-  carouselSlides[carouselCurrent].classList.add('active');
-  carouselDots[carouselCurrent].classList.add('active');
-  clearInterval(carouselTimer);
-  carouselTimer = setInterval(nextSlide, 5000);
-}
-
-function nextSlide() {
-  goToSlide((carouselCurrent + 1) % carouselSlides.length);
-}
-
-function prevSlide() {
-  goToSlide((carouselCurrent - 1 + carouselSlides.length) % carouselSlides.length);
-}
-
-if (carouselSlides.length > 0) {
-  carouselTimer = setInterval(nextSlide, 5000);
-  // Swipe support for mobile
-  var touchStartX = 0;
-  var carousel = document.getElementById('screenshot-carousel');
-  if (carousel) {
-    carousel.addEventListener('touchstart', function(e) { touchStartX = e.changedTouches[0].screenX; }, {passive: true});
-    carousel.addEventListener('touchend', function(e) {
-      var diff = e.changedTouches[0].screenX - touchStartX;
-      if (diff < -50) nextSlide();
-      else if (diff > 50) prevSlide();
-    }, {passive: true});
-  }
-}
 </script>
 </body>
 </html>

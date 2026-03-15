@@ -436,6 +436,33 @@ func BuildMemoryContext(db *sql.DB, query string) string {
 		return ""
 	}
 
+	// Batch-resolve channel names
+	channelNames := map[string]string{}
+	var channelIDs []string
+	for _, m := range current {
+		if m.SourceChannel != "" {
+			channelIDs = append(channelIDs, m.SourceChannel)
+		}
+	}
+	if len(channelIDs) > 0 {
+		placeholders := make([]string, len(channelIDs))
+		args := make([]any, len(channelIDs))
+		for i, cid := range channelIDs {
+			placeholders[i] = "?"
+			args[i] = cid
+		}
+		chRows, err := db.Query("SELECT id, name FROM channels WHERE id IN ("+strings.Join(placeholders, ",")+")", args...)
+		if err == nil {
+			defer chRows.Close()
+			for chRows.Next() {
+				var cid, cname string
+				if chRows.Scan(&cid, &cname) == nil {
+					channelNames[cid] = cname
+				}
+			}
+		}
+	}
+
 	var parts []string
 	parts = append(parts, "# Organizational Memory\n")
 
@@ -461,10 +488,15 @@ func BuildMemoryContext(db *sql.DB, query string) string {
 		parts = append(parts, fmt.Sprintf("## %s", typeLabels[t]))
 		for _, m := range mems {
 			line := fmt.Sprintf("- **%s**", m.Content)
-			// Add participants and date
+			// Add participants, channel, and date
 			var meta []string
 			if m.Participants != "" {
 				meta = append(meta, m.Participants)
+			}
+			if m.SourceChannel != "" {
+				if cname, ok := channelNames[m.SourceChannel]; ok {
+					meta = append(meta, "in #"+cname)
+				}
 			}
 			if t, err := time.Parse(time.RFC3339, m.CreatedAt); err == nil {
 				meta = append(meta, t.Format("Jan 2"))

@@ -18,6 +18,7 @@ type Config struct {
 	RedisURL   string `toml:"redis_url"`
 	QdrantURL   string `toml:"qdrant_url"`
 	ResendAPIKey string `toml:"brevo_api_key"`
+	LicenseKey   string `toml:"license_key"`
 }
 
 func defaults() Config {
@@ -83,6 +84,9 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("RESEND_API_KEY"); v != "" {
 		cfg.ResendAPIKey = v
+	}
+	if v := os.Getenv("NEXUS_LICENSE"); v != "" {
+		cfg.LicenseKey = v
 	}
 
 	// Ensure data directory exists

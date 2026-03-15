@@ -60,6 +60,19 @@ func backfillMemberColors(wdb *db.WorkspaceDB) {
 	}
 }
 
+const freePlanMemberLimit = 5
+const freePlanLimitMsg = "This workspace has reached the free plan limit of 5 members. Upgrade to Pro for unlimited members."
+
+// memberLimitReached returns true if the workspace has hit the free tier member cap.
+func (s *Server) memberLimitReached(wdb *db.WorkspaceDB) bool {
+	if s.cfg.LicenseKey != "" {
+		return false
+	}
+	var count int
+	_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM members WHERE role NOT IN ('agent','brain')").Scan(&count)
+	return count >= freePlanMemberLimit
+}
+
 type createWorkspaceReq struct {
 	DisplayName   string `json:"display_name"`
 	WorkspaceName string `json:"workspace_name"`
@@ -231,6 +244,12 @@ func (s *Server) handleJoinWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check free plan member limit
+	if s.memberLimitReached(wdb) {
+		writeError(w, http.StatusForbidden, freePlanLimitMsg)
+		return
+	}
+
 	// Add as member
 	userID := id.New()
 	joinColor := assignMemberColor(wdb)
@@ -273,11 +292,22 @@ func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check free plan member limit before creating invite
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to open workspace")
+		return
+	}
+	if s.memberLimitReached(wdb) {
+		writeError(w, http.StatusForbidden, freePlanLimitMsg)
+		return
+	}
+
 	inviteToken := id.Short()
 	inviteCode := id.InviteCode()
 	expires := time.Now().UTC().Add(24 * time.Hour).Format("2006-01-02T15:04:05Z")
 
-	_, err := s.global.DB.Exec(
+	_, err = s.global.DB.Exec(
 		"INSERT INTO invite_tokens (token, workspace_slug, created_by, expires_at) VALUES (?, ?, ?, ?)",
 		inviteToken, slug, claims.UserID, expires,
 	)
@@ -404,6 +434,12 @@ func (s *Server) handleJoinByCode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Check free plan member limit
+	if s.memberLimitReached(wdb) {
+		writeError(w, http.StatusForbidden, freePlanLimitMsg)
+		return
+	}
+
 	// Add as member
 	userID := id.New()
 	joinColor := assignMemberColor(wdb)
@@ -454,10 +490,21 @@ func (s *Server) handleInviteByEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check free plan member limit before sending invite
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to open workspace")
+		return
+	}
+	if s.memberLimitReached(wdb) {
+		writeError(w, http.StatusForbidden, freePlanLimitMsg)
+		return
+	}
+
 	// Create invite token + code
 	inviteToken := id.Short()
 	inviteCodeVal := id.InviteCode()
-	_, err := s.global.DB.Exec(
+	_, err = s.global.DB.Exec(
 		"INSERT INTO invite_tokens (token, workspace_slug, created_by) VALUES (?, ?, ?)",
 		inviteToken, slug, claims.UserID,
 	)
