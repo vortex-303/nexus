@@ -63,14 +63,18 @@ func backfillMemberColors(wdb *db.WorkspaceDB) {
 const freePlanMemberLimit = 5
 const freePlanLimitMsg = "This workspace has reached the free plan limit of 5 members. Upgrade to Pro for unlimited members."
 
-// memberLimitReached returns true if the workspace has hit the free tier member cap.
+// memberLimitReached returns true if the workspace has hit the member cap for its plan.
 func (s *Server) memberLimitReached(wdb *db.WorkspaceDB) bool {
-	if s.cfg.LicenseKey != "" {
-		return false
+	limit := freePlanMemberLimit
+	if s.cfg.License != nil {
+		limit = s.cfg.License.MaxMembers
+		if limit < 0 {
+			return false // unlimited
+		}
 	}
 	var count int
 	_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM members WHERE role NOT IN ('agent','brain')").Scan(&count)
-	return count >= freePlanMemberLimit
+	return count >= limit
 }
 
 type createWorkspaceReq struct {

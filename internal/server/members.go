@@ -389,9 +389,9 @@ func (s *Server) handleGetWorkspaceInfo(w http.ResponseWriter, r *http.Request) 
 
 	plan := "free"
 	maxMembers := freePlanMemberLimit
-	if s.cfg.LicenseKey != "" {
-		plan = "pro"
-		maxMembers = -1
+	if s.cfg.License != nil {
+		plan = s.cfg.License.Plan
+		maxMembers = s.cfg.License.MaxMembers
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

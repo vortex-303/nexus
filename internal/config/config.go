@@ -3,10 +3,13 @@ package config
 import (
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/nexus-chat/nexus/internal/license"
 )
 
 type Config struct {
@@ -19,6 +22,9 @@ type Config struct {
 	QdrantURL   string `toml:"qdrant_url"`
 	ResendAPIKey string `toml:"brevo_api_key"`
 	LicenseKey   string `toml:"license_key"`
+
+	// Parsed license (not serialized). Nil means free plan.
+	License *license.License `toml:"-"`
 }
 
 func defaults() Config {
@@ -92,6 +98,17 @@ func Load() (*Config, error) {
 	// Ensure data directory exists
 	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		return nil, fmt.Errorf("creating data dir: %w", err)
+	}
+
+	// Parse license key if present
+	if cfg.LicenseKey != "" {
+		lic, err := license.Parse(cfg.LicenseKey)
+		if err != nil {
+			log.Printf("[license] invalid license key: %v (falling back to free plan)", err)
+		} else {
+			cfg.License = lic
+			log.Printf("[license] valid license: plan=%s max_members=%d email=%s", lic.Plan, lic.MaxMembers, lic.Email)
+		}
 	}
 
 	return &cfg, nil
