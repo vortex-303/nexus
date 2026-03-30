@@ -11,7 +11,7 @@ INSTALL_DIR="/usr/local/bin"
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 case "$OS" in
   linux)  OS="linux" ;;
-  darwin) echo "macOS: use 'brew install nexus', Docker, or build from source."; exit 1 ;;
+  darwin) echo "macOS: use Docker or build from source (make build). See https://github.com/vortex-303/nexus"; exit 1 ;;
   *)      echo "Unsupported OS: $OS"; exit 1 ;;
 esac
 
@@ -73,7 +73,11 @@ echo ""
 echo "nexus ${VERSION} installed to ${INSTALL_DIR}/nexus"
 echo ""
 echo "Get started:"
+echo ""
 echo "  nexus serve"
 echo ""
-echo "Then open http://localhost:8080 in your browser."
+echo "Open http://localhost:8080 — create a workspace and you're in."
+echo "Data stored in ~/.nexus/ by default. Use --data-dir to change."
+echo ""
+echo "Docs: https://github.com/vortex-303/nexus"
 echo ""
