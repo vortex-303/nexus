@@ -3722,45 +3722,6 @@ autonomy: reactive
 			</button>
 		</div>
 
-		{#if showNotifications}
-			<div class="notif-panel">
-				<div class="notif-header">
-					<div class="notif-tabs">
-						<button class:active={notificationTab === 'all'} onclick={() => notificationTab = 'all'}>All</button>
-						<button class:active={notificationTab === 'mentions'} onclick={() => notificationTab = 'mentions'}>Mentions</button>
-						<button class:active={notificationTab === 'dms'} onclick={() => notificationTab = 'dms'}>DMs</button>
-					</div>
-					{#if notificationCount > 0}
-						<button class="notif-mark-all" onclick={handleMarkAllRead}>Mark all read</button>
-					{/if}
-				</div>
-				<div class="notif-list">
-					{#each notifications.filter((n: any) => notificationTab === 'all' || (notificationTab === 'mentions' && n.type === 'mention') || (notificationTab === 'dms' && n.type === 'dm')) as notif}
-						<button class="notif-item" class:unread={!notif.read} onclick={() => handleNotificationClick(notif)}>
-							<div class="notif-icon">
-								{#if notif.type === 'mention'}
-									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg>
-								{:else if notif.type === 'dm'}
-									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-								{:else}
-									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-								{/if}
-							</div>
-							<div class="notif-content">
-								<span class="notif-title">{notif.title}</span>
-								{#if notif.body}
-									<span class="notif-body">{notif.body.length > 80 ? notif.body.slice(0, 80) + '...' : notif.body}</span>
-								{/if}
-							</div>
-							<span class="notif-time">{timeAgo(notif.created_at)}</span>
-						</button>
-					{:else}
-						<div class="notif-empty">No notifications</div>
-					{/each}
-				</div>
-			</div>
-		{/if}
-
 		<nav class="sidebar-nav">
 			<!-- Feature pages -->
 			<div class="nav-section">
@@ -5772,6 +5733,46 @@ autonomy: reactive
 				{/if}
 			</div>
 		</div>
+	</div>
+</div>
+{/if}
+
+{#if showNotifications}
+<div class="notif-overlay" onclick={() => showNotifications = false}></div>
+<div class="notif-panel">
+	<div class="notif-header">
+		<div class="notif-tabs">
+			<button class:active={notificationTab === 'all'} onclick={() => notificationTab = 'all'}>All</button>
+			<button class:active={notificationTab === 'mentions'} onclick={() => notificationTab = 'mentions'}>Mentions</button>
+			<button class:active={notificationTab === 'dms'} onclick={() => notificationTab = 'dms'}>DMs</button>
+		</div>
+		{#if notificationCount > 0}
+			<button class="notif-mark-all" onclick={handleMarkAllRead}>Mark all read</button>
+		{/if}
+	</div>
+	<div class="notif-list">
+		{#each notifications.filter((n: any) => notificationTab === 'all' || (notificationTab === 'mentions' && n.type === 'mention') || (notificationTab === 'dms' && n.type === 'dm')) as notif}
+			<button class="notif-item" class:unread={!notif.read} onclick={() => handleNotificationClick(notif)}>
+				<div class="notif-icon">
+					{#if notif.type === 'mention'}
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg>
+					{:else if notif.type === 'dm'}
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+					{:else}
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+					{/if}
+				</div>
+				<div class="notif-content">
+					<span class="notif-title">{notif.title}</span>
+					{#if notif.body}
+						<span class="notif-body">{notif.body.length > 80 ? notif.body.slice(0, 80) + '...' : notif.body}</span>
+					{/if}
+				</div>
+				<span class="notif-time">{timeAgo(notif.created_at)}</span>
+			</button>
+		{:else}
+			<div class="notif-empty">No notifications</div>
+		{/each}
 	</div>
 </div>
 {/if}
@@ -7902,17 +7903,24 @@ autonomy: reactive
 		padding: 0 3px;
 		line-height: 1;
 	}
+	.notif-overlay {
+		position: fixed;
+		inset: 0;
+		z-index: 999;
+	}
 	.notif-panel {
-		position: absolute;
-		top: 100%;
-		left: 0;
-		right: 0;
-		z-index: 100;
+		position: fixed;
+		top: 48px;
+		left: 8px;
+		width: 340px;
+		z-index: 1000;
 		background: var(--bg-raised);
-		border-bottom: 1px solid var(--border-default);
-		max-height: 400px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-lg);
+		max-height: 450px;
 		display: flex;
 		flex-direction: column;
+		box-shadow: 0 8px 32px rgba(0,0,0,0.4);
 	}
 	.notif-header {
 		display: flex;

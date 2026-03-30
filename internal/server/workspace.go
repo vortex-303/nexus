@@ -193,6 +193,13 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	s.seedFreeMCPServers(slug)
 
+	// Welcome notification
+	go s.createNotification(wdb, slug, userID, "system",
+		"Welcome to Nexus!",
+		"Try @Brain in any channel, create tasks, invite your team, and explore the settings.",
+		"/w/"+slug,
+		"", "Nexus", "")
+
 	// Issue JWT
 	token, err := s.jwt.Issue(userID, req.DisplayName, slug, "admin", accountID)
 	if err != nil {
@@ -276,6 +283,13 @@ func (s *Server) handleJoinWorkspace(w http.ResponseWriter, r *http.Request) {
 	s.search.Index(slug, search.SearchDoc{
 		ID: userID, Type: "member", Title: req.DisplayName, Content: "member",
 	})
+
+	// Welcome notification
+	go s.createNotification(wdb, slug, userID, "system",
+		"Welcome to the team!",
+		"Say hi in #general, try @Brain, and explore the workspace.",
+		"/w/"+slug,
+		"", "Nexus", "")
 
 	// Issue JWT
 	token, err := s.jwt.Issue(userID, req.DisplayName, slug, "member", "")
@@ -471,6 +485,13 @@ func (s *Server) handleJoinByCode(w http.ResponseWriter, r *http.Request) {
 
 	// Auto-join all default channels
 	s.joinDefaultChannels(wdb, userID)
+
+	// Welcome notification
+	go s.createNotification(wdb, wsSlug, userID, "system",
+		"Welcome to the team!",
+		"Say hi in #general, try @Brain, and explore the workspace.",
+		"/w/"+wsSlug,
+		"", "Nexus", "")
 
 	// Issue JWT
 	token, err := s.jwt.Issue(userID, req.DisplayName, wsSlug, "member", accountID)
