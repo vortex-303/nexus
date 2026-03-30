@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/nexus-chat/nexus/internal/config"
+	"github.com/nexus-chat/nexus/internal/db/migrations"
 	"github.com/nexus-chat/nexus/internal/server"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -23,6 +24,13 @@ func main() {
 			return
 		case "serve":
 			// continue below
+		case "admin":
+			if len(os.Args) < 4 || os.Args[2] != "promote" {
+				fmt.Fprintln(os.Stderr, "Usage: nexus admin promote <email>")
+				os.Exit(1)
+			}
+			runAdminPromote(os.Args[3])
+			return
 		case "db":
 			if len(os.Args) < 4 {
 				fmt.Fprintln(os.Stderr, "Usage: nexus db <slug> <sql>")
@@ -107,12 +115,33 @@ func runDB(slug, query string) {
 	}
 }
 
+func runAdminPromote(email string) {
+	dataDir := os.Getenv("DATA_DIR")
+	if dataDir == "" {
+		dataDir = "data"
+	}
+	dbPath := filepath.Join(dataDir, "nexus.db")
+	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open error: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	if err := migrations.PromoteToSuperadmin(db, email); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Promoted %s to superadmin\n", email)
+}
+
 func printUsage() {
 	fmt.Println(`Usage: nexus <command>
 
 Commands:
-  serve     Start the Nexus server (default)
-  db        Run SQL against a workspace DB
-  version   Print version information
-  help      Show this help message`)
+  serve             Start the Nexus server (default)
+  admin promote     Promote an account to superadmin
+  db                Run SQL against a workspace DB
+  version           Print version information
+  help              Show this help message`)
 }

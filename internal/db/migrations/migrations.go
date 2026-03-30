@@ -3,6 +3,7 @@ package migrations
 import (
 	"database/sql"
 	"fmt"
+	"os"
 )
 
 type migration struct {
@@ -1045,33 +1046,53 @@ func RunGlobal(db *sql.DB) error {
 	if err := runMigrations(db, globalMigrations); err != nil {
 		return err
 	}
-	return seedSuperadmin(db)
+	return ensureSuperadmin(db)
 }
 
-// seedSuperadmin ensures nruggieri@gmail.com exists as a superadmin account.
-func seedSuperadmin(db *sql.DB) error {
-	const email = "nruggieri@gmail.com"
-	// bcrypt hash of "pepe333"
-	const defaultHash = "$2a$10$6WJ1Am.0O6wfSYr2W0vY4.Agc0EHYDm1No4Rjoee0diXFeFiQJtrO"
-	var exists int
-	err := db.QueryRow("SELECT COUNT(*) FROM accounts WHERE email = ?", email).Scan(&exists)
+// ensureSuperadmin promotes the configured superadmin email (env SUPERADMIN_EMAIL,
+// default nruggieri@gmail.com). If the account exists, sets is_superadmin = TRUE.
+// If no superadmin exists at all after that, the first account becomes superadmin.
+func ensureSuperadmin(db *sql.DB) error {
+	email := os.Getenv("SUPERADMIN_EMAIL")
+	if email == "" {
+		email = "nruggieri@gmail.com"
+	}
+
+	// Promote the configured email if the account exists
+	res, err := db.Exec("UPDATE accounts SET is_superadmin = TRUE WHERE email = ? AND is_superadmin = FALSE", email)
 	if err != nil {
+		return fmt.Errorf("promoting superadmin: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return nil
+	}
+
+	// Check if any superadmin exists
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM accounts WHERE is_superadmin = TRUE").Scan(&count); err != nil {
 		return fmt.Errorf("checking superadmin: %w", err)
 	}
-	if exists == 0 {
-		_, err = db.Exec(
-			"INSERT INTO accounts (id, email, password_hash, display_name, is_superadmin) VALUES (?, ?, ?, ?, TRUE)",
-			"sa_"+email, email, defaultHash, "Nick Ruggieri",
-		)
-		if err != nil {
-			return fmt.Errorf("seeding superadmin: %w", err)
-		}
-	} else {
-		// Ensure existing account has superadmin flag, verified email, and known password
-		_, err = db.Exec("UPDATE accounts SET is_superadmin = TRUE, email_verified = TRUE, password_hash = ? WHERE email = ?", defaultHash, email)
-		if err != nil {
-			return fmt.Errorf("updating superadmin: %w", err)
-		}
+	if count > 0 {
+		return nil
+	}
+
+	// No superadmin at all — promote the first account
+	_, err = db.Exec("UPDATE accounts SET is_superadmin = TRUE WHERE id = (SELECT id FROM accounts ORDER BY created_at ASC LIMIT 1)")
+	if err != nil {
+		return fmt.Errorf("promoting first account: %w", err)
+	}
+	return nil
+}
+
+// PromoteToSuperadmin promotes an account by email to superadmin. Used by CLI.
+func PromoteToSuperadmin(db *sql.DB, email string) error {
+	res, err := db.Exec("UPDATE accounts SET is_superadmin = TRUE WHERE email = ?", email)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("no account found with email %s", email)
 	}
 	return nil
 }
