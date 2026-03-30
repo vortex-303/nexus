@@ -188,6 +188,15 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	h := s.hubs.Get(slug)
 	h.BroadcastAll(hub.MakeEnvelope(hub.TypeTaskCreated, task), "")
 
+	// Notify assignee
+	if req.AssigneeID != "" && req.AssigneeID != claims.UserID {
+		go s.createNotification(wdb, slug, req.AssigneeID, "system",
+			claims.DisplayName+" assigned you a task",
+			req.Title,
+			"/w/"+slug+"/tasks?t="+taskID,
+			claims.UserID, claims.DisplayName, taskID)
+	}
+
 	s.onPulse(slug, Pulse{
 		Type: "task.created", ActorID: claims.UserID, ActorName: claims.DisplayName,
 		EntityID: taskID, Summary: pulseSummary(claims.DisplayName, "created task", req.Title),
@@ -420,6 +429,15 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 
 	h := s.hubs.Get(slug)
 	h.BroadcastAll(hub.MakeEnvelope(hub.TypeTaskUpdated, t), "")
+
+	// Notify new assignee
+	if req.AssigneeID != nil && *req.AssigneeID != "" && *req.AssigneeID != claims.UserID {
+		go s.createNotification(wdb, slug, *req.AssigneeID, "system",
+			claims.DisplayName+" assigned you a task",
+			t.Title,
+			"/w/"+slug+"/tasks?t="+taskID,
+			claims.UserID, claims.DisplayName, taskID)
+	}
 
 	pulseType := "task.updated"
 	verb := "updated task"

@@ -2,12 +2,13 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, joinChannel, leaveChannel, browseChannels, inviteToChannel, listChannelMembers, pinMessage, unpinMessage, listPinnedMessages, getMemoryPinnedMessageIds, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings } from '$lib/api';
+	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, joinChannel, leaveChannel, browseChannels, inviteToChannel, listChannelMembers, pinMessage, unpinMessage, listPinnedMessages, getMemoryPinnedMessageIds, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings, listNotifications, markNotificationRead, markAllNotificationsRead, getNotificationCount } from '$lib/api';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { connect, disconnect, onMessage, sendMessage, sendTyping, sendReaction, removeReaction, clearChannel, markChannelRead, connectionStatus, generateClientId } from '$lib/ws';
 	import { channels, members, messages, activeChannel, typingUsers, onlineUsers } from '$lib/stores/workspace';
 	import type { Channel } from '$lib/stores/workspace';
 	import TiptapEditor from '$lib/editor/TiptapEditor.svelte';
+	import { addToast } from '$lib/toast';
 	import MarkdownEditor from '$lib/editor/MarkdownEditor.svelte';
 	import { htmlToMarkdown, markdownToHtml, safeMarkdownToHtml } from '$lib/editor/markdown-utils';
 	import OrgChart from '$lib/components/OrgChart.svelte';
@@ -69,6 +70,7 @@
 	let showSearch = $state(false);
 	let hasMoreMessages = $state(false);
 	let loadingMore = $state(false);
+	let loadMoreSentinel = $state<HTMLDivElement | null>(null);
 	let highlightedMessageId = $state<string | null>(null);
 	let viewerImage = $state<{url: string; alt: string; sender?: string; timestamp?: string; prompt?: string; fileName?: string; fileSize?: number; mime?: string} | null>(null);
 
@@ -86,6 +88,23 @@
 		}
 	});
 
+	// Update browser tab title with unread count
+	$effect(() => {
+		document.title = totalUnread > 0 ? `(${totalUnread}) Nexus` : 'Nexus';
+	});
+
+	// Infinite scroll: auto-load older messages when sentinel is visible
+	$effect(() => {
+		const sentinel = loadMoreSentinel;
+		const root = messagesEl;
+		if (!sentinel || !root) return;
+		const observer = new IntersectionObserver((entries) => {
+			if (entries[0]?.isIntersecting) loadMoreMessages();
+		}, { root, threshold: 0.1 });
+		observer.observe(sentinel);
+		return () => observer.disconnect();
+	});
+
 	let sortedDmChannels = $derived.by(() => {
 		return [...dmChannels].sort((a, b) => {
 			const aIsBrain = a.name.includes('brain');
@@ -96,6 +115,10 @@
 			const bPinned = pinnedDMIds.has(b.id);
 			if (aPinned && !bPinned) return -1;
 			if (!aPinned && bPinned) return 1;
+			// Unread above read
+			const aUnread = (a.unread || 0) > 0 ? 1 : 0;
+			const bUnread = (b.unread || 0) > 0 ? 1 : 0;
+			if (aUnread !== bUnread) return bUnread - aUnread;
 			return 0;
 		});
 	});
@@ -286,6 +309,12 @@
 	let prefsMsg = $state('');
 	let prefsLoading = $state(false);
 
+	// Notifications
+	let notificationCount = $state(0);
+	let showNotifications = $state(false);
+	let notifications: any[] = $state([]);
+	let notificationTab = $state<'all' | 'mentions' | 'dms'>('all');
+
 	// Built-in agents in sidebar
 	let builtinAgents = $derived(agentsList.filter((a: any) => a.is_system && a.id !== 'brain' && a.is_active));
 
@@ -318,7 +347,10 @@
 			if (a.is_favorite && b.is_favorite) {
 				return (b.favorited_at || '').localeCompare(a.favorited_at || '');
 			}
-			// Non-favorites: alphabetical
+			// Non-favorites: unread above read, then alphabetical
+			const aUnread = (a.unread || 0) > 0 ? 1 : 0;
+			const bUnread = (b.unread || 0) > 0 ? 1 : 0;
+			if (aUnread !== bUnread) return bUnread - aUnread;
 			return a.name.localeCompare(b.name);
 		})
 	);
@@ -760,6 +792,11 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			const chs = await listChannels(slug);
 			channels.set(chs);
 			messages.set([]); // Clear stale messages from other pages (e.g. Brain)
+			loadNotificationCount();
+			// Request desktop notification permission
+			if ('Notification' in window && Notification.permission === 'default') {
+				Notification.requestPermission();
+			}
 
 			if (chs.length > 0) {
 				const urlChannelId = new URLSearchParams(window.location.search).get('c');
@@ -883,6 +920,64 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 		} catch {
 			channelMemberIds = new Set();
 		}
+	}
+
+	async function loadNotifications() {
+		try {
+			notifications = await listNotifications(slug);
+		} catch { notifications = []; }
+	}
+
+	async function loadNotificationCount() {
+		try {
+			const data = await getNotificationCount(slug);
+			notificationCount = data.count || 0;
+		} catch { notificationCount = 0; }
+	}
+
+	async function toggleNotifications() {
+		showNotifications = !showNotifications;
+		if (showNotifications) {
+			await loadNotifications();
+		}
+	}
+
+	async function handleMarkAllRead() {
+		await markAllNotificationsRead(slug);
+		notificationCount = 0;
+		notifications = notifications.map((n: any) => ({ ...n, read: true }));
+	}
+
+	async function handleNotificationClick(notif: any) {
+		if (!notif.read) {
+			await markNotificationRead(slug, notif.id);
+			notificationCount = Math.max(0, notificationCount - 1);
+			notifications = notifications.map((n: any) => n.id === notif.id ? { ...n, read: true } : n);
+		}
+		showNotifications = false;
+		// Parse link to navigate: /w/slug?c=channelId&m=messageId
+		const url = new URL(notif.link, window.location.origin);
+		const channelId = url.searchParams.get('c');
+		const messageId = url.searchParams.get('m');
+		if (channelId) {
+			const ch = $channels.find((c: Channel) => c.id === channelId);
+			if (ch) {
+				await selectChannel(ch, messageId || undefined);
+			}
+		} else if (notif.link.includes('/tasks')) {
+			currentView = 'board';
+		}
+	}
+
+	function timeAgo(dateStr: string): string {
+		const diff = Date.now() - new Date(dateStr).getTime();
+		const mins = Math.floor(diff / 60000);
+		if (mins < 1) return 'now';
+		if (mins < 60) return `${mins}m`;
+		const hrs = Math.floor(mins / 60);
+		if (hrs < 24) return `${hrs}h`;
+		const days = Math.floor(hrs / 24);
+		return `${days}d`;
 	}
 
 	async function loadMemoryPins(channelId: string) {
@@ -1038,6 +1133,16 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 				channels.update(chs => chs.map(c =>
 					c.id === payload.channel_id ? { ...c, unread: payload.unread } : c
 				));
+			}
+		} else if (type === 'notification.new') {
+			notificationCount++;
+			if (showNotifications) {
+				notifications = [payload, ...notifications];
+			}
+			addToast(payload.title, 'info');
+			// Desktop notification when tab is hidden
+			if (document.hidden && Notification.permission === 'granted') {
+				new Notification(payload.title, { body: payload.body, icon: '/favicon.png' });
 			}
 		} else if (type === 'reaction.added') {
 			messages.update(msgs => msgs.map(m => {
@@ -3609,7 +3714,52 @@ autonomy: reactive
 				<span class="logo-text">nexus</span>
 			</button>
 			<span class="slug-badge">/{slug}</span>
+			<button class="notif-bell" onclick={toggleNotifications} title="Notifications">
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+				{#if notificationCount > 0}
+					<span class="notif-badge">{notificationCount > 99 ? '99+' : notificationCount}</span>
+				{/if}
+			</button>
 		</div>
+
+		{#if showNotifications}
+			<div class="notif-panel">
+				<div class="notif-header">
+					<div class="notif-tabs">
+						<button class:active={notificationTab === 'all'} onclick={() => notificationTab = 'all'}>All</button>
+						<button class:active={notificationTab === 'mentions'} onclick={() => notificationTab = 'mentions'}>Mentions</button>
+						<button class:active={notificationTab === 'dms'} onclick={() => notificationTab = 'dms'}>DMs</button>
+					</div>
+					{#if notificationCount > 0}
+						<button class="notif-mark-all" onclick={handleMarkAllRead}>Mark all read</button>
+					{/if}
+				</div>
+				<div class="notif-list">
+					{#each notifications.filter((n: any) => notificationTab === 'all' || (notificationTab === 'mentions' && n.type === 'mention') || (notificationTab === 'dms' && n.type === 'dm')) as notif}
+						<button class="notif-item" class:unread={!notif.read} onclick={() => handleNotificationClick(notif)}>
+							<div class="notif-icon">
+								{#if notif.type === 'mention'}
+									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg>
+								{:else if notif.type === 'dm'}
+									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+								{:else}
+									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+								{/if}
+							</div>
+							<div class="notif-content">
+								<span class="notif-title">{notif.title}</span>
+								{#if notif.body}
+									<span class="notif-body">{notif.body.length > 80 ? notif.body.slice(0, 80) + '...' : notif.body}</span>
+								{/if}
+							</div>
+							<span class="notif-time">{timeAgo(notif.created_at)}</span>
+						</button>
+					{:else}
+						<div class="notif-empty">No notifications</div>
+					{/each}
+				</div>
+			</div>
+		{/if}
 
 		<nav class="sidebar-nav">
 			<!-- Feature pages -->
@@ -3971,10 +4121,10 @@ autonomy: reactive
 			<!-- Messages -->
 			<div class="messages-area" class:drag-over={dragOver} bind:this={messagesEl} ondragover={handleDragOver} ondragleave={() => dragOver = false} ondrop={handleDrop}>
 				{#if hasMoreMessages}
-					<div class="load-more-bar">
-						<button class="load-more-btn" onclick={loadMoreMessages} disabled={loadingMore}>
-							{loadingMore ? 'Loading...' : 'Load older messages'}
-						</button>
+					<div class="load-more-bar" bind:this={loadMoreSentinel}>
+						{#if loadingMore}
+							<div class="load-more-spinner"></div>
+						{/if}
 					</div>
 				{/if}
 				{#if $messages.length === 0}
@@ -7722,6 +7872,139 @@ autonomy: reactive
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+		position: relative;
+	}
+	.notif-bell {
+		background: none;
+		border: none;
+		color: var(--text-secondary);
+		cursor: pointer;
+		position: relative;
+		padding: 4px;
+		display: flex;
+		align-items: center;
+	}
+	.notif-bell:hover { color: var(--text-primary); }
+	.notif-badge {
+		position: absolute;
+		top: -2px;
+		right: -4px;
+		background: var(--red, #e53935);
+		color: #fff;
+		font-size: 9px;
+		font-weight: 700;
+		min-width: 14px;
+		height: 14px;
+		border-radius: 7px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0 3px;
+		line-height: 1;
+	}
+	.notif-panel {
+		position: absolute;
+		top: 100%;
+		left: 0;
+		right: 0;
+		z-index: 100;
+		background: var(--bg-raised);
+		border-bottom: 1px solid var(--border-default);
+		max-height: 400px;
+		display: flex;
+		flex-direction: column;
+	}
+	.notif-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: var(--space-sm) var(--space-md);
+		border-bottom: 1px solid var(--border-subtle);
+	}
+	.notif-tabs {
+		display: flex;
+		gap: 2px;
+	}
+	.notif-tabs button {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: var(--text-xs);
+		padding: 4px 8px;
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		font-family: inherit;
+	}
+	.notif-tabs button.active {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+	.notif-mark-all {
+		background: none;
+		border: none;
+		color: var(--accent);
+		font-size: var(--text-xs);
+		cursor: pointer;
+		font-family: inherit;
+	}
+	.notif-list {
+		overflow-y: auto;
+		flex: 1;
+	}
+	.notif-item {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--space-sm);
+		padding: var(--space-sm) var(--space-md);
+		border: none;
+		background: none;
+		width: 100%;
+		text-align: left;
+		cursor: pointer;
+		font-family: inherit;
+		color: var(--text-secondary);
+		border-bottom: 1px solid var(--border-subtle);
+	}
+	.notif-item:hover { background: var(--bg-hover); }
+	.notif-item.unread { background: rgba(232, 145, 45, 0.05); }
+	.notif-item.unread .notif-title { color: var(--text-primary); font-weight: 600; }
+	.notif-icon {
+		flex-shrink: 0;
+		margin-top: 2px;
+		opacity: 0.6;
+	}
+	.notif-content {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.notif-title {
+		font-size: var(--text-xs);
+		color: var(--text-secondary);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.notif-body {
+		font-size: 11px;
+		color: var(--text-muted);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.notif-time {
+		font-size: 10px;
+		color: var(--text-muted);
+		flex-shrink: 0;
+		margin-top: 2px;
+	}
+	.notif-empty {
+		padding: var(--space-xl);
+		text-align: center;
+		color: var(--text-muted);
+		font-size: var(--text-sm);
 	}
 	.logo-row {
 		display: flex;
@@ -8264,24 +8547,16 @@ autonomy: reactive
 		justify-content: center;
 		padding: var(--space-sm) 0 var(--space-md);
 	}
-	.load-more-btn {
-		padding: 6px 16px;
-		background: var(--bg-raised);
-		color: var(--text-secondary);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-md);
-		font-size: var(--text-xs);
-		font-family: inherit;
-		cursor: pointer;
-		transition: all 150ms;
+	.load-more-spinner {
+		width: 20px;
+		height: 20px;
+		border: 2px solid var(--border-default);
+		border-top-color: var(--accent, #e8912d);
+		border-radius: 50%;
+		animation: spin 0.6s linear infinite;
 	}
-	.load-more-btn:hover:not(:disabled) {
-		color: var(--text-primary);
-		border-color: var(--accent);
-	}
-	.load-more-btn:disabled {
-		opacity: 0.5;
-		cursor: default;
+	@keyframes spin {
+		to { transform: rotate(360deg); }
 	}
 
 	.pinned-tag {

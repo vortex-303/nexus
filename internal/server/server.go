@@ -236,6 +236,12 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/workspaces/{slug}/members/permission", authed(http.HandlerFunc(s.requireAdmin(s.handleUpdatePermission))))
 	s.mux.Handle("DELETE /api/workspaces/{slug}/members/{memberID}", authed(http.HandlerFunc(s.requireAdmin(s.handleKickMember))))
 
+	// Notifications
+	s.mux.Handle("GET /api/workspaces/{slug}/notifications", authed(http.HandlerFunc(s.handleListNotifications)))
+	s.mux.Handle("POST /api/workspaces/{slug}/notifications/{id}/read", authed(http.HandlerFunc(s.handleMarkNotificationRead)))
+	s.mux.Handle("POST /api/workspaces/{slug}/notifications/read-all", authed(http.HandlerFunc(s.handleMarkAllNotificationsRead)))
+	s.mux.Handle("GET /api/workspaces/{slug}/notifications/count", authed(http.HandlerFunc(s.handleNotificationCount)))
+
 	// Tasks
 	s.mux.Handle("POST /api/workspaces/{slug}/tasks", authed(http.HandlerFunc(s.requirePerm(roles.PermTaskCreate, s.handleCreateTask))))
 	s.mux.Handle("GET /api/workspaces/{slug}/tasks", authed(http.HandlerFunc(s.handleListTasks)))

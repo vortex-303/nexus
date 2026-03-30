@@ -1038,8 +1038,36 @@ var workspaceMigrations53 = migration{
 	`,
 }
 
+var workspaceMigrations54 = migration{
+	version: 54,
+	name:    "notifications and notification preferences",
+	sql: `
+		CREATE TABLE IF NOT EXISTS notifications (
+			id TEXT PRIMARY KEY,
+			recipient_id TEXT NOT NULL,
+			type TEXT NOT NULL,
+			title TEXT NOT NULL,
+			body TEXT NOT NULL DEFAULT '',
+			link TEXT NOT NULL DEFAULT '',
+			source_id TEXT NOT NULL DEFAULT '',
+			actor_id TEXT NOT NULL DEFAULT '',
+			read BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_notif_recipient ON notifications(recipient_id, read, created_at);
+
+		CREATE TABLE IF NOT EXISTS notification_preferences (
+			member_id TEXT NOT NULL,
+			channel_id TEXT NOT NULL DEFAULT '__global__',
+			level TEXT NOT NULL DEFAULT 'mentions',
+			browser_push BOOLEAN NOT NULL DEFAULT TRUE,
+			PRIMARY KEY (member_id, channel_id)
+		);
+	`,
+}
+
 func init() {
-	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53)
+	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54)
 }
 
 func RunGlobal(db *sql.DB) error {

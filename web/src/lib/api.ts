@@ -994,3 +994,21 @@ export async function destroyWorkspace(slug: string, confirm: string) {
 export async function getNetworkLog(slug: string, mode: 'entries' | 'stats' = 'stats') {
 	return request('GET', `/api/workspaces/${slug}/network-log?mode=${mode}`);
 }
+
+// Notifications
+export async function listNotifications(slug: string, unreadOnly = false) {
+	const params = unreadOnly ? '?unread_only=true' : '';
+	return request('GET', `/api/workspaces/${slug}/notifications${params}`);
+}
+
+export async function markNotificationRead(slug: string, id: string) {
+	return request('POST', `/api/workspaces/${slug}/notifications/${id}/read`);
+}
+
+export async function markAllNotificationsRead(slug: string) {
+	return request('POST', `/api/workspaces/${slug}/notifications/read-all`);
+}
+
+export async function getNotificationCount(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/notifications/count`);
+}

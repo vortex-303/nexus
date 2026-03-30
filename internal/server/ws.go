@@ -401,6 +401,49 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 	}
 
 
+	// Notification triggers (async)
+	go func() {
+		// DM notification
+		if chName != "" && strings.HasPrefix(chName, "dm-") {
+			parts := strings.Split(strings.TrimPrefix(chName, "dm-"), "-")
+			for _, pid := range parts {
+				if pid != conn.UserID && pid != brain.BrainMemberID {
+					s.createNotification(wdb, conn.WorkspaceSlug, pid, "dm",
+						conn.DisplayName+" sent you a message",
+						truncateBody(p.Content, 200),
+						"/w/"+conn.WorkspaceSlug+"?c="+p.ChannelID+"&m="+msgID,
+						conn.UserID, conn.DisplayName, msgID)
+				}
+			}
+		} else {
+			// @mention notifications (non-DM channels)
+			lower := strings.ToLower(p.Content)
+			rows, err := wdb.DB.Query("SELECT id, display_name FROM members")
+			if err == nil {
+				defer rows.Close()
+				for rows.Next() {
+					var memberID, displayName string
+					if rows.Scan(&memberID, &displayName) != nil {
+						continue
+					}
+					if memberID == conn.UserID {
+						continue
+					}
+					mention := "@" + strings.ToLower(displayName)
+					if strings.Contains(lower, mention) {
+						var chDisplayName string
+						_ = wdb.DB.QueryRow("SELECT name FROM channels WHERE id = ?", p.ChannelID).Scan(&chDisplayName)
+						s.createNotification(wdb, conn.WorkspaceSlug, memberID, "mention",
+							conn.DisplayName+" mentioned you in #"+chDisplayName,
+							truncateBody(p.Content, 200),
+							"/w/"+conn.WorkspaceSlug+"?c="+p.ChannelID+"&m="+msgID,
+							conn.UserID, conn.DisplayName, msgID)
+					}
+				}
+			}
+		}
+	}()
+
 	// Brain auto-follow: if Brain posted in this thread, auto-respond
 	// Thread attention decays after 30 minutes of inactivity — require explicit @Brain
 	if p.ParentID != "" && !p.WebLLM && !brainTriggered && !isBrainDM {
@@ -649,6 +692,12 @@ func (s *Server) handleWSChannelRead(conn *hub.Conn, h *hub.Hub, payload json.Ra
 		 ON CONFLICT(channel_id, user_id) DO UPDATE SET last_read_at = ?`,
 		p.ChannelID, conn.UserID, now, now,
 	)
+
+	// Broadcast to all user's connections for cross-tab sync
+	h.SendToUser(conn.UserID, hub.MakeEnvelope(hub.TypeUnreadUpdate, hub.UnreadUpdatePayload{
+		ChannelID: p.ChannelID,
+		Unread:    0,
+	}))
 }
 
 // autoSubscribeChannel ensures relevant connections are subscribed to a channel.

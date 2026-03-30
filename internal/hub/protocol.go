@@ -47,6 +47,7 @@ const (
 	TypeSocialPulseUpdated = "social_pulse.updated"
 	TypeSocialPulseDeleted = "social_pulse.deleted"
 	TypeBridgeStatus       = "bridge.status"
+	TypeNotification       = "notification.new"
 )
 
 // Payload types for messages
@@ -134,6 +135,18 @@ type ChannelReadPayload struct {
 type UnreadUpdatePayload struct {
 	ChannelID string `json:"channel_id"`
 	Unread    int    `json:"unread"`
+}
+
+type NotificationPayload struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	Link      string `json:"link"`
+	ActorID   string `json:"actor_id"`
+	ActorName string `json:"actor_name"`
+	SourceID  string `json:"source_id"`
+	CreatedAt string `json:"created_at"`
 }
 
 type ErrorPayload struct {
