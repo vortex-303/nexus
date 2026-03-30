@@ -4039,30 +4039,28 @@ autonomy: reactive
 						{/if}
 						<span class="header-meta">Direct Message</span>
 					{:else}
-						<div class="online-members">
-							{#each onlineMembersList.slice(0, 5) as om}
-								<div class="online-avatar" title={om.display_name}>
-									{om.display_name?.charAt(0)?.toUpperCase() || '?'}
-									<span class="presence-dot"></span>
+						<div class="header-toolbar">
+							{#if onlineMembersList.length > 0}
+								<div class="toolbar-item toolbar-status">
+									<span class="toolbar-dot"></span>
+									<span class="toolbar-label">{onlineMembersList.length} online</span>
 								</div>
-							{/each}
-							{#if onlineMembersList.length > 5}
-								<span class="online-overflow">+{onlineMembersList.length - 5}</span>
 							{/if}
+							<div class="toolbar-divider"></div>
+							{#if pinnedMessageIds.size > 0}
+								<button class="toolbar-item" class:active={showPinsPanel} onclick={togglePinsPanel} title="Pinned messages">
+									<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M5 17h14v-1.76a2 2 0 00-1.11-1.79l-1.78-.9A2 2 0 0115 10.76V6h1a2 2 0 000-4H8a2 2 0 000 4h1v4.76a2 2 0 01-1.11 1.79l-1.78.9A2 2 0 005 15.24z"/></svg>
+									<span class="toolbar-label">{pinnedMessageIds.size}</span>
+								</button>
+							{/if}
+							<button class="toolbar-item" class:active={showMemberDrawer} onclick={() => showMemberDrawer = !showMemberDrawer} title="Toggle member list">
+								<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+									<path d="M6 4a2 2 0 100-4 2 2 0 000 4zM1 8c0-1.7 1.3-3 3-3h4c1.7 0 3 1.3 3 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+									<path d="M12 5a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM14.5 8.5c0-1.1-.9-2-2-2h-.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+								</svg>
+								<span class="toolbar-label">{channelMemberIds.size || $members.length}</span>
+							</button>
 						</div>
-						{#if pinnedMessageIds.size > 0}
-						<button class="member-drawer-toggle" class:active={showPinsPanel} onclick={togglePinsPanel} title="Pinned messages">
-							<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2"><path d="M12 2l-2 7H4l6 4.5L8 21l4-3 4 3-2-7.5L20 9h-6z"/></svg>
-							<span>{pinnedMessageIds.size}</span>
-						</button>
-						{/if}
-						<button class="member-drawer-toggle" class:active={showMemberDrawer} onclick={() => showMemberDrawer = !showMemberDrawer} title="Toggle member list">
-							<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-								<path d="M6 4a2 2 0 100-4 2 2 0 000 4zM1 8c0-1.7 1.3-3 3-3h4c1.7 0 3 1.3 3 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-								<path d="M12 5a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM14.5 8.5c0-1.1-.9-2-2-2h-.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-							</svg>
-							<span>{channelMemberIds.size || $members.length}</span>
-						</button>
 					{/if}
 				</div>
 			</header>
@@ -8509,6 +8507,11 @@ autonomy: reactive
 		align-items: center;
 		gap: var(--space-sm);
 	}
+	.chat-header-right {
+		display: flex;
+		align-items: center;
+		gap: var(--space-sm);
+	}
 	.header-hash {
 		color: var(--accent);
 		font-size: var(--text-xl);
@@ -11236,6 +11239,58 @@ autonomy: reactive
 	}
 
 	/* Member drawer toggle button */
+	.header-toolbar {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+	.toolbar-item {
+		display: flex;
+		align-items: center;
+		gap: 5px;
+		padding: 5px 10px;
+		border-radius: var(--radius-md);
+		font-size: var(--text-xs);
+		color: var(--text-secondary);
+		background: none;
+		border: 1px solid transparent;
+		cursor: pointer;
+		font-family: inherit;
+		transition: all 150ms;
+	}
+	.toolbar-item:hover {
+		background: var(--bg-tertiary);
+		color: var(--text-primary);
+		border-color: var(--border-subtle);
+	}
+	.toolbar-item.active {
+		background: var(--bg-tertiary);
+		color: var(--accent);
+		border-color: var(--accent);
+	}
+	.toolbar-status {
+		cursor: default;
+	}
+	.toolbar-status:hover {
+		background: none;
+		border-color: transparent;
+	}
+	.toolbar-dot {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: #4caf50;
+	}
+	.toolbar-label {
+		font-weight: 500;
+		white-space: nowrap;
+	}
+	.toolbar-divider {
+		width: 1px;
+		height: 16px;
+		background: var(--border-subtle);
+		margin: 0 4px;
+	}
 	.member-drawer-toggle {
 		display: flex;
 		align-items: center;
