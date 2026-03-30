@@ -1,0 +1,564 @@
+<script lang="ts">
+	import { goto } from '$app/navigation';
+	import { createWorkspace, getWorkspaceSlug, login, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, getCurrentUser, forgotPassword, resetPassword, verifyEmail } from '$lib/api';
+	import { onMount } from 'svelte';
+
+	let mode = $state<'create' | 'login' | 'join' | 'forgot' | 'reset' | 'verify'>('create');
+	let workspaceName = $state('');
+	let displayName = $state('');
+	let email = $state('');
+	let password = $state('');
+	let confirmPassword = $state('');
+	let inviteCode = $state('');
+	let verifyCode = $state('');
+	let resetToken = $state('');
+	let loading = $state(false);
+	let error = $state('');
+	let success = $state('');
+	let requireAccount = $state(false);
+
+	onMount(async () => {
+		const slug = getWorkspaceSlug();
+		if (slug) { goto(`/w/${slug}`); return; }
+
+		// Check for reset token or mode in URL
+		const params = new URLSearchParams(window.location.search);
+		const token = params.get('reset');
+		if (token) {
+			resetToken = token;
+			mode = 'reset';
+		}
+		const urlMode = params.get('mode');
+		if (urlMode === 'login') mode = 'login';
+		else if (urlMode === 'join') mode = 'join';
+
+		try {
+			const cfg = await getAuthConfig();
+			requireAccount = cfg.require_account;
+		} catch {}
+	});
+
+	function switchMode(newMode: 'create' | 'login' | 'join' | 'forgot' | 'reset' | 'verify') {
+		mode = newMode;
+		error = '';
+		success = '';
+	}
+
+	async function handleCreate() {
+		if (requireAccount && (!email.trim() || !password)) { error = 'Email and password required'; return; }
+		if (!workspaceName.trim()) { error = 'Give your workspace a name'; return; }
+		if (!displayName.trim()) { error = 'Enter your name'; return; }
+		loading = true;
+		error = '';
+		try {
+			const data = await createWorkspace(displayName.trim(), workspaceName.trim(), email.trim() || undefined, password || undefined);
+			goto(`/w/${data.slug}`);
+		} catch (e: any) {
+			error = e.message;
+		} finally {
+			loading = false;
+		}
+	}
+
+	async function handleLogin() {
+		if (!email.trim() || !password) { error = 'Email and password required'; return; }
+		loading = true;
+		error = '';
+		try {
+			const data = await login(email.trim(), password);
+			const user = getCurrentUser();
+			if (user?.sa && !user?.ws) {
+				goto('/admin');
+			} else if (user?.ws) {
+				goto(`/w/${user.ws}`);
+			} else {
+				goto('/workspaces');
+			}
+		} catch (e: any) {
+			if (e.message === 'verify_email') {
+				mode = 'verify';
+				error = '';
+			} else {
+				error = e.message;
+			}
+		} finally {
+			loading = false;
+		}
+	}
+
+	async function handleForgot() {
+		if (!email.trim()) { error = 'Enter your email address'; return; }
+		loading = true;
+		error = '';
+		try {
+			await forgotPassword(email.trim());
+			success = 'If an account exists with that email, a reset link has been sent.';
+		} catch (e: any) {
+			error = e.message;
+		} finally {
+			loading = false;
+		}
+	}
+
+	async function handleReset() {
+		if (!password || !confirmPassword) { error = 'Enter and confirm your new password'; return; }
+		if (password !== confirmPassword) { error = 'Passwords do not match'; return; }
+		loading = true;
+		error = '';
+		try {
+			await resetPassword(resetToken, password);
+			success = 'Password reset successful!';
+			setTimeout(() => { switchMode('login'); password = ''; confirmPassword = ''; }, 1500);
+		} catch (e: any) {
+			error = e.message;
+		} finally {
+			loading = false;
+		}
+	}
+
+	async function handleVerify() {
+		if (!verifyCode.trim()) { error = 'Enter the verification code'; return; }
+		loading = true;
+		error = '';
+		try {
+			await verifyEmail(email.trim(), verifyCode.trim());
+			success = 'Email verified! You can now log in.';
+			setTimeout(() => { switchMode('login'); }, 1500);
+		} catch (e: any) {
+			error = e.message;
+		} finally {
+			loading = false;
+		}
+	}
+
+	async function handleJoin() {
+		if (!inviteCode.trim()) { error = 'Enter your invite code'; return; }
+		if (requireAccount && (!email.trim() || !password)) { error = 'Email and password required'; return; }
+		if (!displayName.trim()) { error = 'Enter your name'; return; }
+		loading = true;
+		error = '';
+		try {
+			const data = await joinByCode(inviteCode.trim(), displayName.trim(), email.trim() || undefined, password || undefined);
+			goto(`/w/${data.slug}`);
+		} catch (e: any) {
+			error = e.message;
+		} finally {
+			loading = false;
+		}
+	}
+
+	function handleKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter') {
+			if (mode === 'create') handleCreate();
+			else if (mode === 'login') handleLogin();
+			else if (mode === 'join') handleJoin();
+			else if (mode === 'forgot') handleForgot();
+			else if (mode === 'reset') handleReset();
+			else if (mode === 'verify') handleVerify();
+		}
+	}
+</script>
+
+<div class="landing">
+	<!-- Ambient glow -->
+	<div class="glow glow-1"></div>
+	<div class="glow glow-2"></div>
+
+	<div class="hero">
+		<div class="logo-mark">
+			<div class="logo-icon">
+				<svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+					<path d="M8 12L20 4L32 12V28L20 36L8 28V12Z" stroke="var(--accent)" stroke-width="2" fill="none"/>
+					<circle cx="20" cy="20" r="4" fill="var(--accent)"/>
+					<line x1="20" y1="16" x2="20" y2="8" stroke="var(--accent)" stroke-width="1.5" opacity="0.6"/>
+					<line x1="23.5" y1="22" x2="29" y2="26" stroke="var(--accent)" stroke-width="1.5" opacity="0.6"/>
+					<line x1="16.5" y1="22" x2="11" y2="26" stroke="var(--accent)" stroke-width="1.5" opacity="0.6"/>
+				</svg>
+			</div>
+			<h1>nexus</h1>
+		</div>
+
+		<p class="tagline">Your team's brain.</p>
+		<p class="subtitle">Chat, tasks, docs, and an AI that never forgets — in one workspace.</p>
+
+		<div class="form-card">
+			{#if mode === 'create'}
+			<div class="form-inner">
+				{#if requireAccount}
+					<input type="email" placeholder="Email" bind:value={email} onkeydown={handleKeydown} class="name-input" />
+					<input type="password" placeholder="Password" bind:value={password} onkeydown={handleKeydown} class="name-input secondary-input" />
+				{/if}
+				<input type="text" placeholder="Your name" bind:value={displayName} onkeydown={handleKeydown} maxlength="50" class="name-input{requireAccount ? ' secondary-input' : ''}" />
+				<input type="text" placeholder="Workspace name" bind:value={workspaceName} onkeydown={handleKeydown} maxlength="50" class="name-input secondary-input" />
+
+				{#if !requireAccount}
+					<div class="optional-auth">
+						<p class="optional-label">Add email to access from other devices</p>
+						<input type="email" placeholder="Email" bind:value={email} onkeydown={handleKeydown} class="auth-input" />
+						<input type="password" placeholder="Password" bind:value={password} onkeydown={handleKeydown} class="auth-input" />
+					</div>
+				{/if}
+
+				<button onclick={handleCreate} disabled={loading} class="btn btn-primary btn-launch">
+					{#if loading}
+						<span class="spinner"></span>
+						Creating...
+					{:else}
+						Create Workspace
+						<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+							<path d="M6.5 3.5L11 8L6.5 12.5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+						</svg>
+					{/if}
+				</button>
+			</div>
+			{:else if mode === 'login'}
+			<div class="form-inner">
+				<input type="email" placeholder="Email" bind:value={email} onkeydown={handleKeydown} class="name-input" />
+				<input type="password" placeholder="Password" bind:value={password} onkeydown={handleKeydown} class="name-input" />
+				<button onclick={handleLogin} disabled={loading} class="btn btn-primary btn-launch">
+					{#if loading}
+						<span class="spinner"></span>
+						Logging in...
+					{:else}
+						Log In
+						<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+							<path d="M6.5 3.5L11 8L6.5 12.5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+						</svg>
+					{/if}
+				</button>
+				{#if requireAccount}
+					<button class="link-btn forgot-link" onclick={() => switchMode('forgot')}>Forgot password?</button>
+				{/if}
+			</div>
+			{:else if mode === 'forgot'}
+			<div class="form-inner">
+				<p class="form-heading">Reset your password</p>
+				<input type="email" placeholder="Email" bind:value={email} onkeydown={handleKeydown} class="name-input" />
+				<button onclick={handleForgot} disabled={loading} class="btn btn-primary btn-launch">
+					{#if loading}
+						<span class="spinner"></span>
+						Sending...
+					{:else}
+						Send Reset Link
+					{/if}
+				</button>
+			</div>
+			{:else if mode === 'reset'}
+			<div class="form-inner">
+				<p class="form-heading">Set a new password</p>
+				<input type="password" placeholder="New password" bind:value={password} onkeydown={handleKeydown} class="name-input" />
+				<input type="password" placeholder="Confirm password" bind:value={confirmPassword} onkeydown={handleKeydown} class="name-input secondary-input" />
+				<button onclick={handleReset} disabled={loading} class="btn btn-primary btn-launch">
+					{#if loading}
+						<span class="spinner"></span>
+						Resetting...
+					{:else}
+						Reset Password
+					{/if}
+				</button>
+			</div>
+			{:else if mode === 'verify'}
+			<div class="form-inner">
+				<p class="form-heading">Verify your email</p>
+				<p class="form-subtext">We sent a 6-digit code to {email}</p>
+				<input type="text" placeholder="000000" bind:value={verifyCode} onkeydown={handleKeydown} maxlength="6" class="name-input invite-code-input" />
+				<button onclick={handleVerify} disabled={loading} class="btn btn-primary btn-launch">
+					{#if loading}
+						<span class="spinner"></span>
+						Verifying...
+					{:else}
+						Verify Email
+					{/if}
+				</button>
+			</div>
+			{:else}
+			<div class="form-inner">
+				{#if requireAccount}
+					<input type="email" placeholder="Email" bind:value={email} onkeydown={handleKeydown} class="name-input" />
+					<input type="password" placeholder="Password" bind:value={password} onkeydown={handleKeydown} class="name-input secondary-input" />
+				{/if}
+				<input type="text" placeholder="NX-XXXX" bind:value={inviteCode} onkeydown={handleKeydown} maxlength="7" class="name-input invite-code-input" />
+				<input type="text" placeholder="Your name" bind:value={displayName} onkeydown={handleKeydown} maxlength="50" class="name-input secondary-input" />
+				<button onclick={handleJoin} disabled={loading} class="btn btn-primary btn-launch">
+					{#if loading}
+						<span class="spinner"></span>
+						Joining...
+					{:else}
+						Join Workspace
+						<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+							<path d="M6.5 3.5L11 8L6.5 12.5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+						</svg>
+					{/if}
+				</button>
+			</div>
+			{/if}
+
+			{#if error}
+				<p class="error">{error}</p>
+			{/if}
+			{#if success}
+				<p class="success">{success}</p>
+			{/if}
+		</div>
+
+		<p class="mode-toggle">
+			{#if mode === 'create'}
+				Have an invite code? <button class="link-btn" onclick={() => switchMode('join')}>Join workspace</button>
+				&nbsp;·&nbsp;
+				<button class="link-btn" onclick={() => switchMode('login')}>Log in</button>
+			{:else if mode === 'login'}
+				New here? <button class="link-btn" onclick={() => switchMode('create')}>Create a workspace</button>
+				&nbsp;·&nbsp;
+				Have a code? <button class="link-btn" onclick={() => switchMode('join')}>Join</button>
+			{:else if mode === 'forgot' || mode === 'reset' || mode === 'verify'}
+				<button class="link-btn" onclick={() => switchMode('login')}>Back to login</button>
+			{:else}
+				New here? <button class="link-btn" onclick={() => switchMode('create')}>Create a workspace</button>
+				&nbsp;·&nbsp;
+				<button class="link-btn" onclick={() => switchMode('login')}>Log in</button>
+			{/if}
+		</p>
+
+		<div class="features">
+			<div class="feature">
+				<span class="feature-icon">&#9670;</span>
+				<span>Real-time chat</span>
+			</div>
+			<div class="feature-dot"></div>
+			<div class="feature">
+				<span class="feature-icon">&#9670;</span>
+				<span>AI Brain</span>
+			</div>
+			<div class="feature-dot"></div>
+			<div class="feature">
+				<span class="feature-icon">&#9670;</span>
+				<span>Tasks & Docs</span>
+			</div>
+			<div class="feature-dot"></div>
+			<div class="feature">
+				<span class="feature-icon">&#9670;</span>
+				<span>Source Tracing</span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<style>
+	.landing {
+		min-height: 100vh;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		position: relative;
+		overflow: hidden;
+	}
+
+	/* Ambient orange glow blobs */
+	.glow {
+		position: absolute;
+		border-radius: 50%;
+		filter: blur(120px);
+		pointer-events: none;
+		opacity: 0.07;
+	}
+	.glow-1 {
+		width: 600px; height: 600px;
+		background: var(--accent);
+		top: -200px; right: -100px;
+	}
+	.glow-2 {
+		width: 400px; height: 400px;
+		background: var(--orange-600);
+		bottom: -150px; left: -100px;
+	}
+
+	.hero {
+		text-align: center;
+		padding: var(--space-2xl);
+		max-width: 480px;
+		position: relative;
+		z-index: 1;
+	}
+
+	.logo-mark {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: var(--space-md);
+		margin-bottom: var(--space-xl);
+	}
+	.logo-icon {
+		display: flex;
+		filter: drop-shadow(0 0 8px rgba(249,115,22,0.4));
+	}
+	h1 {
+		font-size: var(--text-4xl);
+		font-weight: 800;
+		letter-spacing: -0.04em;
+		background: linear-gradient(135deg, var(--text-primary) 0%, var(--text-secondary) 100%);
+		-webkit-background-clip: text;
+		-webkit-text-fill-color: transparent;
+		background-clip: text;
+	}
+
+	.tagline {
+		font-size: var(--text-xl);
+		font-weight: 600;
+		color: var(--accent);
+		margin-bottom: var(--space-sm);
+		letter-spacing: -0.01em;
+	}
+
+	.subtitle {
+		color: var(--text-secondary);
+		font-size: var(--text-base);
+		margin-bottom: var(--space-2xl);
+		line-height: 1.6;
+	}
+
+	.form-card {
+		background: var(--bg-surface);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xl);
+		padding: var(--space-xl);
+		margin-bottom: var(--space-lg);
+		box-shadow: var(--shadow-lg), inset 0 1px 0 rgba(255,255,255,0.03);
+	}
+
+	.form-inner {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-md);
+	}
+
+	.name-input {
+		text-align: center;
+		font-size: var(--text-lg) !important;
+		padding: var(--space-md) var(--space-lg) !important;
+		background: var(--bg-root) !important;
+		border: 1px solid var(--border-default) !important;
+	}
+	.secondary-input {
+		font-size: var(--text-base) !important;
+	}
+
+	.optional-auth {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-sm);
+		padding-top: var(--space-sm);
+		border-top: 1px solid var(--border-subtle);
+	}
+	.optional-label {
+		font-size: var(--text-sm);
+		color: var(--text-tertiary);
+		margin: 0;
+	}
+	.auth-input {
+		text-align: center;
+		font-size: var(--text-base) !important;
+		padding: var(--space-sm) var(--space-lg) !important;
+		background: var(--bg-root) !important;
+		border: 1px solid var(--border-default) !important;
+	}
+
+	.btn-launch {
+		padding: var(--space-md) var(--space-xl);
+		font-size: var(--text-lg);
+		border-radius: var(--radius-lg);
+		font-weight: 700;
+	}
+
+	.spinner {
+		width: 16px;
+		height: 16px;
+		border: 2px solid transparent;
+		border-top-color: currentColor;
+		border-radius: 50%;
+		animation: spin 0.6s linear infinite;
+	}
+	@keyframes spin { to { transform: rotate(360deg); } }
+
+	.error {
+		color: var(--red);
+		font-size: var(--text-sm);
+		margin-top: var(--space-md);
+	}
+	.success {
+		color: var(--green, #22c55e);
+		font-size: var(--text-sm);
+		margin-top: var(--space-md);
+	}
+	.form-heading {
+		font-size: var(--text-lg);
+		font-weight: 600;
+		color: var(--text-primary);
+		margin: 0;
+		text-align: center;
+	}
+	.form-subtext {
+		font-size: var(--text-sm);
+		color: var(--text-secondary);
+		margin: 0;
+		text-align: center;
+	}
+	.forgot-link {
+		font-size: var(--text-sm);
+		text-align: center;
+	}
+
+	.mode-toggle {
+		color: var(--text-tertiary);
+		font-size: var(--text-sm);
+		margin-bottom: var(--space-2xl);
+	}
+	.link-btn {
+		background: none;
+		border: none;
+		color: var(--accent);
+		cursor: pointer;
+		font-size: inherit;
+		padding: 0;
+		text-decoration: underline;
+	}
+	.link-btn:hover {
+		color: var(--text-primary);
+	}
+
+	.features {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: var(--space-md);
+		color: var(--text-tertiary);
+		font-size: var(--text-sm);
+	}
+	.feature {
+		display: flex;
+		align-items: center;
+		gap: var(--space-xs);
+	}
+	.feature-icon {
+		color: var(--accent);
+		font-size: 8px;
+		opacity: 0.7;
+	}
+	.feature-dot {
+		width: 3px;
+		height: 3px;
+		border-radius: 50%;
+		background: var(--border-strong);
+	}
+
+	.invite-code-input {
+		text-transform: uppercase;
+		letter-spacing: 0.15em;
+		font-weight: 700 !important;
+		font-size: var(--text-xl) !important;
+	}
+
+	@media (max-width: 480px) {
+		h1 { font-size: var(--text-3xl); }
+		.hero { padding: var(--space-lg); }
+	}
+</style>

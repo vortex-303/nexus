@@ -21,6 +21,8 @@ func (s *Server) scheduleCalendarReminders() {
 }
 
 func (s *Server) checkCalendarReminders() {
+	// Check scheduled agent tasks
+	s.checkAgentTasks()
 	// Also check agent triggers
 	s.checkCalendarAgentTriggers()
 

@@ -86,8 +86,28 @@ func (s *Server) broadcastAgentState(slug, channelID, agentID, agentName, state,
 // handleAgentMention is called when a message mentions an agent.
 // It runs asynchronously in a goroutine. fromAgent indicates this was triggered by another agent.
 func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, content string, agent *Agent, messageTime time.Time, fromAgent ...bool) {
+	s.handleAgentMentionEx(slug, channelID, parentID, senderName, content, agent, messageTime, nil, fromAgent...)
+}
+
+func (s *Server) handleAgentMentionEx(slug, channelID, parentID, senderName, content string, agent *Agent, messageTime time.Time, onComplete TaskCompletionCallback, fromAgent ...bool) {
 	isFromAgent := len(fromAgent) > 0 && fromAgent[0]
 	go func() {
+		// Completion tracking for task scheduler callbacks
+		var completionMsgID, completionResponse string
+		var completionErr error
+		defer func() {
+			if onComplete != nil {
+				onComplete(completionMsgID, completionResponse, completionErr)
+			}
+		}()
+		// Wrap sendAgentMessage to capture the last response for completion tracking
+		sendMsg := func(slug, channelID, parentID string, agent *Agent, content string, fromAgent bool, toolsUsed ...string) string {
+			mid := s.sendAgentMessage(slug, channelID, parentID, agent, content, fromAgent, toolsUsed...)
+			completionMsgID = mid
+			completionResponse = content
+			return mid
+		}
+		_ = sendMsg // used below
 		// Acquire semaphore to limit concurrent agent goroutines
 		select {
 		case s.agentSem <- struct{}{}:
@@ -221,12 +241,13 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 				response, gemUsage, err := brain.GenerateTextGemini(geminiKey, geminiModel, systemPrompt, messages)
 				if err != nil {
 					logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("Gemini text error")
+					completionErr = err
 					return
 				}
 				s.trackUsage(slug, gemUsage, model, "agent", channelID, senderName)
 				response = strings.TrimSpace(response)
 				if response != "" {
-					s.sendAgentMessage(slug, channelID, parentID, agent, response, isFromAgent)
+					sendMsg(slug, channelID, parentID, agent, response, isFromAgent)
 				}
 				brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 					truncate(content, 200), truncate(response, 500), model, nil)
@@ -237,6 +258,7 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 			responseContent, toolCalls, gemToolUsage, err := brain.CompleteWithToolsGemini(geminiKey, geminiModel, systemPrompt, messages, agentTools)
 			if err != nil {
 				logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("Gemini tools error")
+				completionErr = err
 				return
 			}
 			s.trackUsage(slug, gemToolUsage, model, "agent", channelID, senderName)
@@ -244,7 +266,7 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 			if len(toolCalls) == 0 {
 				responseContent = strings.TrimSpace(responseContent)
 				if responseContent != "" {
-					s.sendAgentMessage(slug, channelID, parentID, agent, responseContent, isFromAgent)
+					sendMsg(slug, channelID, parentID, agent, responseContent, isFromAgent)
 				}
 				brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 					truncate(content, 200), truncate(responseContent, 500), model, nil)
@@ -278,8 +300,9 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 			finalResponse, gemFollowUsage, err := brain.GenerateTextGemini(geminiKey, geminiModel, systemPrompt, followUp)
 			if err != nil {
 				logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("Gemini follow-up error")
+				completionErr = err
 				if responseContent != "" {
-					s.sendAgentMessage(slug, channelID, parentID, agent, appendMissingImages(responseContent, imageRefs)+imagePromptTag, isFromAgent)
+					sendMsg(slug, channelID, parentID, agent, appendMissingImages(responseContent, imageRefs)+imagePromptTag, isFromAgent)
 				}
 				return
 			}
@@ -288,7 +311,7 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 			finalResponse = appendMissingImages(finalResponse, imageRefs)
 			finalResponse += imagePromptTag
 			if finalResponse != "" {
-				s.sendAgentMessage(slug, channelID, parentID, agent, finalResponse, isFromAgent, toolNames...)
+				sendMsg(slug, channelID, parentID, agent, finalResponse, isFromAgent, toolNames...)
 			}
 			brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 				truncate(content, 200), truncate(finalResponse, 500), model, toolNames)
@@ -315,6 +338,7 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 				responseText, images, mmUsage, err := client.CompleteMultimodal(systemPrompt, messages)
 				if err != nil {
 					logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("multimodal LLM error")
+					completionErr = err
 					return
 				}
 				s.trackUsage(slug, mmUsage, resolvedModel, "agent", channelID, senderName)
@@ -323,7 +347,7 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 				imagesMd := s.saveAgentImages(slug, channelID, agent, images)
 				responseText += imagesMd
 				if responseText != "" {
-					s.sendAgentMessage(slug, channelID, parentID, agent, responseText, isFromAgent)
+					sendMsg(slug, channelID, parentID, agent, responseText, isFromAgent)
 				}
 				brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 					truncate(content, 200), truncate(responseText, 500), model, nil)
@@ -333,12 +357,13 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 			response, agRtUsage, err := client.Complete(systemPrompt, messages)
 			if err != nil {
 				logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("LLM error")
+				completionErr = err
 				return
 			}
 			s.trackUsage(slug, agRtUsage, resolvedModel, "agent", channelID, senderName)
 			response = strings.TrimSpace(response)
 			if response != "" {
-				s.sendAgentMessage(slug, channelID, parentID, agent, response, isFromAgent)
+				sendMsg(slug, channelID, parentID, agent, response, isFromAgent)
 			}
 			brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 				truncate(content, 200), truncate(response, 500), model, nil)
@@ -353,6 +378,7 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 		responseContent, toolCalls, agToolUsage, err := client.CompleteWithTools(systemPrompt, messages, agentTools)
 		if err != nil {
 			logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err).Msg("LLM error")
+			completionErr = err
 			return
 		}
 		s.trackUsage(slug, agToolUsage, resolvedModel, "agent", channelID, senderName)
@@ -361,7 +387,7 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 			logger.WithCategory(logger.CatAgent).Info().Str("workspace", slug).Str("agent", agent.Name).Str("response", truncate(responseContent, 200)).Msg("no tool calls returned")
 			responseContent = strings.TrimSpace(responseContent)
 			if responseContent != "" {
-				s.sendAgentMessage(slug, channelID, parentID, agent, responseContent, isFromAgent)
+				sendMsg(slug, channelID, parentID, agent, responseContent, isFromAgent)
 			}
 			brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 				truncate(content, 200), truncate(responseContent, 500), model, nil)
@@ -408,7 +434,7 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 			if td := findToolDef(allTools, toolCalls[0].Function.Name); td != nil && td.Function.ResultAsAnswer {
 				finalResponse := appendMissingImages(toolResults[0], imageRefs) + imagePromptTag
 				if finalResponse != "" {
-					s.sendAgentMessage(slug, channelID, parentID, agent, finalResponse, isFromAgent, toolNames...)
+					sendMsg(slug, channelID, parentID, agent, finalResponse, isFromAgent, toolNames...)
 				}
 				brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 					truncate(content, 200), truncate(finalResponse, 500), model, toolNames)
@@ -423,8 +449,9 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 			finalResponse, followUsage, err2 = client.Complete(systemPrompt, followUp)
 			if err2 != nil {
 				logger.WithCategory(logger.CatAgent).Error().Str("workspace", slug).Str("agent", agent.Name).Err(err2).Msg("follow-up LLM error")
+				completionErr = err2
 				if responseContent != "" {
-					s.sendAgentMessage(slug, channelID, parentID, agent, appendMissingImages(responseContent, imageRefs)+imagePromptTag, isFromAgent)
+					sendMsg(slug, channelID, parentID, agent, appendMissingImages(responseContent, imageRefs)+imagePromptTag, isFromAgent)
 				}
 				return
 			}
@@ -437,7 +464,7 @@ func (s *Server) handleAgentMention(slug, channelID, parentID, senderName, conte
 		// Re-append the image prompt tag for frontend display
 		finalResponse += imagePromptTag
 		if finalResponse != "" {
-			s.sendAgentMessage(slug, channelID, parentID, agent, finalResponse, isFromAgent, toolNames...)
+			sendMsg(slug, channelID, parentID, agent, finalResponse, isFromAgent, toolNames...)
 		}
 
 		brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,

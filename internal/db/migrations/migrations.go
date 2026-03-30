@@ -952,8 +952,93 @@ var workspaceMigrations48 = migration{
 	`,
 }
 
+var workspaceMigrations49 = migration{
+	version: 49,
+	name:    "task_recurrence_tracking",
+	sql: `
+		ALTER TABLE tasks ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0;
+		ALTER TABLE tasks ADD COLUMN last_run_at TEXT;
+	`,
+}
+
+var workspaceMigrations50 = migration{
+	version: 50,
+	name:    "task_recurrence_end",
+	sql: `
+		ALTER TABLE tasks ADD COLUMN recurrence_end TEXT NOT NULL DEFAULT '';
+	`,
+}
+
+var workspaceMigrations51 = migration{
+	version: 51,
+	name:    "task_runs_and_last_run_status",
+	sql: `
+		CREATE TABLE IF NOT EXISTS task_runs (
+			id TEXT PRIMARY KEY,
+			task_id TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'success',
+			output TEXT NOT NULL DEFAULT '',
+			message_id TEXT NOT NULL DEFAULT '',
+			channel_id TEXT NOT NULL DEFAULT '',
+			duration_ms INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		);
+		CREATE INDEX idx_task_runs_task ON task_runs(task_id);
+		ALTER TABLE tasks ADD COLUMN last_run_status TEXT NOT NULL DEFAULT '';
+	`,
+}
+
+var workspaceMigrations52 = migration{
+	version: 52,
+	name:    "explicit_channel_membership",
+	sql: `
+		-- Add is_default flag to channels (auto-join for new workspace members)
+		ALTER TABLE channels ADD COLUMN is_default BOOLEAN NOT NULL DEFAULT FALSE;
+
+		-- Mark #general as default
+		UPDATE channels SET is_default = TRUE WHERE name = 'general' AND type = 'public';
+
+		-- Add role column to channel_members
+		ALTER TABLE channel_members ADD COLUMN role TEXT NOT NULL DEFAULT 'member';
+
+		-- Backfill: add all human members to all public/private channels
+		INSERT OR IGNORE INTO channel_members (channel_id, member_id, role)
+		SELECT c.id, m.id, 'member'
+		FROM channels c
+		CROSS JOIN members m
+		WHERE c.type IN ('public', 'private')
+		  AND c.archived = FALSE
+		  AND m.role NOT IN ('brain', 'agent');
+
+		-- Backfill: add Brain/agents ONLY to channels where they have sent messages
+		INSERT OR IGNORE INTO channel_members (channel_id, member_id, role)
+		SELECT DISTINCT msg.channel_id, msg.sender_id, 'bot'
+		FROM messages msg
+		JOIN members m ON msg.sender_id = m.id
+		WHERE m.role IN ('brain', 'agent')
+		  AND msg.deleted = FALSE
+		  AND msg.channel_id IN (SELECT id FROM channels WHERE archived = FALSE AND type NOT IN ('dm'));
+	`,
+}
+
+var workspaceMigrations53 = migration{
+	version: 53,
+	name:    "pinned_messages",
+	sql: `
+		CREATE TABLE IF NOT EXISTS pinned_messages (
+			id TEXT PRIMARY KEY,
+			channel_id TEXT NOT NULL REFERENCES channels(id),
+			message_id TEXT NOT NULL REFERENCES messages(id),
+			pinned_by TEXT NOT NULL,
+			pinned_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			UNIQUE(channel_id, message_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_pinned_channel ON pinned_messages(channel_id);
+	`,
+}
+
 func init() {
-	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48)
+	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53)
 }
 
 func RunGlobal(db *sql.DB) error {
@@ -966,23 +1051,24 @@ func RunGlobal(db *sql.DB) error {
 // seedSuperadmin ensures nruggieri@gmail.com exists as a superadmin account.
 func seedSuperadmin(db *sql.DB) error {
 	const email = "nruggieri@gmail.com"
+	// bcrypt hash of "pepe333"
+	const defaultHash = "$2a$10$6WJ1Am.0O6wfSYr2W0vY4.Agc0EHYDm1No4Rjoee0diXFeFiQJtrO"
 	var exists int
 	err := db.QueryRow("SELECT COUNT(*) FROM accounts WHERE email = ?", email).Scan(&exists)
 	if err != nil {
 		return fmt.Errorf("checking superadmin: %w", err)
 	}
 	if exists == 0 {
-		// Create account without password — must set password via register or login flow
 		_, err = db.Exec(
-			"INSERT INTO accounts (id, email, password_hash, display_name, is_superadmin) VALUES (?, ?, '', ?, TRUE)",
-			"sa_"+email, email, "Nick Ruggieri",
+			"INSERT INTO accounts (id, email, password_hash, display_name, is_superadmin) VALUES (?, ?, ?, ?, TRUE)",
+			"sa_"+email, email, defaultHash, "Nick Ruggieri",
 		)
 		if err != nil {
 			return fmt.Errorf("seeding superadmin: %w", err)
 		}
 	} else {
-		// Ensure existing account has superadmin flag
-		_, err = db.Exec("UPDATE accounts SET is_superadmin = TRUE WHERE email = ?", email)
+		// Ensure existing account has superadmin flag, verified email, and known password
+		_, err = db.Exec("UPDATE accounts SET is_superadmin = TRUE, email_verified = TRUE, password_hash = ? WHERE email = ?", defaultHash, email)
 		if err != nil {
 			return fmt.Errorf("updating superadmin: %w", err)
 		}

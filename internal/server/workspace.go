@@ -148,10 +148,10 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create #general channel
+	// Create #general channel (default — all members auto-join)
 	generalID := id.New()
 	_, err = wdb.DB.Exec(
-		"INSERT INTO channels (id, name, type, created_by) VALUES (?, ?, ?, ?)",
+		"INSERT INTO channels (id, name, type, created_by, is_default) VALUES (?, ?, ?, ?, TRUE)",
 		generalID, "general", "public", userID,
 	)
 	if err != nil {
@@ -176,6 +176,9 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to add member")
 		return
 	}
+
+	// Add creator to #general channel_members
+	_, _ = wdb.DB.Exec("INSERT OR IGNORE INTO channel_members (channel_id, member_id, role) VALUES (?, ?, 'owner')", generalID, userID)
 
 	// Add Brain as first member and create definition files
 	if err := s.ensureBrainMember(slug); err != nil {
@@ -265,6 +268,9 @@ func (s *Server) handleJoinWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to add member")
 		return
 	}
+
+	// Auto-join all default channels
+	s.joinDefaultChannels(wdb, userID)
 
 	// Index member for search
 	s.search.Index(slug, search.SearchDoc{
@@ -463,6 +469,9 @@ func (s *Server) handleJoinByCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-join all default channels
+	s.joinDefaultChannels(wdb, userID)
+
 	// Issue JWT
 	token, err := s.jwt.Issue(userID, req.DisplayName, wsSlug, "member", accountID)
 	if err != nil {
@@ -475,6 +484,21 @@ func (s *Server) handleJoinByCode(w http.ResponseWriter, r *http.Request) {
 		"member_id": userID,
 		"slug":      wsSlug,
 	})
+}
+
+// joinDefaultChannels adds a member to all channels marked as is_default.
+func (s *Server) joinDefaultChannels(wdb *db.WorkspaceDB, memberID string) {
+	rows, err := wdb.DB.Query("SELECT id FROM channels WHERE is_default = TRUE AND archived = FALSE")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var chID string
+		if rows.Scan(&chID) == nil {
+			_, _ = wdb.DB.Exec("INSERT OR IGNORE INTO channel_members (channel_id, member_id, role) VALUES (?, ?, 'member')", chID, memberID)
+		}
+	}
 }
 
 // handleInviteByEmail sends an invite link via email.

@@ -27,6 +27,7 @@ type createTaskReq struct {
 	ScheduledAt    string   `json:"scheduled_at"`
 	AgentID        string   `json:"agent_id"`
 	RecurrenceRule string   `json:"recurrence_rule"`
+	RecurrenceEnd  string   `json:"recurrence_end"`
 }
 
 type updateTaskReq struct {
@@ -42,6 +43,7 @@ type updateTaskReq struct {
 	ScheduledAt    *string  `json:"scheduled_at"`
 	AgentID        *string  `json:"agent_id"`
 	RecurrenceRule *string  `json:"recurrence_rule"`
+	RecurrenceEnd  *string  `json:"recurrence_end"`
 }
 
 var validStatuses = map[string]bool{
@@ -49,6 +51,23 @@ var validStatuses = map[string]bool{
 }
 var validPriorities = map[string]bool{
 	"low": true, "medium": true, "high": true, "urgent": true,
+}
+
+const taskSelectCols = `id, title, description, expected_output, status, priority, COALESCE(assignee_id,''), created_by, COALESCE(due_date,''), tags, COALESCE(channel_id,''), COALESCE(message_id,''), position, COALESCE(scheduled_at,''), COALESCE(agent_id,''), recurrence_rule, recurrence_end, run_count, COALESCE(last_run_at,''), last_run_status, created_at, updated_at`
+
+func scanTask(row interface{ Scan(...any) error }) (hub.TaskPayload, error) {
+	var t hub.TaskPayload
+	var tagsStr string
+	err := row.Scan(&t.ID, &t.Title, &t.Description, &t.ExpectedOutput, &t.Status, &t.Priority,
+		&t.AssigneeID, &t.CreatedBy, &t.DueDate, &tagsStr,
+		&t.ChannelID, &t.MessageID, &t.Position,
+		&t.ScheduledAt, &t.AgentID, &t.RecurrenceRule, &t.RecurrenceEnd,
+		&t.RunCount, &t.LastRunAt, &t.LastRunStatus,
+		&t.CreatedAt, &t.UpdatedAt)
+	if err == nil {
+		t.Tags = json.RawMessage(tagsStr)
+	}
+	return t, err
 }
 
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
@@ -127,11 +146,11 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err = wdb.DB.Exec(
-		`INSERT INTO tasks (id, title, description, expected_output, status, priority, assignee_id, created_by, due_date, tags, channel_id, message_id, position, scheduled_at, agent_id, recurrence_rule, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO tasks (id, title, description, expected_output, status, priority, assignee_id, created_by, due_date, tags, channel_id, message_id, position, scheduled_at, agent_id, recurrence_rule, recurrence_end, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		taskID, req.Title, req.Description, req.ExpectedOutput, req.Status, req.Priority,
 		assigneeID, claims.UserID, dueDate, string(tagsJSON),
-		channelID, messageID, position, scheduledAt, agentID, req.RecurrenceRule, now, now,
+		channelID, messageID, position, scheduledAt, agentID, req.RecurrenceRule, req.RecurrenceEnd, now, now,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create task")
@@ -160,6 +179,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		ScheduledAt:    req.ScheduledAt,
 		AgentID:        req.AgentID,
 		RecurrenceRule: req.RecurrenceRule,
+		RecurrenceEnd:  req.RecurrenceEnd,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -200,7 +220,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		assignee = claims.UserID
 	}
 
-	query := "SELECT id, title, description, expected_output, status, priority, COALESCE(assignee_id,''), created_by, COALESCE(due_date,''), tags, COALESCE(channel_id,''), COALESCE(message_id,''), position, COALESCE(scheduled_at,''), COALESCE(agent_id,''), recurrence_rule, created_at, updated_at FROM tasks WHERE 1=1"
+	query := "SELECT " + taskSelectCols + " FROM tasks WHERE 1=1"
 	var args []any
 
 	if status != "" {
@@ -227,16 +247,10 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 
 	tasks := []hub.TaskPayload{}
 	for rows.Next() {
-		var t hub.TaskPayload
-		var tagsStr string
-		if err := rows.Scan(&t.ID, &t.Title, &t.Description, &t.ExpectedOutput, &t.Status, &t.Priority,
-			&t.AssigneeID, &t.CreatedBy, &t.DueDate, &tagsStr,
-			&t.ChannelID, &t.MessageID, &t.Position,
-			&t.ScheduledAt, &t.AgentID, &t.RecurrenceRule,
-			&t.CreatedAt, &t.UpdatedAt); err != nil {
+		t, err := scanTask(rows)
+		if err != nil {
 			continue
 		}
-		t.Tags = json.RawMessage(tagsStr)
 		tasks = append(tasks, t)
 	}
 
@@ -258,21 +272,13 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var t hub.TaskPayload
-	var tagsStr string
-	err = wdb.DB.QueryRow(
-		"SELECT id, title, description, expected_output, status, priority, COALESCE(assignee_id,''), created_by, COALESCE(due_date,''), tags, COALESCE(channel_id,''), COALESCE(message_id,''), position, COALESCE(scheduled_at,''), COALESCE(agent_id,''), recurrence_rule, created_at, updated_at FROM tasks WHERE id = ?",
-		taskID,
-	).Scan(&t.ID, &t.Title, &t.Description, &t.ExpectedOutput, &t.Status, &t.Priority,
-		&t.AssigneeID, &t.CreatedBy, &t.DueDate, &tagsStr,
-		&t.ChannelID, &t.MessageID, &t.Position,
-		&t.ScheduledAt, &t.AgentID, &t.RecurrenceRule,
-		&t.CreatedAt, &t.UpdatedAt)
+	t, err := scanTask(wdb.DB.QueryRow(
+		"SELECT "+taskSelectCols+" FROM tasks WHERE id = ?", taskID,
+	))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	t.Tags = json.RawMessage(tagsStr)
 
 	writeJSON(w, http.StatusOK, t)
 }
@@ -376,6 +382,10 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		sets = append(sets, "recurrence_rule = ?")
 		args = append(args, *req.RecurrenceRule)
 	}
+	if req.RecurrenceEnd != nil {
+		sets = append(sets, "recurrence_end = ?")
+		args = append(args, *req.RecurrenceEnd)
+	}
 
 	if len(sets) == 0 {
 		writeError(w, http.StatusBadRequest, "no fields to update")
@@ -398,17 +408,9 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read back updated task
-	var t hub.TaskPayload
-	var tagsStr string
-	_ = wdb.DB.QueryRow(
-		"SELECT id, title, description, expected_output, status, priority, COALESCE(assignee_id,''), created_by, COALESCE(due_date,''), tags, COALESCE(channel_id,''), COALESCE(message_id,''), position, COALESCE(scheduled_at,''), COALESCE(agent_id,''), recurrence_rule, created_at, updated_at FROM tasks WHERE id = ?",
-		taskID,
-	).Scan(&t.ID, &t.Title, &t.Description, &t.ExpectedOutput, &t.Status, &t.Priority,
-		&t.AssigneeID, &t.CreatedBy, &t.DueDate, &tagsStr,
-		&t.ChannelID, &t.MessageID, &t.Position,
-		&t.ScheduledAt, &t.AgentID, &t.RecurrenceRule,
-		&t.CreatedAt, &t.UpdatedAt)
-	t.Tags = json.RawMessage(tagsStr)
+	t, _ := scanTask(wdb.DB.QueryRow(
+		"SELECT "+taskSelectCols+" FROM tasks WHERE id = ?", taskID,
+	))
 
 	s.search.Index(slug, search.SearchDoc{
 		ID: t.ID, Type: "task", Title: t.Title, Content: t.Description, Status: t.Status,
@@ -472,4 +474,53 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	})
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handleListTaskRuns(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	taskID := r.PathValue("taskID")
+	claims := auth.GetClaims(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	rows, err := wdb.DB.Query(
+		`SELECT id, task_id, status, output, message_id, channel_id, duration_ms, created_at
+		 FROM task_runs WHERE task_id = ? ORDER BY created_at DESC LIMIT 50`,
+		taskID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	type taskRun struct {
+		ID         string `json:"id"`
+		TaskID     string `json:"task_id"`
+		Status     string `json:"status"`
+		Output     string `json:"output"`
+		MessageID  string `json:"message_id"`
+		ChannelID  string `json:"channel_id"`
+		DurationMS int    `json:"duration_ms"`
+		CreatedAt  string `json:"created_at"`
+	}
+
+	runs := []taskRun{}
+	for rows.Next() {
+		var run taskRun
+		if err := rows.Scan(&run.ID, &run.TaskID, &run.Status, &run.Output, &run.MessageID, &run.ChannelID, &run.DurationMS, &run.CreatedAt); err != nil {
+			continue
+		}
+		runs = append(runs, run)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
 }

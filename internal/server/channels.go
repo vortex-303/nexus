@@ -113,7 +113,7 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For group channels, insert channel_members and subscribe only those users
+	// For group channels, insert all specified members
 	if req.Type == "group" && len(req.Members) > 0 {
 		for _, mid := range req.Members {
 			_, _ = wdb.DB.Exec("INSERT OR IGNORE INTO channel_members (channel_id, member_id) VALUES (?, ?)", chID, mid)
@@ -122,11 +122,12 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		if h != nil {
 			h.SubscribeUsersByID(chID, req.Members)
 		}
-	} else {
-		// Subscribe all current WebSocket connections to the new channel
+	} else if req.Type != "dm" {
+		// For public/private channels, add creator as member
+		_, _ = wdb.DB.Exec("INSERT OR IGNORE INTO channel_members (channel_id, member_id, role) VALUES (?, ?, 'owner')", chID, claims.UserID)
 		h := s.hubs.Get(slug)
 		if h != nil {
-			h.SubscribeAll(chID)
+			h.SubscribeUsersByID(chID, []string{claims.UserID})
 		}
 	}
 
@@ -163,8 +164,21 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := wdb.DB.Query(
-		`SELECT c.id, c.name, c.type, c.classification, COALESCE(c.created_by, ''), c.created_at, c.archived,
+	// ?browse=true returns public channels the user is NOT in (for channel discovery)
+	browse := r.URL.Query().Get("browse") == "true"
+
+	var query string
+	var args []any
+
+	if browse {
+		query = `SELECT c.id, c.name, c.type, c.classification, COALESCE(c.created_by, ''), c.created_at, c.archived,
+			0 AS unread, FALSE AS is_favorite, '' AS favorited_at
+			FROM channels c WHERE c.archived = FALSE AND c.type = 'public'
+			AND c.id NOT IN (SELECT channel_id FROM channel_members WHERE member_id = ?)
+			ORDER BY c.created_at`
+		args = []any{claims.UserID}
+	} else {
+		query = `SELECT c.id, c.name, c.type, c.classification, COALESCE(c.created_by, ''), c.created_at, c.archived,
 			COALESCE((SELECT COUNT(*) FROM messages m
 				WHERE m.channel_id = c.id AND m.deleted = FALSE
 				AND m.created_at > COALESCE((SELECT last_read_at FROM channel_reads WHERE channel_id = c.id AND user_id = ?), '')
@@ -173,11 +187,17 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 			COALESCE((SELECT cr.is_favorite FROM channel_reads cr WHERE cr.channel_id = c.id AND cr.user_id = ?), FALSE) AS is_favorite,
 			COALESCE((SELECT cr.favorited_at FROM channel_reads cr WHERE cr.channel_id = c.id AND cr.user_id = ?), '') AS favorited_at
 		FROM channels c WHERE c.archived = FALSE
-			AND (c.type NOT IN ('dm', 'group') OR c.name LIKE '%' || ? || '%'
-				OR (c.type = 'group' AND c.id IN (SELECT channel_id FROM channel_members WHERE member_id = ?)))
-		ORDER BY c.created_at`,
-		claims.UserID, claims.UserID, claims.UserID, claims.UserID, claims.UserID, claims.UserID,
-	)
+			AND (
+				-- DM channels: user is a participant (encoded in name)
+				(c.type = 'dm' AND c.name LIKE '%' || ? || '%')
+				-- All other channels: user has a channel_members row
+				OR (c.type != 'dm' AND c.id IN (SELECT channel_id FROM channel_members WHERE member_id = ?))
+			)
+		ORDER BY c.created_at`
+		args = []any{claims.UserID, claims.UserID, claims.UserID, claims.UserID, claims.UserID, claims.UserID}
+	}
+
+	rows, err := wdb.DB.Query(query, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query error")
 		return
@@ -247,11 +267,11 @@ func (s *Server) handleMessageHistory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "not a participant")
 		return
 	}
-	if chType == "group" {
+	if chType != "dm" {
 		var isMember int
 		_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM channel_members WHERE channel_id = ? AND member_id = ?", channelID, claims.UserID).Scan(&isMember)
 		if isMember == 0 {
-			writeError(w, http.StatusForbidden, "not a member of this group")
+			writeError(w, http.StatusForbidden, "not a member of this channel")
 			return
 		}
 	}
@@ -527,14 +547,15 @@ func (s *Server) handleKickChannelMember(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Verify channel is group type
+	// Verify channel exists
 	var chType string
-	if err := wdb.DB.QueryRow("SELECT type FROM channels WHERE id = ? AND archived = FALSE", channelID).Scan(&chType); err != nil {
+	var isDefault bool
+	if err := wdb.DB.QueryRow("SELECT type, is_default FROM channels WHERE id = ? AND archived = FALSE", channelID).Scan(&chType, &isDefault); err != nil {
 		writeError(w, http.StatusNotFound, "channel not found")
 		return
 	}
-	if chType != "group" {
-		writeError(w, http.StatusBadRequest, "can only kick from group channels")
+	if chType == "dm" {
+		writeError(w, http.StatusBadRequest, "cannot kick from DM channels")
 		return
 	}
 
@@ -572,4 +593,407 @@ func (s *Server) handleKickChannelMember(w http.ResponseWriter, r *http.Request)
 	}))
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleJoinChannel allows a user to self-join a public channel.
+func (s *Server) handleJoinChannel(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	channelID := r.PathValue("channelID")
+	claims := auth.GetClaims(r)
+	if claims == nil || claims.WorkspaceSlug != slug {
+		writeError(w, http.StatusForbidden, "not a member")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	var chType string
+	if err := wdb.DB.QueryRow("SELECT type FROM channels WHERE id = ? AND archived = FALSE", channelID).Scan(&chType); err != nil {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	if chType != "public" {
+		writeError(w, http.StatusForbidden, "can only self-join public channels")
+		return
+	}
+
+	_, err = wdb.DB.Exec("INSERT OR IGNORE INTO channel_members (channel_id, member_id, role) VALUES (?, ?, 'member')", channelID, claims.UserID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to join")
+		return
+	}
+
+	h := s.hubs.Get(slug)
+	h.SubscribeUsersByID(channelID, []string{claims.UserID})
+
+	h.Broadcast(channelID, hub.MakeEnvelope(hub.TypeChannelMemberAdded, hub.ChannelMemberAddedPayload{
+		ChannelID:  channelID,
+		MemberID:   claims.UserID,
+		MemberName: claims.DisplayName,
+		Role:       "member",
+	}), "")
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleLeaveChannel allows a user to leave a channel (unless it's a default channel).
+func (s *Server) handleLeaveChannel(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	channelID := r.PathValue("channelID")
+	claims := auth.GetClaims(r)
+	if claims == nil || claims.WorkspaceSlug != slug {
+		writeError(w, http.StatusForbidden, "not a member")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	var isDefault bool
+	var chType string
+	if err := wdb.DB.QueryRow("SELECT type, is_default FROM channels WHERE id = ? AND archived = FALSE", channelID).Scan(&chType, &isDefault); err != nil {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	if isDefault {
+		writeError(w, http.StatusForbidden, "cannot leave a default channel")
+		return
+	}
+	if chType == "dm" {
+		writeError(w, http.StatusBadRequest, "cannot leave DM channels")
+		return
+	}
+
+	_, _ = wdb.DB.Exec("DELETE FROM channel_members WHERE channel_id = ? AND member_id = ?", channelID, claims.UserID)
+
+	h := s.hubs.Get(slug)
+	h.UnsubscribeUsersByID(channelID, []string{claims.UserID})
+
+	h.Broadcast(channelID, hub.MakeEnvelope(hub.TypeChannelMemberRemoved, hub.ChannelMemberRemovedPayload{
+		ChannelID: channelID,
+		MemberID:  claims.UserID,
+	}), "")
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleInviteToChannel adds a member (or bot) to a channel.
+func (s *Server) handleInviteToChannel(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	channelID := r.PathValue("channelID")
+	claims := auth.GetClaims(r)
+	if claims == nil || claims.WorkspaceSlug != slug {
+		writeError(w, http.StatusForbidden, "not a member")
+		return
+	}
+
+	var req struct {
+		MemberID string `json:"member_id"`
+	}
+	if err := readJSON(r, &req); err != nil || req.MemberID == "" {
+		writeError(w, http.StatusBadRequest, "member_id required")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	// Verify channel exists
+	var chType string
+	if err := wdb.DB.QueryRow("SELECT type FROM channels WHERE id = ? AND archived = FALSE", channelID).Scan(&chType); err != nil {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	if chType == "dm" {
+		writeError(w, http.StatusBadRequest, "cannot invite to DM channels")
+		return
+	}
+
+	// Verify member exists
+	var memberName, memberRole string
+	if err := wdb.DB.QueryRow("SELECT display_name, role FROM members WHERE id = ?", req.MemberID).Scan(&memberName, &memberRole); err != nil {
+		writeError(w, http.StatusNotFound, "member not found")
+		return
+	}
+
+	cmRole := "member"
+	if memberRole == "brain" || memberRole == "agent" {
+		cmRole = "bot"
+	}
+
+	_, err = wdb.DB.Exec("INSERT OR IGNORE INTO channel_members (channel_id, member_id, role) VALUES (?, ?, ?)", channelID, req.MemberID, cmRole)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to invite")
+		return
+	}
+
+	h := s.hubs.Get(slug)
+	h.SubscribeUsersByID(channelID, []string{req.MemberID})
+
+	h.Broadcast(channelID, hub.MakeEnvelope(hub.TypeChannelMemberAdded, hub.ChannelMemberAddedPayload{
+		ChannelID:  channelID,
+		MemberID:   req.MemberID,
+		MemberName: memberName,
+		Role:       cmRole,
+	}), "")
+
+	// Notify the invited member directly
+	h.SendToUser(req.MemberID, hub.MakeEnvelope(hub.TypeChannelMemberAdded, hub.ChannelMemberAddedPayload{
+		ChannelID:  channelID,
+		MemberID:   req.MemberID,
+		MemberName: memberName,
+		Role:       cmRole,
+	}))
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleListChannelMembers returns the members of a channel.
+func (s *Server) handleListChannelMembers(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	channelID := r.PathValue("channelID")
+	claims := auth.GetClaims(r)
+	if claims == nil || claims.WorkspaceSlug != slug {
+		writeError(w, http.StatusForbidden, "not a member")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	rows, err := wdb.DB.Query(`
+		SELECT m.id, m.display_name, m.role, cm.role as channel_role
+		FROM channel_members cm
+		JOIN members m ON m.id = cm.member_id
+		WHERE cm.channel_id = ?
+		ORDER BY cm.added_at
+	`, channelID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error")
+		return
+	}
+	defer rows.Close()
+
+	type memberEntry struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"display_name"`
+		Role        string `json:"role"`
+		ChannelRole string `json:"channel_role"`
+	}
+	members := make([]memberEntry, 0)
+	for rows.Next() {
+		var m memberEntry
+		if rows.Scan(&m.ID, &m.DisplayName, &m.Role, &m.ChannelRole) == nil {
+			members = append(members, m)
+		}
+	}
+	writeJSON(w, http.StatusOK, members)
+}
+
+// addMemberToChannel is a helper that inserts a channel_members row and subscribes via hub.
+func (s *Server) addMemberToChannel(wdb *db.WorkspaceDB, slug, channelID, memberID, role string) {
+	_, _ = wdb.DB.Exec("INSERT OR IGNORE INTO channel_members (channel_id, member_id, role) VALUES (?, ?, ?)", channelID, memberID, role)
+	h := s.hubs.Get(slug)
+	if h != nil {
+		h.SubscribeUsersByID(channelID, []string{memberID})
+	}
+}
+
+// handleMentionToJoin checks for @mentions in a message and auto-adds mentioned
+// users/bots to the channel if they're not already members.
+func (s *Server) handleMentionToJoin(slug, channelID, content string, h *hub.Hub) {
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return
+	}
+
+	// Don't auto-add to DMs
+	var chType string
+	if err := wdb.DB.QueryRow("SELECT type FROM channels WHERE id = ?", channelID).Scan(&chType); err != nil || chType == "dm" {
+		return
+	}
+
+	lower := strings.ToLower(content)
+
+	// Check all workspace members for @mentions
+	rows, err := wdb.DB.Query("SELECT id, display_name, role FROM members")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var memberID, displayName, role string
+		if rows.Scan(&memberID, &displayName, &role) != nil {
+			continue
+		}
+		mention := "@" + strings.ToLower(displayName)
+		if !strings.Contains(lower, mention) {
+			continue
+		}
+		// Check if already a member
+		var exists int
+		_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM channel_members WHERE channel_id = ? AND member_id = ?", channelID, memberID).Scan(&exists)
+		if exists > 0 {
+			continue
+		}
+
+		cmRole := "member"
+		if role == "brain" || role == "agent" {
+			cmRole = "bot"
+		}
+		s.addMemberToChannel(wdb, slug, channelID, memberID, cmRole)
+
+		// Broadcast that a new member was added
+		h.Broadcast(channelID, hub.MakeEnvelope(hub.TypeChannelMemberAdded, hub.ChannelMemberAddedPayload{
+			ChannelID:  channelID,
+			MemberID:   memberID,
+			MemberName: displayName,
+			Role:       cmRole,
+		}), "")
+	}
+}
+
+// handlePinMessage pins a message in a channel.
+func (s *Server) handlePinMessage(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	channelID := r.PathValue("channelID")
+	claims := auth.GetClaims(r)
+	if claims == nil || claims.WorkspaceSlug != slug {
+		writeError(w, http.StatusForbidden, "not a member")
+		return
+	}
+
+	var req struct {
+		MessageID string `json:"message_id"`
+	}
+	if err := readJSON(r, &req); err != nil || req.MessageID == "" {
+		writeError(w, http.StatusBadRequest, "message_id required")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	// Verify message belongs to channel
+	var exists int
+	if err := wdb.DB.QueryRow("SELECT COUNT(*) FROM messages WHERE id = ? AND channel_id = ? AND deleted = FALSE", req.MessageID, channelID).Scan(&exists); err != nil || exists == 0 {
+		writeError(w, http.StatusNotFound, "message not found")
+		return
+	}
+
+	pinID := id.New()
+	_, err = wdb.DB.Exec("INSERT OR IGNORE INTO pinned_messages (id, channel_id, message_id, pinned_by) VALUES (?, ?, ?, ?)",
+		pinID, channelID, req.MessageID, claims.UserID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to pin")
+		return
+	}
+
+	h := s.hubs.Get(slug)
+	h.Broadcast(channelID, hub.MakeEnvelope("message.pinned", map[string]string{
+		"channel_id": channelID,
+		"message_id": req.MessageID,
+		"pinned_by":  claims.UserID,
+	}), "")
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleUnpinMessage unpins a message from a channel.
+func (s *Server) handleUnpinMessage(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	channelID := r.PathValue("channelID")
+	claims := auth.GetClaims(r)
+	if claims == nil || claims.WorkspaceSlug != slug {
+		writeError(w, http.StatusForbidden, "not a member")
+		return
+	}
+
+	var req struct {
+		MessageID string `json:"message_id"`
+	}
+	if err := readJSON(r, &req); err != nil || req.MessageID == "" {
+		writeError(w, http.StatusBadRequest, "message_id required")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	_, _ = wdb.DB.Exec("DELETE FROM pinned_messages WHERE channel_id = ? AND message_id = ?", channelID, req.MessageID)
+
+	h := s.hubs.Get(slug)
+	h.Broadcast(channelID, hub.MakeEnvelope("message.unpinned", map[string]string{
+		"channel_id": channelID,
+		"message_id": req.MessageID,
+	}), "")
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleListPinnedMessages returns all pinned messages for a channel.
+func (s *Server) handleListPinnedMessages(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	channelID := r.PathValue("channelID")
+	claims := auth.GetClaims(r)
+	if claims == nil || claims.WorkspaceSlug != slug {
+		writeError(w, http.StatusForbidden, "not a member")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	rows, err := wdb.DB.Query(`
+		SELECT p.message_id, m.sender_id, m.content, m.created_at, p.pinned_by, p.pinned_at
+		FROM pinned_messages p
+		JOIN messages m ON m.id = p.message_id
+		WHERE p.channel_id = ? AND m.deleted = FALSE
+		ORDER BY p.pinned_at DESC
+	`, channelID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error")
+		return
+	}
+	defer rows.Close()
+
+	type pinnedMsg struct {
+		MessageID string `json:"message_id"`
+		SenderID  string `json:"sender_id"`
+		Content   string `json:"content"`
+		CreatedAt string `json:"created_at"`
+		PinnedBy  string `json:"pinned_by"`
+		PinnedAt  string `json:"pinned_at"`
+	}
+	pins := make([]pinnedMsg, 0)
+	for rows.Next() {
+		var p pinnedMsg
+		if rows.Scan(&p.MessageID, &p.SenderID, &p.Content, &p.CreatedAt, &p.PinnedBy, &p.PinnedAt) == nil {
+			pins = append(pins, p)
+		}
+	}
+	writeJSON(w, http.StatusOK, pins)
 }

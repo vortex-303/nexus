@@ -406,3 +406,203 @@ To verify the current product works end-to-end:
 12. Visit /landing.html → marketing page renders all sections
 13. `curl localhost:3000/metrics | grep nexus_` → Prometheus metrics present
 14. @Brain mention → `nexus_llm_calls_total` increments in metrics
+
+---
+
+# Next Features Roadmap (March 2026)
+
+## 1. Pinned Messages [DONE]
+
+- Migration v53: `pinned_messages` table
+- Pin/unpin via hover action (star icon), orange "Pinned" tag on messages
+- Pins button in channel header with count, opens Pins panel
+- Click pinned message to scroll to it. Real-time sync via WebSocket.
+
+## 2. Inbox & Notification System
+
+### 2a. Data Model
+
+**New table: `notifications`**
+```sql
+CREATE TABLE notifications (
+  id TEXT PRIMARY KEY,
+  workspace_slug TEXT NOT NULL,
+  recipient_id TEXT NOT NULL,
+  type TEXT NOT NULL,                 -- mention, dm, announcement, brief, system, thread_reply
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  link TEXT NOT NULL DEFAULT '',      -- deep link: /w/{slug}?c={channelId}&m={messageId}
+  source_id TEXT NOT NULL DEFAULT '',
+  actor_id TEXT NOT NULL DEFAULT '',
+  read BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TEXT NOT NULL
+);
+```
+
+**New table: `notification_preferences`**
+```sql
+CREATE TABLE notification_preferences (
+  member_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL DEFAULT '__global__',
+  level TEXT NOT NULL DEFAULT 'mentions',  -- all, mentions, nothing
+  browser_push BOOLEAN NOT NULL DEFAULT TRUE,
+  mobile_push BOOLEAN NOT NULL DEFAULT TRUE,
+  email_digest BOOLEAN NOT NULL DEFAULT FALSE,
+  PRIMARY KEY (member_id, channel_id)
+);
+```
+
+### 2b. Notification Triggers
+
+| Event | Recipients | Type |
+|-------|-----------|------|
+| @mention in channel | Mentioned user | `mention` |
+| New DM | DM recipient | `dm` |
+| Platform announcement (super admin) | All workspace owners | `announcement` |
+| Workspace announcement (admin) | All workspace members | `announcement` |
+| Brain weekly brief published | All members (configurable) | `brief` |
+| Brain heartbeat fires | Channel members | `system` |
+| Task assigned | Assignee | `system` |
+| Thread reply | Thread participants | `thread_reply` |
+| Invited to channel | Invited member | `system` |
+
+### 2c. Delivery Channels
+
+1. **In-app inbox** — bell icon, unread badge, dropdown list
+2. **Browser push** — Web Push API (VAPID keys), Service Worker
+3. **Mobile push** — PWA Service Worker (Chrome/Safari)
+4. **Email digest** — Optional daily summary via SendGrid
+
+### 2d. Inbox UI
+
+- Bell icon in top-right with unread count badge
+- Dropdown panel: tabs (All | Mentions | DMs | Announcements)
+- Each entry: icon, title, preview, timestamp, read/unread
+- Click navigates to source. "Mark all read" button.
+- Settings page: global defaults + per-channel overrides
+
+### 2e. Announcement System (Multi-Tier)
+
+- **Super Admin → Owners**: extend `platform_announcements` to create notification rows
+- **Admin → Team**: `POST /api/workspaces/{slug}/announcements`, notifies all members, pinned banner
+- **Brain → Members**: brief published → notification with link, heartbeat → optional notification
+
+### 2f. Implementation Order
+
+1. `notifications` table + CRUD endpoints
+2. In-app inbox UI (bell icon, dropdown, unread badge)
+3. Trigger hooks in handlers (mention, DM, thread, etc.)
+4. Browser Web Push (VAPID, Service Worker)
+5. `notification_preferences` + settings UI
+6. Workspace announcements endpoint + banner
+7. Email digest (daily cron, SendGrid)
+
+## 3. Search Improvements
+
+### Current: Bleve full-text, workspace-wide, type filtering, recency bias
+
+### Enhancements
+
+- **Channel-scoped**: `channel_id` filter, default "This channel" when searching from a channel
+- **Person filter**: `sender` param, "From: @person" pill
+- **Date range**: `after`/`before` params, quick presets (Today, Past week, Past month)
+- **Thread search**: index with parent_id, show thread context
+- **Slash command**: `/search query` opens SearchModal pre-filled
+
+### Implementation
+1. Backend: Add filter params to search handler, compound Bleve queries
+2. Frontend: Filter pills in SearchModal, context-aware defaults
+
+## 4. Mobile Responsive Design
+
+### Strategy: Progressive enhancement, don't break desktop
+
+### Breakpoints
+- `>1024px`: Full desktop (sidebar + chat + drawer)
+- `768-1024px`: Tablet — collapsible sidebar
+- `<768px`: Mobile — bottom nav, full-screen panels
+
+### Mobile Layout
+- **Bottom nav**: Chat, DMs, Pages, Activity, Profile
+- Channel list → full screen, tap → chat view full screen
+- Back arrow to return, swipe right → channel list, swipe left → members
+- Thread → full screen overlay
+
+### Component Changes
+- Sidebar: `position: fixed` overlay, hamburger toggle
+- Modals: full-screen on mobile
+- Message actions: long press instead of hover
+- Emoji picker: bottom sheet
+
+### PWA
+- `manifest.json` with icons, `display: standalone`
+- Service Worker for offline shell + push notifications
+
+### Order
+1. Viewport meta + CSS breakpoints
+2. Sidebar responsive (collapsible 768px, hamburger <768px)
+3. Chat view full-screen mobile + back nav
+4. Bottom nav bar
+5. Touch interactions (long press, swipe)
+6. PWA manifest + Service Worker
+
+## 5. "Catch Me Up" — Brain Channel Summaries
+
+### Concept
+When opening a channel with 5+ unreads, show a "Catch me up" button that generates an AI TL;DR of missed messages.
+
+### UX
+
+**Unread banner** (above message list):
+```
+42 new messages since yesterday
+[Catch me up]  [Jump to new]
+```
+
+**Also**: `/catchup` slash command, inbox "Catch up on all" button
+
+**Summary output** — ephemeral card (not persisted), structured:
+- Key decisions made
+- Action items / tasks mentioned
+- Open questions
+- Important links/files shared
+- Most active participants
+
+### Backend
+
+**Endpoint**: `POST /api/workspaces/{slug}/channels/{channelID}/catchup`
+1. Get `last_read_at` from `channel_reads`
+2. Fetch messages since then (cap 200)
+3. Build context: content, senders, threads, reactions
+4. Call LLM with summary system prompt
+5. Return structured JSON
+
+**Caching**: Use `brain_channel_summaries` table. Cache key = channel_id + message_count + last_message_id. Invalidate on new messages.
+
+### Frontend
+1. Unread banner component (shows when unread >= 5)
+2. Summary card (dashed border, Brain icon, "Summary" label)
+3. "Dismiss" + "Share to channel" buttons
+
+### Order
+1. Backend catchup endpoint
+2. Unread banner + message count
+3. Summary card display
+4. Caching
+5. Share to channel action
+6. Inbox integration
+
+---
+
+## Priority Matrix
+
+| Phase | Feature | Effort | Impact |
+|-------|---------|--------|--------|
+| **Done** | Pinned Messages | Small | Medium |
+| **Next** | Inbox & Notifications (core) | Large | Critical |
+| **Next** | Mobile Responsive (layout) | Medium | High |
+| **Then** | Catch Me Up | Medium | High (differentiator) |
+| **Then** | Search Improvements | Medium | Medium |
+| **Later** | Browser Push | Medium | High |
+| **Later** | Email Digest | Small | Medium |
+| **Later** | PWA + Touch | Medium | Medium |

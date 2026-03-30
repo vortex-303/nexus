@@ -811,12 +811,12 @@ func isAgentInChannel(agent *Agent, channelID string) bool {
 	return false
 }
 
-// sendAgentMessage saves and broadcasts a message from an agent.
+// sendAgentMessage saves and broadcasts a message from an agent. Returns the message ID.
 // fromAgent indicates the message was triggered by another agent (prevents infinite chains).
-func (s *Server) sendAgentMessage(slug, channelID, parentID string, agent *Agent, content string, fromAgent bool, toolsUsed ...string) {
+func (s *Server) sendAgentMessage(slug, channelID, parentID string, agent *Agent, content string, fromAgent bool, toolsUsed ...string) string {
 	wdb, err := s.ws.Open(slug)
 	if err != nil {
-		return
+		return ""
 	}
 
 	msgID := id.New()
@@ -841,7 +841,7 @@ func (s *Server) sendAgentMessage(slug, channelID, parentID string, agent *Agent
 	}
 	if err != nil {
 		logger.WithCategory(logger.CatAgent).Error().Err(err).Str("agent", agent.Name).Msg("failed to save message")
-		return
+		return ""
 	}
 
 	// Update thread metadata if replying in a thread
@@ -866,6 +866,7 @@ func (s *Server) sendAgentMessage(slug, channelID, parentID string, agent *Agent
 		ChannelID: channelID, EntityID: msgID, Source: "agent",
 		Summary: agent.Name + " responded in channel",
 	})
+	return msgID
 }
 
 // --- Agent Skills CRUD ---

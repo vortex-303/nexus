@@ -41,6 +41,7 @@ const (
 	TypeAgentState          = "agent.state"
 	TypeUnreadUpdate       = "unread.update"
 	TypeChannelMemberRemoved = "channel.member_removed"
+	TypeChannelMemberAdded   = "channel.member_added"
 	TypeActivityNew          = "activity.new"
 	TypeSocialPulseCreated = "social_pulse.created"
 	TypeSocialPulseUpdated = "social_pulse.updated"
@@ -158,6 +159,10 @@ type TaskPayload struct {
 	ScheduledAt    string          `json:"scheduled_at,omitempty"`
 	AgentID        string          `json:"agent_id,omitempty"`
 	RecurrenceRule string          `json:"recurrence_rule,omitempty"`
+	RecurrenceEnd  string          `json:"recurrence_end,omitempty"`
+	RunCount       int             `json:"run_count"`
+	LastRunAt      string          `json:"last_run_at,omitempty"`
+	LastRunStatus  string          `json:"last_run_status,omitempty"`
 	CreatedAt      string          `json:"created_at"`
 	UpdatedAt      string          `json:"updated_at"`
 }
@@ -217,6 +222,13 @@ type EventReminderPayload struct {
 type ChannelMemberRemovedPayload struct {
 	ChannelID string `json:"channel_id"`
 	MemberID  string `json:"member_id"`
+}
+
+type ChannelMemberAddedPayload struct {
+	ChannelID  string `json:"channel_id"`
+	MemberID   string `json:"member_id"`
+	MemberName string `json:"member_name"`
+	Role       string `json:"role"`
 }
 
 // MakeEnvelope creates a JSON-encoded envelope.

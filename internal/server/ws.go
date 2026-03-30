@@ -97,8 +97,12 @@ func (s *Server) autoSubscribe(conn *hub.Conn, slug string) {
 	if err != nil {
 		return
 	}
-	// Subscribe to all public channels + channels user is in
-	rows, err := wdb.DB.Query("SELECT id FROM channels WHERE archived = FALSE")
+	// Subscribe to channels the user is a member of (via channel_members)
+	rows, err := wdb.DB.Query(`
+		SELECT c.id FROM channels c
+		JOIN channel_members cm ON cm.channel_id = c.id
+		WHERE c.archived = FALSE AND cm.member_id = ?
+	`, conn.UserID)
 	if err != nil {
 		return
 	}
@@ -106,6 +110,20 @@ func (s *Server) autoSubscribe(conn *hub.Conn, slug string) {
 	for rows.Next() {
 		var chID string
 		if err := rows.Scan(&chID); err == nil {
+			conn.Subscribe(chID)
+		}
+	}
+	// Also subscribe to DM channels (membership encoded in name)
+	dmRows, err := wdb.DB.Query(`
+		SELECT id FROM channels WHERE archived = FALSE AND type = 'dm' AND name LIKE '%' || ? || '%'
+	`, conn.UserID)
+	if err != nil {
+		return
+	}
+	defer dmRows.Close()
+	for dmRows.Next() {
+		var chID string
+		if err := dmRows.Scan(&chID); err == nil {
 			conn.Subscribe(chID)
 		}
 	}
@@ -249,6 +267,9 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 
 	// Auto-subscribe other DM participants
 	s.autoSubscribeChannel(conn, h, p.ChannelID)
+
+	// Check @mentions and auto-add mentioned users/bots to channel
+	s.handleMentionToJoin(conn.WorkspaceSlug, p.ChannelID, p.Content, h)
 
 	wdb, err := s.ws.Open(conn.WorkspaceSlug)
 	if err != nil {
@@ -631,19 +652,17 @@ func (s *Server) handleWSChannelRead(conn *hub.Conn, h *hub.Hub, payload json.Ra
 }
 
 // autoSubscribeChannel ensures relevant connections are subscribed to a channel.
-// For DM channels, only the two participants are subscribed (privacy fix).
-// For public channels, all connections are subscribed.
+// For DM channels, only the two participants are subscribed.
+// For all other channels, only channel_members are subscribed.
 func (s *Server) autoSubscribeChannel(conn *hub.Conn, h *hub.Hub, channelID string) {
 	wdb, err := s.ws.Open(conn.WorkspaceSlug)
 	if err != nil {
-		h.SubscribeAll(channelID)
 		return
 	}
 
 	var chType, chName string
 	err = wdb.DB.QueryRow("SELECT type, name FROM channels WHERE id = ?", channelID).Scan(&chType, &chName)
 	if err != nil {
-		h.SubscribeAll(channelID)
 		return
 	}
 
@@ -657,24 +676,19 @@ func (s *Server) autoSubscribeChannel(conn *hub.Conn, h *hub.Hub, channelID stri
 		}
 	}
 
-	if chType == "group" {
-		// Only subscribe channel members
-		rows, err := wdb.DB.Query("SELECT member_id FROM channel_members WHERE channel_id = ?", channelID)
-		if err == nil {
-			defer rows.Close()
-			var memberIDs []string
-			for rows.Next() {
-				var mid string
-				if rows.Scan(&mid) == nil {
-					memberIDs = append(memberIDs, mid)
-				}
-			}
-			if len(memberIDs) > 0 {
-				h.SubscribeUsersByID(channelID, memberIDs)
-				return
+	// For all non-DM channels, subscribe only channel_members
+	rows, err := wdb.DB.Query("SELECT member_id FROM channel_members WHERE channel_id = ?", channelID)
+	if err == nil {
+		defer rows.Close()
+		var memberIDs []string
+		for rows.Next() {
+			var mid string
+			if rows.Scan(&mid) == nil {
+				memberIDs = append(memberIDs, mid)
 			}
 		}
+		if len(memberIDs) > 0 {
+			h.SubscribeUsersByID(channelID, memberIDs)
+		}
 	}
-
-	h.SubscribeAll(channelID)
 }

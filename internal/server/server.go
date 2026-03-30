@@ -220,6 +220,14 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/workspaces/{slug}/channels", authed(http.HandlerFunc(s.requirePerm(roles.PermChannelCreate, s.handleCreateChannel))))
 	s.mux.Handle("DELETE /api/workspaces/{slug}/channels/{channelID}", authed(http.HandlerFunc(s.handleDeleteChannel)))
 	s.mux.Handle("DELETE /api/workspaces/{slug}/channels/{channelID}/members/{memberID}", authed(http.HandlerFunc(s.requireAdmin(s.handleKickChannelMember))))
+	s.mux.Handle("POST /api/workspaces/{slug}/channels/{channelID}/join", authed(http.HandlerFunc(s.handleJoinChannel)))
+	s.mux.Handle("POST /api/workspaces/{slug}/channels/{channelID}/leave", authed(http.HandlerFunc(s.handleLeaveChannel)))
+	s.mux.Handle("POST /api/workspaces/{slug}/channels/{channelID}/invite", authed(http.HandlerFunc(s.handleInviteToChannel)))
+	s.mux.Handle("GET /api/workspaces/{slug}/channels/{channelID}/members", authed(http.HandlerFunc(s.handleListChannelMembers)))
+	s.mux.Handle("POST /api/workspaces/{slug}/channels/{channelID}/pin", authed(http.HandlerFunc(s.handlePinMessage)))
+	s.mux.Handle("POST /api/workspaces/{slug}/channels/{channelID}/unpin", authed(http.HandlerFunc(s.handleUnpinMessage)))
+	s.mux.Handle("GET /api/workspaces/{slug}/channels/{channelID}/pins", authed(http.HandlerFunc(s.handleListPinnedMessages)))
+	s.mux.Handle("GET /api/workspaces/{slug}/channels/{channelID}/memory-pins", authed(http.HandlerFunc(s.handlePinnedMemoryMessageIDs)))
 
 	// Admin-only: role & member management
 	s.mux.Handle("GET /api/roles", authed(http.HandlerFunc(s.handleListRoles)))
@@ -234,6 +242,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/workspaces/{slug}/tasks/{taskID}", authed(http.HandlerFunc(s.handleGetTask)))
 	s.mux.Handle("PUT /api/workspaces/{slug}/tasks/{taskID}", authed(http.HandlerFunc(s.requirePerm(roles.PermTaskEdit, s.handleUpdateTask))))
 	s.mux.Handle("DELETE /api/workspaces/{slug}/tasks/{taskID}", authed(http.HandlerFunc(s.requirePerm(roles.PermTaskDelete, s.handleDeleteTask))))
+	s.mux.Handle("GET /api/workspaces/{slug}/tasks/{taskID}/runs", authed(http.HandlerFunc(s.handleListTaskRuns)))
 
 	// Documents
 	s.mux.Handle("POST /api/workspaces/{slug}/documents", authed(http.HandlerFunc(s.requirePerm(roles.PermDocCreate, s.handleCreateDoc))))

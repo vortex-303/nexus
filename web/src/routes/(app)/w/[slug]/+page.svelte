@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings } from '$lib/api';
+	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, joinChannel, leaveChannel, browseChannels, inviteToChannel, listChannelMembers, pinMessage, unpinMessage, listPinnedMessages, getMemoryPinnedMessageIds, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings } from '$lib/api';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { connect, disconnect, onMessage, sendMessage, sendTyping, sendReaction, removeReaction, clearChannel, markChannelRead, connectionStatus, generateClientId } from '$lib/ws';
 	import { channels, members, messages, activeChannel, typingUsers, onlineUsers } from '$lib/stores/workspace';
@@ -37,6 +37,15 @@
 	let inviteUrl = $state('');
 	let inviteCode = $state('');
 	let showInviteModal = $state(false);
+	let showBrowseChannels = $state(false);
+	let browseChannelList = $state<any[]>([]);
+	let showInviteToChannel = $state(false);
+	let inviteChannelSearch = $state('');
+	let channelMemberIds = $state<Set<string>>(new Set());
+	let pinnedMessageIds = $state<Set<string>>(new Set());
+	let showPinsPanel = $state(false);
+	let pinnedMessagesList = $state<any[]>([]);
+	let memoryPinnedIds = $state<Set<string>>(new Set());
 	let inviteCopied = $state('');
 	let showUpgradeModal = $state(false);
 	let waitlistEmail = $state('');
@@ -333,9 +342,15 @@
 
 	// Member drawer
 	let showMemberDrawer = $state(false);
+	let drawerOnlineMembers = $derived(() => {
+		if (channelMemberIds.size === 0) return onlineMembersList;
+		return onlineMembersList.filter((m: any) => channelMemberIds.has(m.user_id));
+	});
 	let offlineMembers = $derived(() => {
 		const onlineIds = new Set(onlineMembersList.map((m: any) => m.user_id));
-		return $members.filter((m: any) => !onlineIds.has(m.id));
+		const offline = $members.filter((m: any) => !onlineIds.has(m.id));
+		if (channelMemberIds.size === 0) return offline;
+		return offline.filter((m: any) => channelMemberIds.has(m.id));
 	});
 
 	// Brain state
@@ -853,6 +868,58 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 		const url = new URL(window.location.href);
 		url.searchParams.set('c', ch.id);
 		history.replaceState(history.state, '', url.toString());
+		// Fetch channel members and pins
+		if (ch.type !== 'dm') {
+			loadChannelMembers(ch.id);
+		}
+		loadPinnedMessages(ch.id);
+		loadMemoryPins(ch.id);
+	}
+
+	async function loadChannelMembers(channelId: string) {
+		try {
+			const members = await listChannelMembers(slug, channelId);
+			channelMemberIds = new Set(members.map((m: any) => m.id));
+		} catch {
+			channelMemberIds = new Set();
+		}
+	}
+
+	async function loadMemoryPins(channelId: string) {
+		try {
+			const ids = await getMemoryPinnedMessageIds(slug, channelId);
+			memoryPinnedIds = new Set(ids);
+		} catch {
+			memoryPinnedIds = new Set();
+		}
+	}
+
+	async function loadPinnedMessages(channelId: string) {
+		try {
+			const pins = await listPinnedMessages(slug, channelId);
+			pinnedMessageIds = new Set(pins.map((p: any) => p.message_id));
+			pinnedMessagesList = pins;
+		} catch {
+			pinnedMessageIds = new Set();
+			pinnedMessagesList = [];
+		}
+	}
+
+	async function handleTogglePin(messageId: string) {
+		if (!$activeChannel) return;
+		if (pinnedMessageIds.has(messageId)) {
+			await unpinMessage(slug, $activeChannel.id, messageId);
+		} else {
+			await pinMessage(slug, $activeChannel.id, messageId);
+		}
+		loadPinnedMessages($activeChannel.id);
+	}
+
+	async function togglePinsPanel() {
+		showPinsPanel = !showPinsPanel;
+		if (showPinsPanel && $activeChannel) {
+			await loadPinnedMessages($activeChannel.id);
+		}
 	}
 
 	function scrollToMessage(messageId: string) {
@@ -1043,8 +1110,26 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 				channels.subscribe(v => chs = v)();
 				if (chs.length > 0) selectChannel(chs[0]);
 			}
+		} else if (type === 'message.pinned' || type === 'message.unpinned') {
+			if (payload.channel_id === $activeChannel?.id) {
+				loadPinnedMessages(payload.channel_id);
+			}
+		} else if (type === 'channel.member_added') {
+			const { channel_id, member_id } = payload;
+			// If we were added to a channel, refresh channel list
+			if (member_id === currentUser?.uid) {
+				listChannels(slug).then(updated => { $channels = updated; });
+			}
+			// Refresh drawer if this is the active channel
+			if ($activeChannel?.id === channel_id) {
+				loadChannelMembers(channel_id);
+			}
 		} else if (type === 'channel.member_removed') {
 			const { channel_id, member_id } = payload;
+			// Refresh drawer if this is the active channel
+			if ($activeChannel?.id === channel_id && member_id !== currentUser?.uid) {
+				loadChannelMembers(channel_id);
+			}
 			// If we were kicked, remove channel from list
 			if (member_id === currentUser?.uid) {
 				channels.update(chs => chs.filter(ch => ch.id !== channel_id));
@@ -2262,6 +2347,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 		try {
 			await pinMemory(slug, msgId, channelId, type);
 			pinMenuMsgId = null;
+			memoryPinnedIds = new Set([...memoryPinnedIds, msgId]);
 		} catch (e: any) {
 			alert(e.message);
 		}
@@ -3313,7 +3399,7 @@ autonomy: reactive
 		channelMenuId = channelMenuId === channelId ? null : channelId;
 	}
 
-	function handleChannelMenuAction(e: MouseEvent, action: string, ch: any) {
+	async function handleChannelMenuAction(e: MouseEvent, action: string, ch: any) {
 		e.stopPropagation();
 		channelMenuId = null;
 		if (action === 'favorite') {
@@ -3333,7 +3419,40 @@ autonomy: reactive
 			if (confirm(`Delete ${label}? This cannot be undone.`)) {
 				deleteChannel(slug, ch.id);
 			}
+		} else if (action === 'leave') {
+			if (confirm(`Leave #${ch.name}?`)) {
+				await leaveChannel(slug, ch.id);
+				$channels = $channels.filter(c => c.id !== ch.id);
+				if ($activeChannel?.id === ch.id) {
+					const first = $channels[0];
+					if (first) selectChannel(first);
+				}
+			}
+		} else if (action === 'invite') {
+			showInviteToChannel = true;
+			inviteChannelSearch = '';
 		}
+	}
+
+	async function handleBrowseChannels() {
+		showBrowseChannels = true;
+		browseChannelList = await browseChannels(slug);
+	}
+
+	async function handleJoinBrowsedChannel(ch: any) {
+		await joinChannel(slug, ch.id);
+		browseChannelList = browseChannelList.filter(c => c.id !== ch.id);
+		const updated = await listChannels(slug);
+		$channels = updated;
+		const joined = updated.find((c: any) => c.id === ch.id);
+		if (joined) selectChannel(joined);
+		showBrowseChannels = false;
+	}
+
+	async function handleInviteMemberToChannel(memberId: string) {
+		if (!$activeChannel) return;
+		await inviteToChannel(slug, $activeChannel.id, memberId);
+		showInviteToChannel = false;
 	}
 
 	// Drag & drop file upload
@@ -3391,6 +3510,24 @@ autonomy: reactive
 		requestAnimationFrame(() => {
 			if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
 		});
+	}
+
+	function getDateKey(iso: string): string {
+		const d = new Date(iso);
+		return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+	}
+
+	function formatDateSeparator(iso: string): string {
+		const d = new Date(iso);
+		const now = new Date();
+		const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+		const msgDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+		const diff = (today.getTime() - msgDay.getTime()) / 86400000;
+		if (diff === 0) return 'Today';
+		if (diff === 1) return 'Yesterday';
+		const weekdays = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+		if (diff < 7) return weekdays[d.getDay()];
+		return d.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: d.getFullYear() !== now.getFullYear() ? 'numeric' : undefined });
 	}
 
 	function formatTime(iso: string) {
@@ -3530,11 +3667,19 @@ autonomy: reactive
 				<div class="nav-section">
 					<div class="nav-section-header">
 						<span>Channels</span>
-						<button class="nav-action" onclick={() => showNewChannel = !showNewChannel} title="New channel">
-							<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-								<path d="M7 2V12M2 7H12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-							</svg>
-						</button>
+						<div style="display:flex;gap:2px;">
+							<button class="nav-action" onclick={handleBrowseChannels} title="Browse channels">
+								<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+									<circle cx="6" cy="6" r="4" stroke="currentColor" stroke-width="1.3"/>
+									<path d="M9.5 9.5L12 12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+								</svg>
+							</button>
+							<button class="nav-action" onclick={() => showNewChannel = !showNewChannel} title="New channel">
+								<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+									<path d="M7 2V12M2 7H12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+								</svg>
+							</button>
+						</div>
 					</div>
 
 					{#if showNewChannel}
@@ -3572,6 +3717,8 @@ autonomy: reactive
 							{#if channelMenuId === ch.id}
 								<div class="ch-menu">
 									<button onclick={(e) => handleChannelMenuAction(e, 'favorite', ch)}>{ch.is_favorite ? 'Unfavorite' : 'Favorite'}</button>
+									<button onclick={(e) => { selectChannel(ch); handleChannelMenuAction(e, 'invite', ch); }}>Invite member</button>
+									<button onclick={(e) => handleChannelMenuAction(e, 'leave', ch)}>Leave channel</button>
 									{#if isAdmin}
 										<button class="ch-menu-danger" onclick={(e) => handleChannelMenuAction(e, 'delete', ch)}>Delete channel</button>
 									{/if}
@@ -3792,12 +3939,18 @@ autonomy: reactive
 								<span class="online-overflow">+{onlineMembersList.length - 5}</span>
 							{/if}
 						</div>
+						{#if pinnedMessageIds.size > 0}
+						<button class="member-drawer-toggle" class:active={showPinsPanel} onclick={togglePinsPanel} title="Pinned messages">
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2"><path d="M12 2l-2 7H4l6 4.5L8 21l4-3 4 3-2-7.5L20 9h-6z"/></svg>
+							<span>{pinnedMessageIds.size}</span>
+						</button>
+						{/if}
 						<button class="member-drawer-toggle" class:active={showMemberDrawer} onclick={() => showMemberDrawer = !showMemberDrawer} title="Toggle member list">
 							<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 								<path d="M6 4a2 2 0 100-4 2 2 0 000 4zM1 8c0-1.7 1.3-3 3-3h4c1.7 0 3 1.3 3 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
 								<path d="M12 5a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM14.5 8.5c0-1.1-.9-2-2-2h-.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
 							</svg>
-							<span>{$members.length}</span>
+							<span>{channelMemberIds.size || $members.length}</span>
 						</button>
 					{/if}
 				</div>
@@ -3844,7 +3997,14 @@ autonomy: reactive
 					</div>
 				{/if}
 
-				{#each $messages as msg (msg.clientId || msg.id)}
+				{#each $messages as msg, i (msg.clientId || msg.id)}
+					{@const prevMsg = i > 0 ? $messages[i - 1] : null}
+					{@const showDateSep = !prevMsg || getDateKey(msg.created_at) !== getDateKey(prevMsg.created_at)}
+					{#if showDateSep}
+						<div class="date-separator">
+							<span>{formatDateSeparator(msg.created_at)}</span>
+						</div>
+					{/if}
 					<div class="message-row" class:pending={msg.status === 'pending'} class:failed={msg.status === 'failed'} class:message-highlight={highlightedMessageId === msg.id} data-message-id={msg.id}>
 						<div class="avatar clickable" onclick={() => openProfile(msg.sender_id)}>
 							{msg.sender_name.charAt(0).toUpperCase()}
@@ -3855,6 +4015,12 @@ autonomy: reactive
 								<span class="timestamp">{formatTime(msg.created_at)}</span>
 								{#if msg.edited_at}
 									<span class="edited-tag">edited</span>
+								{/if}
+								{#if pinnedMessageIds.has(msg.id)}
+									<span class="pinned-tag" title="Pinned">
+										<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2"><path d="M12 2l-2 7H4l6 4.5L8 21l4-3 4 3-2-7.5L20 9h-6z"/></svg>
+										Pinned
+									</span>
 								{/if}
 							</div>
 							{#if msg.file}
@@ -3935,9 +4101,12 @@ autonomy: reactive
 						<div class="msg-hover-actions">
 							<button class="msg-action-btn" title="React" onclick={(e) => openEmojiPicker(msg.id, e)}>😀</button>
 							<button class="msg-action-btn" title="Reply in thread" onclick={() => openThread(msg.id)}>💬</button>
+							<button class="msg-action-btn {pinnedMessageIds.has(msg.id) ? 'pinned-active' : ''}" title="{pinnedMessageIds.has(msg.id) ? 'Unpin message' : 'Pin message'}" onclick={() => handleTogglePin(msg.id)}>
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="{pinnedMessageIds.has(msg.id) ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><path d="M12 2l-2 7H4l6 4.5L8 21l4-3 4 3-2-7.5L20 9h-6z"/></svg>
+							</button>
 							<div class="pin-memory-wrapper">
-								<button class="msg-action-btn" title="Pin to memory" onclick={() => openPinMenu(msg.id, msg.channel_id)}>
-									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+								<button class="msg-action-btn {memoryPinnedIds.has(msg.id) ? 'memory-pinned' : ''}" title="{memoryPinnedIds.has(msg.id) ? 'Saved to memory' : 'Pin to memory'}" onclick={() => openPinMenu(msg.id, msg.channel_id)}>
+									<svg width="14" height="14" viewBox="0 0 24 24" fill="{memoryPinnedIds.has(msg.id) ? 'var(--accent, #e8912d)' : 'none'}" stroke="{memoryPinnedIds.has(msg.id) ? 'var(--accent, #e8912d)' : 'currentColor'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
 								</button>
 								{#if pinMenuMsgId === msg.id}
 								<div class="pin-type-menu">
@@ -4105,6 +4274,28 @@ autonomy: reactive
 	</main>
 
 	<!-- Member Drawer -->
+	{#if showPinsPanel && $activeChannel}
+		<aside class="member-drawer">
+			<div class="drawer-header">
+				<h3>Pinned Messages</h3>
+				<button class="drawer-close" onclick={() => showPinsPanel = false}>&times;</button>
+			</div>
+			{#if pinnedMessagesList.length === 0}
+				<div style="padding:1.5rem;text-align:center;color:var(--text-tertiary);font-size:0.85rem">No pinned messages yet</div>
+			{:else}
+				<div style="display:flex;flex-direction:column;gap:2px;padding:8px">
+					{#each pinnedMessagesList as pin}
+						<button class="pinned-msg-card" onclick={() => { showPinsPanel = false; scrollToMessage(pin.message_id); }}>
+							<div class="pinned-msg-sender">{$members.find(m => m.id === pin.sender_id)?.display_name || pin.sender_id}</div>
+							<div class="pinned-msg-content">{pin.content.length > 120 ? pin.content.slice(0, 120) + '...' : pin.content}</div>
+							<div class="pinned-msg-time">{formatTime(pin.created_at)}</div>
+						</button>
+					{/each}
+				</div>
+			{/if}
+		</aside>
+	{/if}
+
 	{#if showMemberDrawer && $activeChannel && !isDMChannel($activeChannel)}
 		<aside class="member-drawer">
 			<div class="drawer-header">
@@ -4116,8 +4307,8 @@ autonomy: reactive
 				</button>
 			</div>
 			<div class="drawer-section">
-				<div class="drawer-section-label">Online — {onlineMembersList.length}</div>
-				{#each onlineMembersList as om}
+				<div class="drawer-section-label">Online — {drawerOnlineMembers().length}</div>
+				{#each drawerOnlineMembers() as om}
 					<div class="drawer-member clickable" onclick={() => openProfile(om.user_id)}>
 						<div class="drawer-avatar">
 							{om.display_name?.charAt(0)?.toUpperCase() || '?'}
@@ -4127,12 +4318,13 @@ autonomy: reactive
 							<span class="drawer-member-name">{om.display_name}</span>
 							<span class="drawer-member-role">{om.role}</span>
 						</div>
-						{#if $activeChannel?.type === 'group' && currentUser?.role === 'admin' && om.user_id !== currentUser?.uid}
-							<button class="kick-btn" title="Remove from group" onclick={async (e) => { e.stopPropagation();
-								if (confirm(`Remove ${om.display_name} from this group?`)) {
+						{#if currentUser?.role === 'admin' && om.user_id !== currentUser?.uid && $activeChannel?.type !== 'dm'}
+							<button class="kick-btn" title="Remove from channel" onclick={async (e) => { e.stopPropagation();
+								if (confirm(`Remove ${om.display_name} from this channel?`)) {
 									await kickChannelMember(slug, $activeChannel!.id, om.user_id);
+									loadChannelMembers($activeChannel!.id);
 								}
-							}}>&times;</button>
+							}}>Remove</button>
 						{/if}
 					</div>
 				{/each}
@@ -4149,12 +4341,13 @@ autonomy: reactive
 								<span class="drawer-member-name">{m.display_name}</span>
 								<span class="drawer-member-role">{m.role}</span>
 							</div>
-							{#if $activeChannel?.type === 'group' && currentUser?.role === 'admin' && m.id !== currentUser?.uid}
-								<button class="kick-btn" title="Remove from group" onclick={async (e) => { e.stopPropagation();
-									if (confirm(`Remove ${m.display_name} from this group?`)) {
+							{#if currentUser?.role === 'admin' && m.id !== currentUser?.uid && $activeChannel?.type !== 'dm'}
+								<button class="kick-btn" title="Remove from channel" onclick={async (e) => { e.stopPropagation();
+									if (confirm(`Remove ${m.display_name} from this channel?`)) {
 										await kickChannelMember(slug, $activeChannel!.id, m.id);
+										loadChannelMembers($activeChannel!.id);
 									}
-								}}>&times;</button>
+								}}>Remove</button>
 							{/if}
 						</div>
 					{/each}
@@ -5211,6 +5404,60 @@ autonomy: reactive
 			{:else}
 			<div style="text-align:center;padding:2rem 0;color:var(--text-tertiary)">Generating invite...</div>
 			{/if}
+		</div>
+	</div>
+</div>
+{/if}
+
+{#if showBrowseChannels}
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="modal-overlay" onclick={() => showBrowseChannels = false}>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="modal-dialog" onclick={(e) => e.stopPropagation()} style="max-width: 400px">
+		<div class="modal-header">
+			<h3>Browse Channels</h3>
+			<button class="modal-close" onclick={() => showBrowseChannels = false}>&times;</button>
+		</div>
+		<div class="modal-body">
+			{#if browseChannelList.length === 0}
+				<div style="text-align:center;padding:2rem 0;color:var(--text-tertiary)">You're in all available channels</div>
+			{:else}
+				<div style="display:flex;flex-direction:column;gap:6px">
+					{#each browseChannelList as ch}
+						<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-radius:6px;background:var(--bg-secondary)">
+							<span style="color:var(--text-primary);font-weight:500"># {ch.name}</span>
+							<button class="btn btn-primary btn-sm" onclick={() => handleJoinBrowsedChannel(ch)}>Join</button>
+						</div>
+					{/each}
+				</div>
+			{/if}
+		</div>
+	</div>
+</div>
+{/if}
+
+{#if showInviteToChannel && $activeChannel}
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="modal-overlay" onclick={() => showInviteToChannel = false}>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="modal-dialog" onclick={(e) => e.stopPropagation()} style="max-width: 400px">
+		<div class="modal-header">
+			<h3>Invite to #{$activeChannel.name}</h3>
+			<button class="modal-close" onclick={() => showInviteToChannel = false}>&times;</button>
+		</div>
+		<div class="modal-body">
+			<input class="brain-input" type="text" placeholder="Search members..." bind:value={inviteChannelSearch} style="width:100%;margin-bottom:10px" />
+			<div style="display:flex;flex-direction:column;gap:4px;max-height:300px;overflow-y:auto">
+				{#each $members.filter(m => {
+					const q = inviteChannelSearch.toLowerCase();
+					return (!q || m.display_name.toLowerCase().includes(q));
+				}) as m}
+					<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-radius:6px;background:var(--bg-secondary)">
+						<span style="color:var(--text-primary)">{m.display_name} <span style="color:var(--text-tertiary);font-size:0.75rem">{m.role}</span></span>
+						<button class="btn btn-primary btn-sm" onclick={() => handleInviteMemberToChannel(m.id)}>Invite</button>
+					</div>
+				{/each}
+			</div>
 		</div>
 	</div>
 </div>
@@ -8037,6 +8284,71 @@ autonomy: reactive
 		cursor: default;
 	}
 
+	.pinned-tag {
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+		font-size: 0.7rem;
+		font-weight: 600;
+		color: var(--accent, #e8912d);
+		opacity: 0.8;
+	}
+	.pinned-active {
+		color: var(--accent, #e8912d) !important;
+	}
+	.pinned-msg-card {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 10px 12px;
+		border-radius: 6px;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border-color, rgba(255,255,255,0.06));
+		cursor: pointer;
+		text-align: left;
+		width: 100%;
+		transition: background 0.15s;
+	}
+	.pinned-msg-card:hover {
+		background: var(--bg-tertiary, rgba(255,255,255,0.06));
+	}
+	.pinned-msg-sender {
+		font-size: 0.8rem;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+	.pinned-msg-content {
+		font-size: 0.78rem;
+		color: var(--text-secondary);
+		line-height: 1.35;
+		word-break: break-word;
+	}
+	.pinned-msg-time {
+		font-size: 0.68rem;
+		color: var(--text-tertiary);
+	}
+
+	.date-separator {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 8px 16px;
+		margin: 4px 0;
+	}
+	.date-separator::before,
+	.date-separator::after {
+		content: '';
+		flex: 1;
+		height: 1px;
+		background: var(--border-color, rgba(255,255,255,0.08));
+	}
+	.date-separator span {
+		font-size: 0.75rem;
+		font-weight: 600;
+		color: var(--text-secondary, #999);
+		white-space: nowrap;
+	}
+
 	.message-row {
 		display: flex;
 		gap: var(--space-md);
@@ -10759,16 +11071,19 @@ autonomy: reactive
 	}
 
 	.kick-btn {
-		background: none;
-		border: none;
-		color: var(--text-tertiary);
+		background: rgba(231, 76, 60, 0.1);
+		border: 1px solid rgba(231, 76, 60, 0.3);
+		color: var(--danger, #e74c3c);
 		cursor: pointer;
-		font-size: 1.1rem;
-		padding: 2px 6px;
+		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+		padding: 3px 8px;
 		border-radius: 4px;
 		margin-left: auto;
 		opacity: 0;
-		transition: opacity 0.15s;
+		transition: opacity 0.15s, background 0.15s;
 	}
 	.drawer-member:hover .kick-btn {
 		opacity: 1;
@@ -10776,6 +11091,7 @@ autonomy: reactive
 	.kick-btn:hover {
 		background: var(--danger, #e74c3c);
 		color: white;
+		border-color: var(--danger, #e74c3c);
 	}
 
 	/* @-mention autocomplete popup */
@@ -11211,6 +11527,7 @@ autonomy: reactive
 		box-shadow: 0 2px 8px rgba(0,0,0,0.2);
 	}
 	.message-row:hover .msg-hover-actions { display: flex; }
+	.msg-action-btn.memory-pinned { color: var(--accent, #e8912d); }
 	.msg-action-btn {
 		background: none;
 		border: none;

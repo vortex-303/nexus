@@ -606,6 +606,42 @@ func (s *Server) handlePinMemory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "pinned"})
 }
 
+// handlePinnedMemoryMessageIDs returns message IDs that have brain memory entries for a channel.
+func (s *Server) handlePinnedMemoryMessageIDs(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	channelID := r.PathValue("channelID")
+	claims := auth.GetClaims(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	rows, err := wdb.DB.Query(
+		"SELECT DISTINCT source_message_id FROM brain_memories WHERE source_channel = ? AND source_message_id != '' AND source = 'pin'",
+		channelID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error")
+		return
+	}
+	defer rows.Close()
+
+	ids := make([]string, 0)
+	for rows.Next() {
+		var mid string
+		if rows.Scan(&mid) == nil {
+			ids = append(ids, mid)
+		}
+	}
+	writeJSON(w, http.StatusOK, ids)
+}
+
 // maybeConsolidateMemories runs consolidation at most once every 6 hours.
 func (s *Server) maybeConsolidateMemories(slug string, wdb *db.WorkspaceDB) {
 	// Check last consolidation time

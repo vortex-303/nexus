@@ -309,15 +309,9 @@ func (s *Server) toolUpdateTask(slug, argsJSON string) string {
 	}
 
 	// Read back updated task
-	var t hub.TaskPayload
-	var tagsStr string
-	_ = wdb.DB.QueryRow(
-		"SELECT id, title, description, expected_output, status, priority, COALESCE(assignee_id,''), created_by, COALESCE(due_date,''), tags, COALESCE(channel_id,''), COALESCE(message_id,''), position, created_at, updated_at FROM tasks WHERE id = ?",
-		args.TaskID,
-	).Scan(&t.ID, &t.Title, &t.Description, &t.ExpectedOutput, &t.Status, &t.Priority,
-		&t.AssigneeID, &t.CreatedBy, &t.DueDate, &tagsStr,
-		&t.ChannelID, &t.MessageID, &t.Position, &t.CreatedAt, &t.UpdatedAt)
-	t.Tags = json.RawMessage(tagsStr)
+	t, _ := scanTask(wdb.DB.QueryRow(
+		"SELECT "+taskSelectCols+" FROM tasks WHERE id = ?", args.TaskID,
+	))
 
 	h := s.hubs.Get(slug)
 	h.BroadcastAll(hub.MakeEnvelope(hub.TypeTaskUpdated, t), "")
@@ -599,8 +593,24 @@ func findToolDef(tools []brain.ToolDef, name string) *brain.ToolDef {
 
 // handleBrainMentionWithTools processes a @Brain mention with tool support.
 // modelOverride, if non-empty, replaces the workspace default model.
+// TaskCompletionCallback is called when a task-triggered LLM run finishes.
+type TaskCompletionCallback func(msgID, response string, err error)
+
 func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderName, content string, messageTime time.Time, modelOverride ...string) {
+	s.handleBrainMentionWithToolsEx(slug, channelID, parentID, senderName, content, messageTime, nil, modelOverride...)
+}
+
+func (s *Server) handleBrainMentionWithToolsEx(slug, channelID, parentID, senderName, content string, messageTime time.Time, onComplete TaskCompletionCallback, modelOverride ...string) {
 	go func() {
+		// Completion tracking for task scheduler callbacks
+		var completionMsgID, completionResponse string
+		var completionErr error
+		defer func() {
+			if onComplete != nil {
+				onComplete(completionMsgID, completionResponse, completionErr)
+			}
+		}()
+
 		// Acquire semaphore to limit concurrent brain goroutines
 		select {
 		case s.agentSem <- struct{}{}:
@@ -633,7 +643,8 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", "web_search", parentID)
 			argsJSON := fmt.Sprintf(`{"query":%q}`, webQuery)
 			result := s.toolWebSearch(slug, argsJSON)
-			s.sendBrainMessage(slug, channelID, parentID, result, "web_search")
+			completionMsgID = s.sendBrainMessage(slug, channelID, parentID, result, "web_search")
+			completionResponse = result
 			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "", parentID)
 			return
 		}
@@ -644,7 +655,8 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 				s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", "search_workspace", parentID)
 				argsJSON := fmt.Sprintf(`{"query":%q}`, query)
 				result := s.toolSearchMessages(slug, channelID, argsJSON)
-				s.sendBrainMessage(slug, channelID, parentID, result, "search_workspace")
+				completionMsgID = s.sendBrainMessage(slug, channelID, parentID, result, "search_workspace")
+				completionResponse = result
 				s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "", parentID)
 				return
 			}
@@ -674,8 +686,10 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 		}
 		ollamaEnabled := s.getBrainSetting(slug, "ollama_enabled") == "true"
 		if apiKey == "" && s.getXAIKey(slug) == "" && !ollamaEnabled {
-			s.sendBrainMessage(slug, channelID, parentID,
-				"I can answer search and stats queries without an API key. Try: \"search for X\", \"how many messages\", \"who is online\", \"list channels\". For general questions, configure an API key in Settings.")
+			errMsg := "I can answer search and stats queries without an API key. Try: \"search for X\", \"how many messages\", \"who is online\", \"list channels\". For general questions, configure an API key in Settings."
+			completionMsgID = s.sendBrainMessage(slug, channelID, parentID, errMsg)
+			completionResponse = errMsg
+			completionErr = fmt.Errorf("no API key configured")
 			return
 		}
 
@@ -713,7 +727,10 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 		responseContent, toolCalls, usage, err := client.CompleteWithTools(systemPrompt, messages, allTools)
 		if err != nil {
 			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("LLM error")
-			s.sendBrainMessage(slug, channelID, parentID, "Sorry, I encountered an error. Check that the API key is configured correctly.")
+			errMsg := "Sorry, I encountered an error. Check that the API key is configured correctly."
+			completionMsgID = s.sendBrainMessage(slug, channelID, parentID, errMsg)
+			completionResponse = errMsg
+			completionErr = err
 			return
 		}
 		s.trackUsage(slug, usage, resolvedModel, "tools", channelID, senderName)
@@ -722,8 +739,9 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 		if len(toolCalls) == 0 {
 			responseContent = strings.TrimSpace(responseContent)
 			if responseContent != "" {
-				s.sendBrainMessage(slug, channelID, parentID, responseContent)
+				completionMsgID = s.sendBrainMessage(slug, channelID, parentID, responseContent)
 			}
+			completionResponse = responseContent
 			// Log the action
 			brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 				truncate(content, 200), truncate(responseContent, 500), model, nil)
@@ -766,8 +784,9 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 					toolNames = append(toolNames, call.Function.Name)
 				}
 				if finalResponse != "" {
-					s.sendBrainMessage(slug, channelID, parentID, finalResponse, toolNames...)
+					completionMsgID = s.sendBrainMessage(slug, channelID, parentID, finalResponse, toolNames...)
 				}
+				completionResponse = finalResponse
 				brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 					truncate(content, 200), truncate(finalResponse, 500), model, toolNames)
 				return
@@ -778,9 +797,11 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 		finalResponse, usage2, err := client.Complete(systemPrompt, followUp)
 		if err != nil {
 			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("follow-up LLM error")
+			completionErr = err
 			// Fall back to the initial response if any
 			if responseContent != "" {
-				s.sendBrainMessage(slug, channelID, parentID, appendMissingImages(responseContent, imageRefs))
+				completionMsgID = s.sendBrainMessage(slug, channelID, parentID, appendMissingImages(responseContent, imageRefs))
+				completionResponse = responseContent
 			}
 			return
 		}
@@ -797,8 +818,9 @@ func (s *Server) handleBrainMentionWithTools(slug, channelID, parentID, senderNa
 		}
 
 		if finalResponse != "" {
-			s.sendBrainMessage(slug, channelID, parentID, finalResponse, toolNames...)
+			completionMsgID = s.sendBrainMessage(slug, channelID, parentID, finalResponse, toolNames...)
 		}
+		completionResponse = finalResponse
 
 		brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
 			truncate(content, 200), truncate(finalResponse, 500), model, toolNames)

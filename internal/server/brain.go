@@ -211,11 +211,11 @@ func (s *Server) handleBrainMention(slug, channelID, senderName, content string)
 	}()
 }
 
-// sendBrainMessage saves a message from Brain and broadcasts it.
-func (s *Server) sendBrainMessage(slug, channelID, parentID, content string, toolsUsed ...string) {
+// sendBrainMessage saves a message from Brain and broadcasts it. Returns the message ID.
+func (s *Server) sendBrainMessage(slug, channelID, parentID, content string, toolsUsed ...string) string {
 	wdb, err := s.ws.Open(slug)
 	if err != nil {
-		return
+		return ""
 	}
 
 	msgID := id.New()
@@ -240,7 +240,7 @@ func (s *Server) sendBrainMessage(slug, channelID, parentID, content string, too
 	}
 	if err != nil {
 		logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("failed to save message")
-		return
+		return ""
 	}
 
 	if parentID != "" {
@@ -258,6 +258,7 @@ func (s *Server) sendBrainMessage(slug, channelID, parentID, content string, too
 		ToolsUsed:  toolsUsed,
 		ParentID:   parentID,
 	}), "")
+	return msgID
 }
 
 // ensureThreadContext creates or updates the thread_context row for a thread.

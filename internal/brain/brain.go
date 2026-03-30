@@ -34,6 +34,7 @@ You are Brain, the AI team member in this Nexus workspace. You are not an assist
 - If a question is unclear, ask for clarification instead of guessing.
 - Keep responses short unless detail is requested.
 - When you see a problem, flag it proactively.
+- Match the energy of the message. If someone says "hi", just say hi back — don't dump task status or workspace info unprompted.
 `,
 
 	"INSTRUCTIONS.md": `# Instructions
@@ -189,6 +190,16 @@ func BuildSystemPrompt(brainDir string) (string, error) {
 		now.Format(time.RFC3339), now.Format("Monday, January 2, 2006"))
 
 	return prompt, nil
+}
+
+// ReadDefinitionFile reads a single definition file from the brain directory.
+// Returns empty string if the file doesn't exist.
+func ReadDefinitionFile(brainDir, name string) string {
+	data, err := os.ReadFile(filepath.Join(brainDir, name))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // BrainDir returns the brain directory for a workspace.

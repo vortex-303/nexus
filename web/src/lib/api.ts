@@ -85,6 +85,42 @@ export async function kickChannelMember(slug: string, channelId: string, memberI
 	return request('DELETE', `/api/workspaces/${slug}/channels/${channelId}/members/${memberId}`);
 }
 
+export async function joinChannel(slug: string, channelId: string) {
+	return request('POST', `/api/workspaces/${slug}/channels/${channelId}/join`);
+}
+
+export async function leaveChannel(slug: string, channelId: string) {
+	return request('POST', `/api/workspaces/${slug}/channels/${channelId}/leave`);
+}
+
+export async function inviteToChannel(slug: string, channelId: string, memberId: string) {
+	return request('POST', `/api/workspaces/${slug}/channels/${channelId}/invite`, { member_id: memberId });
+}
+
+export async function browseChannels(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/channels?browse=true`);
+}
+
+export async function listChannelMembers(slug: string, channelId: string) {
+	return request('GET', `/api/workspaces/${slug}/channels/${channelId}/members`);
+}
+
+export async function pinMessage(slug: string, channelId: string, messageId: string) {
+	return request('POST', `/api/workspaces/${slug}/channels/${channelId}/pin`, { message_id: messageId });
+}
+
+export async function unpinMessage(slug: string, channelId: string, messageId: string) {
+	return request('POST', `/api/workspaces/${slug}/channels/${channelId}/unpin`, { message_id: messageId });
+}
+
+export async function listPinnedMessages(slug: string, channelId: string) {
+	return request('GET', `/api/workspaces/${slug}/channels/${channelId}/pins`);
+}
+
+export async function getMemoryPinnedMessageIds(slug: string, channelId: string) {
+	return request('GET', `/api/workspaces/${slug}/channels/${channelId}/memory-pins`);
+}
+
 export async function getMessages(slug: string, channelId: string, before?: string) {
 	let url = `/api/workspaces/${slug}/channels/${channelId}/messages`;
 	if (before) url += `?before=${before}`;
@@ -138,6 +174,7 @@ export async function listTasks(slug: string, filters?: { status?: string; assig
 export async function createTask(slug: string, task: {
 	title: string; description?: string; status?: string; priority?: string;
 	assignee_id?: string; due_date?: string; tags?: string[];
+	agent_id?: string; scheduled_at?: string; channel_id?: string; recurrence_rule?: string; recurrence_end?: string;
 }) {
 	return request('POST', `/api/workspaces/${slug}/tasks`, task);
 }
@@ -148,6 +185,10 @@ export async function updateTask(slug: string, taskId: string, updates: Record<s
 
 export async function deleteTask(slug: string, taskId: string) {
 	return request('DELETE', `/api/workspaces/${slug}/tasks/${taskId}`);
+}
+
+export async function listTaskRuns(slug: string, taskId: string) {
+	return request('GET', `/api/workspaces/${slug}/tasks/${taskId}/runs`);
 }
 
 // Documents
