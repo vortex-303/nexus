@@ -178,6 +178,19 @@ html.js-ready .reveal.visible {
 }
 .nav-link:hover { color: var(--text-primary); }
 .nav-cta { border-radius: var(--radius-full); }
+.lang-toggle {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  padding: 2px 10px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.lang-toggle:hover { color: var(--text-primary); border-color: var(--accent-border); background: var(--bg-overlay); }
 
 /* ---- Hero ---- */
 .hero {
@@ -1269,12 +1282,13 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
       <span class="nav-wordmark">nexus</span>
     </a>
     <div class="nav-links">
-      <a href="#features" class="nav-link">Features</a>
-      <a href="#pricing" class="nav-link">Pricing</a>
-      <a href="#compare" class="nav-link">Compare</a>
+      <a href="#features" class="nav-link" data-i18n="nav.features">Features</a>
+      <a href="#pricing" class="nav-link" data-i18n="nav.pricing">Pricing</a>
+      <a href="#compare" class="nav-link" data-i18n="nav.compare">Compare</a>
       <a href="https://github.com/vortex-303/nexus" class="nav-link" target="_blank" rel="noopener">GitHub</a>
-      <a href="/login?mode=login" class="nav-link">Log In</a>
-      <a href="/login" class="btn btn-primary btn-sm nav-cta">Get Started</a>
+      <button class="lang-toggle" onclick="toggleLang()" data-i18n="lang.toggle">ES</button>
+      <a href="/login?mode=login" class="nav-link" data-i18n="nav.login">Log In</a>
+      <a href="/login" class="btn btn-primary btn-sm nav-cta" data-i18n="nav.getstarted">Get Started</a>
     </div>
   </nav>
 
@@ -1284,23 +1298,23 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
     <div class="glow glow-2"></div>
     <div class="glow glow-3"></div>
     <div class="hero-content">
-      <div class="badge">
+      <div class="badge" data-i18n="hero.badge">
         <span class="badge-dot"></span>
         Open source &middot; Cloud or self-hosted &middot; Free to start
       </div>
-      <h1 class="hero-headline">Your team's brain.<br><span class="accent-text">Not a chatbot.</span></h1>
-      <p class="hero-sub">The AI workspace that coordinates humans and agents. Every decision, task, and commitment is extracted, attributed, and searchable &mdash; building team knowledge that compounds over time.</p>
+      <h1 class="hero-headline" data-i18n-html="hero.title">Your team's brain.<br><span class="accent-text">Not a chatbot.</span></h1>
+      <p class="hero-sub" data-i18n="hero.subtitle">The AI workspace that coordinates humans and agents. Every decision, task, and commitment is extracted, attributed, and searchable &mdash; building team knowledge that compounds over time.</p>
       <form class="hero-form" action="/login" method="GET" onsubmit="window.location.href='/login';return false;">
         <input type="text" class="hero-input" placeholder="your-workspace-name" aria-label="Workspace name" />
         <button type="submit" class="btn btn-primary btn-lg hero-form-btn">
-          Create Workspace
+          <span data-i18n="hero.cta.create">Create Workspace</span>
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6.5 3.5L11 8L6.5 12.5"/></svg>
         </button>
       </form>
       <div class="hero-ctas">
         <a href="#deploy" class="btn btn-secondary btn-lg">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><circle cx="6" cy="6" r="1" fill="currentColor"/><circle cx="6" cy="18" r="1" fill="currentColor"/></svg>
-          Self-Host Instead
+          <span data-i18n="hero.cta.selfhost">Self-Host Instead</span>
         </a>
       </div>
       <div class="code-pill">
@@ -1315,22 +1329,22 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
       <div class="hero-stats">
         <div class="stat">
           <span class="stat-number" data-value="200" data-suffix="+">0</span>
-          <span class="stat-label">AI Models</span>
+          <span class="stat-label" data-i18n="hero.stat.models">AI Models</span>
         </div>
         <div class="stat-divider"></div>
         <div class="stat">
           <span class="stat-number" data-value="8" data-suffix="">0</span>
-          <span class="stat-label">Built-in Agents</span>
+          <span class="stat-label" data-i18n="hero.stat.agents">Built-in Agents</span>
         </div>
         <div class="stat-divider"></div>
         <div class="stat">
           <span class="stat-number" data-value="15" data-suffix="MB">0</span>
-          <span class="stat-label">Binary Size</span>
+          <span class="stat-label" data-i18n="hero.stat.binary">Binary Size</span>
         </div>
         <div class="stat-divider"></div>
         <div class="stat">
           <span class="stat-number" data-value="0" data-suffix="">$0</span>
-          <span class="stat-label">Forever</span>
+          <span class="stat-label" data-i18n="hero.stat.forever">Forever</span>
         </div>
       </div>
     </div>
@@ -1356,7 +1370,7 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
 
   <!-- ============ LOGO BAR ============ -->
   <section class="logo-bar reveal">
-    <p class="logo-bar-label">Works with any LLM provider</p>
+    <p class="logo-bar-label" data-i18n="providers.label">Works with any LLM provider</p>
     <div class="logo-bar-items">
       <span class="provider-name">OpenRouter</span>
       <span class="provider-sep">&middot;</span>
@@ -1370,7 +1384,7 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
       <span class="provider-sep">&middot;</span>
       <span class="provider-name">Ollama</span>
       <span class="provider-sep">&middot;</span>
-      <span class="provider-name">Any OpenAI-compatible</span>
+      <span class="provider-name" data-i18n="providers.anycompat">Any OpenAI-compatible</span>
     </div>
   </section>
 
@@ -1388,16 +1402,16 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
               <div class="v-brain-center">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5"><path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.5 4.5-3 6l-1 4H9l-1-4c-1.5-1.5-3-3.5-3-6a7 7 0 0 1 7-7z"/><path d="M9 19h6M10 22h4" stroke-linecap="round"/></svg>
               </div>
-              <div class="v-brain-node n1">Decisions</div>
-              <div class="v-brain-node n2">People</div>
-              <div class="v-brain-node n3">Memory</div>
-              <div class="v-brain-node n4">Tasks</div>
-              <div class="v-brain-node n5">Facts</div>
+              <div class="v-brain-node n1" data-i18n="vig.brain.n1">Decisions</div>
+              <div class="v-brain-node n2" data-i18n="vig.brain.n2">People</div>
+              <div class="v-brain-node n3" data-i18n="vig.brain.n3">Memory</div>
+              <div class="v-brain-node n4" data-i18n="vig.brain.n4">Tasks</div>
+              <div class="v-brain-node n5" data-i18n="vig.brain.n5">Facts</div>
             </div>
           </div>
           <div class="vignette-info">
-            <div class="vignette-title">Brain Knowledge Graph</div>
-            <div class="vignette-desc">Remembers everything. Connects the dots.</div>
+            <div class="vignette-title" data-i18n="vig.brain.title">Brain Knowledge Graph</div>
+            <div class="vignette-desc" data-i18n="vig.brain.desc">Remembers everything. Connects the dots.</div>
           </div>
         </div>
 
@@ -1411,15 +1425,15 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
                 <div class="v-cal-cell">17</div><div class="v-cal-cell">18</div><div class="v-cal-cell active">19</div><div class="v-cal-cell">20</div><div class="v-cal-cell">21</div>
               </div>
               <div class="v-cal-events">
-                <div class="v-cal-event running"><span class="dot"></span><span class="time">09:00</span> Weekly digest</div>
-                <div class="v-cal-event"><span class="dot"></span><span class="time">14:00</span> Pipeline check</div>
-                <div class="v-cal-event"><span class="dot"></span><span class="time">18:00</span> News roundup</div>
+                <div class="v-cal-event running"><span class="dot"></span><span class="time">09:00</span> <span data-i18n="vig.cal.ev1">Weekly digest</span></div>
+                <div class="v-cal-event"><span class="dot"></span><span class="time">14:00</span> <span data-i18n="vig.cal.ev2">Pipeline check</span></div>
+                <div class="v-cal-event"><span class="dot"></span><span class="time">18:00</span> <span data-i18n="vig.cal.ev3">News roundup</span></div>
               </div>
             </div>
           </div>
           <div class="vignette-info">
-            <div class="vignette-title">Scheduled Intelligence</div>
-            <div class="vignette-desc">Agents that work while you sleep.</div>
+            <div class="vignette-title" data-i18n="vig.schedule.title">Scheduled Intelligence</div>
+            <div class="vignette-desc" data-i18n="vig.schedule.desc">Agents that work while you sleep.</div>
           </div>
         </div>
 
@@ -1427,7 +1441,7 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
         <div class="vignette-card">
           <div class="vignette-stage">
             <div class="v-cost">
-              <div class="v-cost-header">Today's usage</div>
+              <div class="v-cost-header" data-i18n="vig.cost.header">Today's usage</div>
               <div class="v-cost-row">
                 <span class="v-cost-model">grok-3-mini</span>
                 <span class="v-cost-bar"><span class="v-cost-bar-fill" style="width: 15%"></span></span>
@@ -1449,14 +1463,14 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
                 <span class="v-cost-amount">$0.000</span>
               </div>
               <div class="v-cost-total">
-                <span class="label">Total today</span>
+                <span class="label" data-i18n="vig.cost.total">Total today</span>
                 <span class="amount" id="v-cost-counter">$0.058</span>
               </div>
             </div>
           </div>
           <div class="vignette-info">
-            <div class="vignette-title">Transparent Costs</div>
-            <div class="vignette-desc">Every token accounted for.</div>
+            <div class="vignette-title" data-i18n="vig.cost.title">Transparent Costs</div>
+            <div class="vignette-desc" data-i18n="vig.cost.desc">Every token accounted for.</div>
           </div>
         </div>
 
@@ -1468,14 +1482,14 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
                 <div class="v-chat-avatar user">N</div>
                 <div class="v-chat-bubble">
                   <div class="v-chat-name">Nico</div>
-                  <div class="v-chat-text">schedule the standup for every Monday at 9am</div>
+                  <div class="v-chat-text" data-i18n="vig.chat.msg1">schedule the standup for every Monday at 9am</div>
                 </div>
               </div>
               <div class="v-chat-msg">
                 <div class="v-chat-avatar brain">B</div>
                 <div class="v-chat-bubble">
                   <div class="v-chat-name brain-name">Brain</div>
-                  <div class="v-chat-text">Done! Recurring event created: "Standup" every Monday 9:00 AM.</div>
+                  <div class="v-chat-text" data-i18n="vig.chat.msg2">Done! Recurring event created: "Standup" every Monday 9:00 AM.</div>
                   <div class="v-chat-tool">
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
                     create_calendar_event
@@ -1486,14 +1500,14 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
                 <div class="v-chat-avatar user">A</div>
                 <div class="v-chat-bubble">
                   <div class="v-chat-name">Alex</div>
-                  <div class="v-chat-text">also create a task to prep the agenda</div>
+                  <div class="v-chat-text" data-i18n="vig.chat.msg3">also create a task to prep the agenda</div>
                 </div>
               </div>
             </div>
           </div>
           <div class="vignette-info">
-            <div class="vignette-title">AI That Acts</div>
-            <div class="vignette-desc">Not just chat. Tools, tasks, and real actions.</div>
+            <div class="vignette-title" data-i18n="vig.chat.title">AI That Acts</div>
+            <div class="vignette-desc" data-i18n="vig.chat.desc">Not just chat. Tools, tasks, and real actions.</div>
           </div>
         </div>
 
@@ -1502,26 +1516,26 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
           <div class="vignette-stage">
             <div class="v-board">
               <div class="v-board-col">
-                <div class="v-board-col-header">Todo</div>
-                <div class="v-task-chip priority">Design landing page<div class="v-task-assignee">Alex</div></div>
-                <div class="v-task-chip">Write API docs</div>
-                <div class="v-task-chip">Setup CI pipeline</div>
+                <div class="v-board-col-header" data-i18n="vig.board.todo">Todo</div>
+                <div class="v-task-chip priority"><span data-i18n="vig.board.t1">Design landing page</span><div class="v-task-assignee">Alex</div></div>
+                <div class="v-task-chip" data-i18n="vig.board.t2">Write API docs</div>
+                <div class="v-task-chip" data-i18n="vig.board.t3">Setup CI pipeline</div>
               </div>
               <div class="v-board-col">
-                <div class="v-board-col-header prog-col">In Progress</div>
-                <div class="v-task-chip priority v-task-slide">Auth flow<div class="v-task-assignee">Nico</div></div>
-                <div class="v-task-chip">DB migrations</div>
+                <div class="v-board-col-header prog-col" data-i18n="vig.board.inprogress">In Progress</div>
+                <div class="v-task-chip priority v-task-slide"><span data-i18n="vig.board.t4">Auth flow</span><div class="v-task-assignee">Nico</div></div>
+                <div class="v-task-chip" data-i18n="vig.board.t5">DB migrations</div>
               </div>
               <div class="v-board-col">
-                <div class="v-board-col-header done-col">Done</div>
-                <div class="v-task-chip done-chip">Init repo</div>
-                <div class="v-task-chip done-chip">Deploy staging</div>
+                <div class="v-board-col-header done-col" data-i18n="vig.board.done">Done</div>
+                <div class="v-task-chip done-chip" data-i18n="vig.board.t6">Init repo</div>
+                <div class="v-task-chip done-chip" data-i18n="vig.board.t7">Deploy staging</div>
               </div>
             </div>
           </div>
           <div class="vignette-info">
-            <div class="vignette-title">Task Management</div>
-            <div class="vignette-desc">From conversation to completion.</div>
+            <div class="vignette-title" data-i18n="vig.tasks.title">Task Management</div>
+            <div class="vignette-desc" data-i18n="vig.tasks.desc">From conversation to completion.</div>
           </div>
         </div>
 
@@ -1533,16 +1547,16 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
               </div>
               <div class="v-shield-badges">
-                <div class="v-shield-badge"><span class="check">&#10003;</span> Your server, your data</div>
-                <div class="v-shield-badge"><span class="check">&#10003;</span> Zero telemetry</div>
-                <div class="v-shield-badge"><span class="check">&#10003;</span> Instant delete</div>
-                <div class="v-shield-badge"><span class="check">&#10003;</span> No training on your data</div>
+                <div class="v-shield-badge"><span class="check">&#10003;</span> <span data-i18n="vig.shield.b1">Your server, your data</span></div>
+                <div class="v-shield-badge"><span class="check">&#10003;</span> <span data-i18n="vig.shield.b2">Zero telemetry</span></div>
+                <div class="v-shield-badge"><span class="check">&#10003;</span> <span data-i18n="vig.shield.b3">Instant delete</span></div>
+                <div class="v-shield-badge"><span class="check">&#10003;</span> <span data-i18n="vig.shield.b4">No training on your data</span></div>
               </div>
             </div>
           </div>
           <div class="vignette-info">
-            <div class="vignette-title">Data Sovereignty</div>
-            <div class="vignette-desc">Your data. Your rules. Period.</div>
+            <div class="vignette-title" data-i18n="vig.shield.title">Data Sovereignty</div>
+            <div class="vignette-desc" data-i18n="vig.shield.desc">Your data. Your rules. Period.</div>
           </div>
         </div>
 
@@ -1554,9 +1568,9 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
   <section class="section" id="privacy">
     <div class="container">
       <div class="section-header reveal">
-        <span class="section-eyebrow">Data Sovereignty</span>
-        <h2 class="section-title">Your conversations are not<br>their training data.</h2>
-        <p class="section-desc">Every message you send in Slack flows through Salesforce. Every Teams prompt feeds Microsoft's AI. You're paying them to learn your business. There's a better way.</p>
+        <span class="section-eyebrow" data-i18n="privacy.eyebrow">Data Sovereignty</span>
+        <h2 class="section-title" data-i18n-html="privacy.title">Your conversations are not<br>their training data.</h2>
+        <p class="section-desc" data-i18n="privacy.desc">Every message you send in Slack flows through Salesforce. Every Teams prompt feeds Microsoft's AI. You're paying them to learn your business. There's a better way.</p>
       </div>
 
       <div class="data-flow-grid">
@@ -1565,18 +1579,18 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
             <div class="data-flow-vendor-icon vendor-slack">S</div>
             <div>
               <div class="data-flow-vendor-name">Slack</div>
-              <div class="data-flow-vendor-sub">Owned by Salesforce</div>
+              <div class="data-flow-vendor-sub" data-i18n="privacy.slack.sub">Owned by Salesforce</div>
             </div>
           </div>
           <ul class="data-flow-items">
-            <li>Messages stored on Salesforce infrastructure</li>
-            <li>AI features process your data through their models</li>
-            <li>Admin data shared across Salesforce products</li>
-            <li>No self-hosted option &mdash; data always leaves your control</li>
-            <li>Data retained even after you cancel</li>
-            <li>Export is limited and lossy &mdash; years of context lost</li>
+            <li data-i18n="privacy.slack.i1">Messages stored on Salesforce infrastructure</li>
+            <li data-i18n="privacy.slack.i2">AI features process your data through their models</li>
+            <li data-i18n="privacy.slack.i3">Admin data shared across Salesforce products</li>
+            <li data-i18n="privacy.slack.i4">No self-hosted option &mdash; data always leaves your control</li>
+            <li data-i18n="privacy.slack.i5">Data retained even after you cancel</li>
+            <li data-i18n="privacy.slack.i6">Export is limited and lossy &mdash; years of context lost</li>
           </ul>
-          <div class="data-flow-quote">&ldquo;Customer Data may be used to provide and improve Salesforce products and services.&rdquo; &mdash; Slack Enterprise Terms</div>
+          <div class="data-flow-quote" data-i18n="privacy.slack.quote">&ldquo;Customer Data may be used to provide and improve Salesforce products and services.&rdquo; &mdash; Slack Enterprise Terms</div>
         </div>
 
         <div class="data-flow-col reveal">
@@ -1584,18 +1598,18 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
             <div class="data-flow-vendor-icon vendor-teams">T</div>
             <div>
               <div class="data-flow-vendor-name">Microsoft Teams</div>
-              <div class="data-flow-vendor-sub">Part of Microsoft 365</div>
+              <div class="data-flow-vendor-sub" data-i18n="privacy.teams.sub">Part of Microsoft 365</div>
             </div>
           </div>
           <ul class="data-flow-items">
-            <li>Copilot indexes all chats, files, and emails by default</li>
-            <li>Data processed through Azure &mdash; Microsoft controls the keys</li>
-            <li>Telemetry and usage analytics always on</li>
-            <li>Your prompts and AI interactions flow through Microsoft</li>
-            <li>Model choice locked to GPT &mdash; Microsoft decides your AI</li>
-            <li>No way to audit what data Microsoft accesses</li>
+            <li data-i18n="privacy.teams.i1">Copilot indexes all chats, files, and emails by default</li>
+            <li data-i18n="privacy.teams.i2">Data processed through Azure &mdash; Microsoft controls the keys</li>
+            <li data-i18n="privacy.teams.i3">Telemetry and usage analytics always on</li>
+            <li data-i18n="privacy.teams.i4">Your prompts and AI interactions flow through Microsoft</li>
+            <li data-i18n="privacy.teams.i5">Model choice locked to GPT &mdash; Microsoft decides your AI</li>
+            <li data-i18n="privacy.teams.i6">No way to audit what data Microsoft accesses</li>
           </ul>
-          <div class="data-flow-quote">&ldquo;Microsoft may process Customer Data... to provide the Online Services including operations such as AI features.&rdquo; &mdash; MS Product Terms</div>
+          <div class="data-flow-quote" data-i18n="privacy.teams.quote">&ldquo;Microsoft may process Customer Data... to provide the Online Services including operations such as AI features.&rdquo; &mdash; MS Product Terms</div>
         </div>
 
         <div class="data-flow-col data-flow-nexus reveal">
@@ -1603,18 +1617,18 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
             <div class="data-flow-vendor-icon vendor-nexus">N</div>
             <div>
               <div class="data-flow-vendor-name">Nexus</div>
-              <div class="data-flow-vendor-sub">Self-hosted or Nexus Cloud</div>
+              <div class="data-flow-vendor-sub" data-i18n="privacy.nexus.sub">Self-hosted or Nexus Cloud</div>
             </div>
           </div>
           <ul class="data-flow-items">
-            <li>Self-host on your server &mdash; data never leaves your network</li>
-            <li>You choose the AI model and provider, or run locally</li>
-            <li>Zero telemetry, zero analytics, zero tracking</li>
-            <li>Your conversations are never used for training</li>
-            <li>Full data export and one-click delete, always</li>
-            <li>Open source &mdash; audit every line of code yourself</li>
+            <li data-i18n="privacy.nexus.i1">Self-host on your server &mdash; data never leaves your network</li>
+            <li data-i18n="privacy.nexus.i2">You choose the AI model and provider, or run locally</li>
+            <li data-i18n="privacy.nexus.i3">Zero telemetry, zero analytics, zero tracking</li>
+            <li data-i18n="privacy.nexus.i4">Your conversations are never used for training</li>
+            <li data-i18n="privacy.nexus.i5">Full data export and one-click delete, always</li>
+            <li data-i18n="privacy.nexus.i6">Open source &mdash; audit every line of code yourself</li>
           </ul>
-          <div class="data-flow-quote">Self-hosted Nexus means it is mathematically impossible for us to access your data. We don't have the keys. We don't have the server. We don't even know you're running it.</div>
+          <div class="data-flow-quote" data-i18n="privacy.nexus.quote">Self-hosted Nexus means it is mathematically impossible for us to access your data. We don't have the keys. We don't have the server. We don't even know you're running it.</div>
         </div>
       </div>
 
@@ -1623,8 +1637,8 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
           <div class="card-icon-wrap">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           </div>
-          <h3>Portable workspace</h3>
-          <p>Download your entire workspace as a single file. Messages, tasks, documents, files, Brain memory &mdash; everything. Import it on any Nexus instance. Your workspace is a file, not a subscription. One-click kill switch to permanently erase everything &mdash; instant, irreversible.</p>
+          <h3 data-i18n="privacy.card1.title">Portable workspace</h3>
+          <p data-i18n="privacy.card1.desc">Download your entire workspace as a single file. Messages, tasks, documents, files, Brain memory &mdash; everything. Import it on any Nexus instance. Your workspace is a file, not a subscription. One-click kill switch to permanently erase everything &mdash; instant, irreversible.</p>
           <div class="card-footer">
             <code>workspace.nexus &middot; one file &middot; kill switch</code>
           </div>
@@ -1633,8 +1647,8 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
           <div class="card-icon-wrap">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
           </div>
-          <h3>Network transparency</h3>
-          <p>A built-in panel shows every outbound connection your instance makes. Which server, when, why. Self-hosted Nexus contacts exactly one external service: the AI provider you chose. Verify it yourself.</p>
+          <h3 data-i18n="privacy.card2.title">Network transparency</h3>
+          <p data-i18n="privacy.card2.desc">A built-in panel shows every outbound connection your instance makes. Which server, when, why. Self-hosted Nexus contacts exactly one external service: the AI provider you chose. Verify it yourself.</p>
           <div class="card-footer">
             <code>0 hidden connections</code>
           </div>
@@ -1643,8 +1657,8 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
           <div class="card-icon-wrap">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
           </div>
-          <h3>Cost transparency</h3>
-          <p>Every AI call tracked with exact token counts and costs. See what you spend per model, per action, per day. Slack AI charges $10/user/month &mdash; Nexus averages $0.10. Full cost dashboard built in.</p>
+          <h3 data-i18n="privacy.card3.title">Cost transparency</h3>
+          <p data-i18n="privacy.card3.desc">Every AI call tracked with exact token counts and costs. See what you spend per model, per action, per day. Slack AI charges $10/user/month &mdash; Nexus averages $0.10. Full cost dashboard built in.</p>
           <div class="card-footer">
             <code>~100x cheaper than Slack AI</code>
           </div>
@@ -1654,27 +1668,27 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
       <div class="privacy-extras reveal">
         <div class="privacy-extra">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-          <span>No analytics or tracking</span>
+          <span data-i18n="privacy.extra1">No analytics or tracking</span>
         </div>
         <div class="privacy-extra">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-          <span>No third-party data sharing</span>
+          <span data-i18n="privacy.extra2">No third-party data sharing</span>
         </div>
         <div class="privacy-extra">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-          <span>No registration required</span>
+          <span data-i18n="privacy.extra3">No registration required</span>
         </div>
         <div class="privacy-extra">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-          <span>Open source &mdash; audit it yourself</span>
+          <span data-i18n="privacy.extra4">Open source &mdash; audit it yourself</span>
         </div>
         <div class="privacy-extra">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-          <span>200+ AI models &middot; local or cloud</span>
+          <span data-i18n="privacy.extra5">200+ AI models &middot; local or cloud</span>
         </div>
         <div class="privacy-extra">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-          <span>Single binary &middot; no dependencies</span>
+          <span data-i18n="privacy.extra6">Single binary &middot; no dependencies</span>
         </div>
       </div>
     </div>
@@ -1684,21 +1698,21 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
   <section class="section section-dark">
     <div class="container">
       <div class="section-header reveal">
-        <span class="section-eyebrow">The Brain</span>
-        <h2 class="section-title">Your team's knowledge,<br>always on tap.</h2>
-        <p class="section-desc">The Brain follows every conversation and saves what matters &mdash; who made which decision, where the budget went, what was promised and by when.</p>
+        <span class="section-eyebrow" data-i18n="brain.eyebrow">The Brain</span>
+        <h2 class="section-title" data-i18n-html="brain.title">Your team's knowledge,<br>always on tap.</h2>
+        <p class="section-desc" data-i18n="brain.desc">The Brain follows every conversation and saves what matters &mdash; who made which decision, where the budget went, what was promised and by when.</p>
       </div>
       <div class="brain-grid">
         <div class="brain-text reveal">
-          <p class="brain-intro">Your team's context stays intact, searchable, and attributed &mdash; even when people forget. The Brain coordinates agents and humans, and holds everyone accountable.</p>
+          <p class="brain-intro" data-i18n="brain.intro">Your team's context stays intact, searchable, and attributed &mdash; even when people forget. The Brain coordinates agents and humans, and holds everyone accountable.</p>
           <div class="brain-features">
             <div class="brain-feature">
               <div class="brain-feature-icon">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
               </div>
               <div>
-                <strong>Saves what matters</strong>
-                <span>Decisions, spending, commitments, policies &mdash; automatically extracted from conversations with full context. Who said it, which channel, when. Search anything months later and get the whole picture.</span>
+                <strong data-i18n="brain.f1.title">Saves what matters</strong>
+                <span data-i18n="brain.f1.desc">Decisions, spending, commitments, policies &mdash; automatically extracted from conversations with full context. Who said it, which channel, when. Search anything months later and get the whole picture.</span>
               </div>
             </div>
             <div class="brain-feature">
@@ -1706,8 +1720,8 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
               </div>
               <div>
-                <strong>Agent team</strong>
-                <span>8 built-in agents for writing, coding, research, planning, and more. Build custom agents with a prompt &mdash; give each one skills, tools, and a persona. Browse and install from the agent library.</span>
+                <strong data-i18n="brain.f2.title">Agent team</strong>
+                <span data-i18n="brain.f2.desc">8 built-in agents for writing, coding, research, planning, and more. Build custom agents with a prompt &mdash; give each one skills, tools, and a persona. Browse and install from the agent library.</span>
               </div>
             </div>
             <div class="brain-feature">
@@ -1715,8 +1729,8 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
               </div>
               <div>
-                <strong>Research &amp; knowledge</strong>
-                <span>Agents search the web, read documents, and pull from your knowledge base. The Brain synthesizes findings with the team context no external tool has.</span>
+                <strong data-i18n="brain.f3.title">Research &amp; knowledge</strong>
+                <span data-i18n="brain.f3.desc">Agents search the web, read documents, and pull from your knowledge base. The Brain synthesizes findings with the team context no external tool has.</span>
               </div>
             </div>
             <div class="brain-feature">
@@ -1724,8 +1738,8 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
               </div>
               <div>
-                <strong>Any model</strong>
-                <span>OpenRouter gives you 200+ models. Use Gemini for images. Run models locally via Ollama &mdash; zero cloud required.</span>
+                <strong data-i18n="brain.f4.title">Any model</strong>
+                <span data-i18n="brain.f4.desc">OpenRouter gives you 200+ models. Use Gemini for images. Run models locally via Ollama &mdash; zero cloud required.</span>
               </div>
             </div>
             <div class="brain-feature">
@@ -1733,8 +1747,8 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
               </div>
               <div>
-                <strong>Self-reflection</strong>
-                <span>Brain periodically analyzes workspace activity, scores mission alignment, spots who's quiet and what's drifting &mdash; then writes its findings into its own memory. It gets smarter without being asked.</span>
+                <strong data-i18n="brain.f5.title">Self-reflection</strong>
+                <span data-i18n="brain.f5.desc">Brain periodically analyzes workspace activity, scores mission alignment, spots who's quiet and what's drifting &mdash; then writes its findings into its own memory. It gets smarter without being asked.</span>
               </div>
             </div>
             <div class="brain-feature">
@@ -1742,8 +1756,8 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
               </div>
               <div>
-                <strong>Living Briefs</strong>
-                <span>Auto-generated reports that stay current: workspace pulse, North Star alignment, team health. Brain synthesizes everything into friendly updates &mdash; no dashboards to configure.</span>
+                <strong data-i18n="brain.f6.title">Living Briefs</strong>
+                <span data-i18n="brain.f6.desc">Auto-generated reports that stay current: workspace pulse, North Star alignment, team health. Brain synthesizes everything into friendly updates &mdash; no dashboards to configure.</span>
               </div>
             </div>
           </div>
@@ -1913,32 +1927,32 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
   <section class="section" id="together">
     <div class="container">
       <div class="section-header reveal">
-        <span class="section-eyebrow">AI, Together</span>
-        <h2 class="section-title">Stop using AI alone.<br>Start using it as a team.</h2>
-        <p class="section-desc">Most teams use AI in private &mdash; one person prompts ChatGPT, pastes the output, and nobody knows what was asked or why. Nexus makes AI a shared, transparent experience.</p>
+        <span class="section-eyebrow" data-i18n="together.eyebrow">AI, Together</span>
+        <h2 class="section-title" data-i18n-html="together.title">Stop using AI alone.<br>Start using it as a team.</h2>
+        <p class="section-desc" data-i18n="together.desc">Most teams use AI in private &mdash; one person prompts ChatGPT, pastes the output, and nobody knows what was asked or why. Nexus makes AI a shared, transparent experience.</p>
       </div>
       <div class="together-grid">
         <div class="together-contrast reveal">
           <div class="together-col together-old">
-            <div class="together-label together-label-old">The old way</div>
+            <div class="together-label together-label-old" data-i18n="together.old.label">The old way</div>
             <ul class="together-list">
-              <li>Prompt AI alone in a separate tab</li>
-              <li>Copy-paste results into Slack</li>
-              <li>No one sees the prompt or the model</li>
-              <li>Context lost between conversations</li>
-              <li>Every teammate has a different AI setup</li>
-              <li>AI output treated as someone's opinion</li>
+              <li data-i18n="together.old.i1">Prompt AI alone in a separate tab</li>
+              <li data-i18n="together.old.i2">Copy-paste results into Slack</li>
+              <li data-i18n="together.old.i3">No one sees the prompt or the model</li>
+              <li data-i18n="together.old.i4">Context lost between conversations</li>
+              <li data-i18n="together.old.i5">Every teammate has a different AI setup</li>
+              <li data-i18n="together.old.i6">AI output treated as someone's opinion</li>
             </ul>
           </div>
           <div class="together-col together-new">
-            <div class="together-label together-label-new">The Nexus way</div>
+            <div class="together-label together-label-new" data-i18n="together.new.label">The Nexus way</div>
             <ul class="together-list">
-              <li>@Brain in any channel &mdash; everyone sees it</li>
-              <li>The model, the prompt, the reasoning &mdash; all visible</li>
-              <li>Brain remembers every conversation across the team</li>
-              <li>Shared agents with shared skills and knowledge</li>
-              <li>One AI teammate that knows the whole workspace</li>
-              <li>AI output attributed, searchable, and accountable</li>
+              <li data-i18n="together.new.i1">@Brain in any channel &mdash; everyone sees it</li>
+              <li data-i18n="together.new.i2">The model, the prompt, the reasoning &mdash; all visible</li>
+              <li data-i18n="together.new.i3">Brain remembers every conversation across the team</li>
+              <li data-i18n="together.new.i4">Shared agents with shared skills and knowledge</li>
+              <li data-i18n="together.new.i5">One AI teammate that knows the whole workspace</li>
+              <li data-i18n="together.new.i6">AI output attributed, searchable, and accountable</li>
             </ul>
           </div>
         </div>
@@ -1947,22 +1961,22 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
             <div class="card-icon-wrap">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
             </div>
-            <h3>Full transparency</h3>
-            <p>Every AI interaction happens in a channel. The team sees what was asked, which model answered, and what tools were used. No black boxes.</p>
+            <h3 data-i18n="together.card1.title">Full transparency</h3>
+            <p data-i18n="together.card1.desc">Every AI interaction happens in a channel. The team sees what was asked, which model answered, and what tools were used. No black boxes.</p>
           </div>
           <div class="card reveal">
             <div class="card-icon-wrap">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
             </div>
-            <h3>Shared context</h3>
-            <p>Brain accumulates knowledge from every conversation, decision, and document. When anyone asks a question, Brain draws on the whole team's context &mdash; not just one person's chat history.</p>
+            <h3 data-i18n="together.card2.title">Shared context</h3>
+            <p data-i18n="together.card2.desc">Brain accumulates knowledge from every conversation, decision, and document. When anyone asks a question, Brain draws on the whole team's context &mdash; not just one person's chat history.</p>
           </div>
           <div class="card reveal">
             <div class="card-icon-wrap">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
             </div>
-            <h3>Accountable AI</h3>
-            <p>AI responses are attributed, timestamped, and searchable. Months later, you can trace any AI-generated insight back to the original question and the context it was given.</p>
+            <h3 data-i18n="together.card3.title">Accountable AI</h3>
+            <p data-i18n="together.card3.desc">AI responses are attributed, timestamped, and searchable. Months later, you can trace any AI-generated insight back to the original question and the context it was given.</p>
           </div>
         </div>
       </div>
@@ -1973,9 +1987,9 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
   <section class="section" id="autopilot">
     <div class="container">
       <div class="section-header reveal">
-        <span class="section-eyebrow">Scheduled Intelligence</span>
-        <h2 class="section-title">Put your team on autopilot.</h2>
-        <p class="section-desc">Schedule any agent to run on a calendar &mdash; daily digests, price alerts, research reports, task follow-ups. Set it and forget it.</p>
+        <span class="section-eyebrow" data-i18n="autopilot.eyebrow">Scheduled Intelligence</span>
+        <h2 class="section-title" data-i18n="autopilot.title">Put your team on autopilot.</h2>
+        <p class="section-desc" data-i18n="autopilot.desc">Schedule any agent to run on a calendar &mdash; daily digests, price alerts, research reports, task follow-ups. Set it and forget it.</p>
       </div>
       <div class="autopilot-terminal reveal">
         <div class="terminal-chrome">
@@ -1984,53 +1998,53 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
             <span class="dot dot-yellow"></span>
             <span class="dot dot-green"></span>
           </div>
-          <span class="terminal-title">Scheduled Jobs</span>
+          <span class="terminal-title" data-i18n="autopilot.terminal.title">Scheduled Jobs</span>
         </div>
         <div class="terminal-body">
           <div class="cron-entry">
             <div class="cron-header">
               <span class="cron-time">09:00 AM</span>
-              <span class="cron-badge">Daily</span>
-              <span class="cron-status cron-done">done</span>
+              <span class="cron-badge" data-i18n="autopilot.freq.daily">Daily</span>
+              <span class="cron-status cron-done" data-i18n="autopilot.status.done">done</span>
             </div>
-            <div class="cron-prompt">"Search for gold price and post in #markets"</div>
-            <div class="cron-result"><span class="cron-arrow">&rarr;</span> Brain posted: <strong>Gold $2,847/oz</strong> (+0.3%) &mdash; 3 sources cited</div>
+            <div class="cron-prompt" data-i18n="autopilot.job1.prompt">"Search for gold price and post in #markets"</div>
+            <div class="cron-result" data-i18n-html="autopilot.job1.result"><span class="cron-arrow">&rarr;</span> Brain posted: <strong>Gold $2,847/oz</strong> (+0.3%) &mdash; 3 sources cited</div>
           </div>
           <div class="cron-entry">
             <div class="cron-header">
               <span class="cron-time">09:30 AM</span>
-              <span class="cron-badge">Weekdays</span>
-              <span class="cron-status cron-done">done</span>
+              <span class="cron-badge" data-i18n="autopilot.freq.weekdays">Weekdays</span>
+              <span class="cron-status cron-done" data-i18n="autopilot.status.done2">done</span>
             </div>
-            <div class="cron-prompt">"Summarize yesterday's messages and post a digest in #daily-summary"</div>
-            <div class="cron-result"><span class="cron-arrow">&rarr;</span> Brain posted: <strong>3 decisions, 2 open questions, 1 blocker</strong></div>
+            <div class="cron-prompt" data-i18n="autopilot.job2.prompt">"Summarize yesterday's messages and post a digest in #daily-summary"</div>
+            <div class="cron-result" data-i18n-html="autopilot.job2.result"><span class="cron-arrow">&rarr;</span> Brain posted: <strong>3 decisions, 2 open questions, 1 blocker</strong></div>
           </div>
           <div class="cron-entry">
             <div class="cron-header">
               <span class="cron-time">10:00 AM</span>
-              <span class="cron-badge">Mondays</span>
-              <span class="cron-status cron-done">done</span>
+              <span class="cron-badge" data-i18n="autopilot.freq.mondays">Mondays</span>
+              <span class="cron-status cron-done" data-i18n="autopilot.status.done3">done</span>
             </div>
-            <div class="cron-prompt">"Review all open tasks and post a status update in #general"</div>
-            <div class="cron-result"><span class="cron-arrow">&rarr;</span> Brain posted: <strong>12 tasks open, 3 overdue, 5 due this week</strong></div>
+            <div class="cron-prompt" data-i18n="autopilot.job3.prompt">"Review all open tasks and post a status update in #general"</div>
+            <div class="cron-result" data-i18n-html="autopilot.job3.result"><span class="cron-arrow">&rarr;</span> Brain posted: <strong>12 tasks open, 3 overdue, 5 due this week</strong></div>
           </div>
           <div class="cron-entry">
             <div class="cron-header">
               <span class="cron-time">02:00 PM</span>
-              <span class="cron-badge">Daily</span>
-              <span class="cron-status cron-pending">pending</span>
+              <span class="cron-badge" data-i18n="autopilot.freq.daily2">Daily</span>
+              <span class="cron-status cron-pending" data-i18n="autopilot.status.pending">pending</span>
             </div>
-            <div class="cron-prompt">"Check Hacker News for AI agent news and post findings in #research"</div>
-            <div class="cron-result cron-result-pending"><span class="cron-arrow">&rarr;</span> Scheduled &mdash; runs in 4h 12m</div>
+            <div class="cron-prompt" data-i18n="autopilot.job4.prompt">"Check Hacker News for AI agent news and post findings in #research"</div>
+            <div class="cron-result cron-result-pending" data-i18n="autopilot.job4.result"><span class="cron-arrow">&rarr;</span> Scheduled &mdash; runs in 4h 12m</div>
           </div>
           <div class="cron-entry">
             <div class="cron-header">
               <span class="cron-time">06:00 PM</span>
-              <span class="cron-badge">Fridays</span>
-              <span class="cron-status cron-pending">pending</span>
+              <span class="cron-badge" data-i18n="autopilot.freq.fridays">Fridays</span>
+              <span class="cron-status cron-pending" data-i18n="autopilot.status.pending2">pending</span>
             </div>
-            <div class="cron-prompt">"Generate a weekly report of all completed tasks and post in #reports"</div>
-            <div class="cron-result cron-result-pending"><span class="cron-arrow">&rarr;</span> Scheduled &mdash; next Friday</div>
+            <div class="cron-prompt" data-i18n="autopilot.job5.prompt">"Generate a weekly report of all completed tasks and post in #reports"</div>
+            <div class="cron-result cron-result-pending" data-i18n="autopilot.job5.result"><span class="cron-arrow">&rarr;</span> Scheduled &mdash; next Friday</div>
           </div>
         </div>
       </div>
@@ -2039,22 +2053,22 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
           <div class="card-icon-wrap">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
           </div>
-          <h3>Calendar-native</h3>
-          <p>Schedule agents the same way you schedule meetings. Pick a time, pick an agent, write the prompt. One-shot or recurring &mdash; daily, weekly, cron expressions.</p>
+          <h3 data-i18n="autopilot.card1.title">Calendar-native</h3>
+          <p data-i18n="autopilot.card1.desc">Schedule agents the same way you schedule meetings. Pick a time, pick an agent, write the prompt. One-shot or recurring &mdash; daily, weekly, cron expressions.</p>
         </div>
         <div class="card reveal">
           <div class="card-icon-wrap">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
           </div>
-          <h3>Any model, any task</h3>
-          <p>Override the model per job. Use a fast model for price checks, a reasoning model for research reports. 200+ models via OpenRouter.</p>
+          <h3 data-i18n="autopilot.card2.title">Any model, any task</h3>
+          <p data-i18n="autopilot.card2.desc">Override the model per job. Use a fast model for price checks, a reasoning model for research reports. 200+ models via OpenRouter.</p>
         </div>
         <div class="card reveal">
           <div class="card-icon-wrap">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
           </div>
-          <h3>Runs while you sleep</h3>
-          <p>The server fires agents on schedule whether anyone is connected or not. Wake up to a digest, a price report, or a research summary already waiting.</p>
+          <h3 data-i18n="autopilot.card3.title">Runs while you sleep</h3>
+          <p data-i18n="autopilot.card3.desc">The server fires agents on schedule whether anyone is connected or not. Wake up to a digest, a price report, or a research summary already waiting.</p>
         </div>
       </div>
     </div>
@@ -2064,52 +2078,52 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
   <section class="section" id="features">
     <div class="container">
       <div class="section-header reveal">
-        <span class="section-eyebrow">Features</span>
-        <h2 class="section-title">Coordinate humans and agents.</h2>
-        <p class="section-desc">Chat, tasks, events, AI agents, and a knowledge base that builds itself &mdash; all in one place.</p>
+        <span class="section-eyebrow" data-i18n="features.eyebrow">Features</span>
+        <h2 class="section-title" data-i18n="features.title">Coordinate humans and agents.</h2>
+        <p class="section-desc" data-i18n="features.desc">Chat, tasks, events, AI agents, and a knowledge base that builds itself &mdash; all in one place.</p>
       </div>
       <div class="card-grid-3 card-grid-features">
         <div class="card reveal">
           <div class="card-icon-wrap">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
           </div>
-          <h3>Real-time chat</h3>
-          <p>Channels, DMs, reply threads, emoji reactions, @mentions with autocomplete, desktop notifications, drag &amp; drop file sharing, and markdown with syntax highlighting.</p>
+          <h3 data-i18n="features.f1.title">Real-time chat</h3>
+          <p data-i18n="features.f1.desc">Channels, DMs, reply threads, emoji reactions, @mentions with autocomplete, desktop notifications, drag &amp; drop file sharing, and markdown with syntax highlighting.</p>
         </div>
         <div class="card reveal">
           <div class="card-icon-wrap">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
           </div>
-          <h3>Tasks &amp; scheduling</h3>
-          <p>Create tasks from conversations with a click. Assign to humans or agents, set deadlines, track progress. Brain automatically follows up when deadlines approach.</p>
+          <h3 data-i18n="features.f2.title">Tasks &amp; scheduling</h3>
+          <p data-i18n="features.f2.desc">Create tasks from conversations with a click. Assign to humans or agents, set deadlines, track progress. Brain automatically follows up when deadlines approach.</p>
         </div>
         <div class="card reveal">
           <div class="card-icon-wrap">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="M8 14h.01"/><path d="M12 14h.01"/><path d="M16 14h.01"/><path d="M8 18h.01"/><path d="M12 18h.01"/></svg>
           </div>
-          <h3>Events &amp; coordination</h3>
-          <p>Schedule events, coordinate across team members and agents. Track who committed to what and when &mdash; the Brain holds everyone accountable.</p>
+          <h3 data-i18n="features.f3.title">Events &amp; coordination</h3>
+          <p data-i18n="features.f3.desc">Schedule events, coordinate across team members and agents. Track who committed to what and when &mdash; the Brain holds everyone accountable.</p>
         </div>
         <div class="card reveal">
           <div class="card-icon-wrap">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4.5 4.5 0 00-1.4 8.8 4.5 4.5 0 002.8 0A4.5 4.5 0 0012 2"/><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.32 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
           </div>
-          <h3>AI Agents</h3>
-          <p>8 built-in agents: writer, coder, analyst, planner, researcher, and more. Build custom agents with a prompt and give each one skills and tools. Browse the agent library for ready-made templates.</p>
+          <h3 data-i18n="features.f4.title">AI Agents</h3>
+          <p data-i18n="features.f4.desc">8 built-in agents: writer, coder, analyst, planner, researcher, and more. Build custom agents with a prompt and give each one skills and tools. Browse the agent library for ready-made templates.</p>
         </div>
         <div class="card reveal">
           <div class="card-icon-wrap">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><path d="M7 8h2m2 0h2m2 0h2"/></svg>
           </div>
-          <h3>MCP Tools</h3>
-          <p>Extend agents with Model Context Protocol servers. Web search, calendars, databases, APIs &mdash; if there's an MCP server for it, Nexus can use it.</p>
+          <h3 data-i18n="features.f5.title">MCP Tools</h3>
+          <p data-i18n="features.f5.desc">Extend agents with Model Context Protocol servers. Web search, calendars, databases, APIs &mdash; if there's an MCP server for it, Nexus can use it.</p>
         </div>
         <div class="card reveal">
           <div class="card-icon-wrap">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
           </div>
-          <h3>Roles &amp; Permissions</h3>
-          <p>9 roles from guest to super admin, 22 granular permissions, and an org chart. Control exactly who sees what, who can invite, and who manages agents.</p>
+          <h3 data-i18n="features.f6.title">Roles &amp; Permissions</h3>
+          <p data-i18n="features.f6.desc">9 roles from guest to super admin, 22 granular permissions, and an org chart. Control exactly who sees what, who can invite, and who manages agents.</p>
         </div>
       </div>
     </div>
@@ -2119,35 +2133,35 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
   <section class="section section-dark" id="pricing">
     <div class="container">
       <div class="section-header reveal">
-        <span class="section-eyebrow">Pricing</span>
-        <h2 class="section-title">Start free. Scale when you're ready.</h2>
-        <p class="section-desc">Every plan includes Brain AI, unlimited messages, and all features. Upgrade for more members, or self-host for total control.</p>
+        <span class="section-eyebrow" data-i18n="pricing.eyebrow">Pricing</span>
+        <h2 class="section-title" data-i18n="pricing.title">Start free. Scale when you're ready.</h2>
+        <p class="section-desc" data-i18n="pricing.desc">Every plan includes Brain AI, unlimited messages, and all features. Upgrade for more members, or self-host for total control.</p>
       </div>
       <div class="plans-grid">
         <div class="plan-card reveal">
-          <h3 class="plan-name">Free</h3>
+          <h3 class="plan-name" data-i18n="pricing.free.name">Free</h3>
           <div class="plan-price">
             <span class="plan-amount">$0</span>
-            <span class="plan-period">forever</span>
+            <span class="plan-period" data-i18n="pricing.free.period">forever</span>
           </div>
-          <p class="plan-desc">Get started instantly. No credit card, no catch.</p>
-          <a href="/login" class="btn btn-primary plan-cta">Create Workspace</a>
+          <p class="plan-desc" data-i18n="pricing.free.desc">Get started instantly. No credit card, no catch.</p>
+          <a href="/login" class="btn btn-primary plan-cta" data-i18n="pricing.free.cta">Create Workspace</a>
           <ul class="plan-features">
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Up to 5 team members
+              <span data-i18n="pricing.free.f1">Up to 5 team members</span>
             </li>
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Brain AI + all features
+              <span data-i18n="pricing.free.f2">Brain AI + all features</span>
             </li>
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Unlimited messages &amp; tasks
+              <span data-i18n="pricing.free.f3">Unlimited messages &amp; tasks</span>
             </li>
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Community support
+              <span data-i18n="pricing.free.f4">Community support</span>
             </li>
           </ul>
         </div>
@@ -2156,57 +2170,57 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
           <h3 class="plan-name">Pro</h3>
           <div class="plan-price">
             <span class="plan-amount">$29</span>
-            <span class="plan-period">/mo</span>
+            <span class="plan-period" data-i18n="pricing.pro.period">/mo</span>
           </div>
-          <p class="plan-desc">Everything in Free, plus unlimited members and priority support.</p>
+          <p class="plan-desc" data-i18n="pricing.pro.desc">Everything in Free, plus unlimited members and priority support.</p>
           <form class="plan-waitlist-form" id="waitlist-form" onsubmit="return false;">
             <input type="email" id="waitlist-email" placeholder="you@company.com" required />
-            <button type="submit" class="btn btn-primary" id="waitlist-btn">Join Waitlist</button>
+            <button type="submit" class="btn btn-primary" id="waitlist-btn" data-i18n="pricing.pro.cta">Join Waitlist</button>
           </form>
-          <div class="plan-waitlist-success" id="waitlist-success" style="display:none">You're on the list! We'll reach out soon.</div>
+          <div class="plan-waitlist-success" id="waitlist-success" style="display:none" data-i18n="pricing.pro.success">You're on the list! We'll reach out soon.</div>
           <ul class="plan-features">
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Unlimited members
+              <span data-i18n="pricing.pro.f1">Unlimited members</span>
             </li>
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Priority support
+              <span data-i18n="pricing.pro.f2">Priority support</span>
             </li>
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              SSO / SAML (coming soon)
+              <span data-i18n="pricing.pro.f3">SSO / SAML (coming soon)</span>
             </li>
           </ul>
         </div>
         <div class="plan-card plan-card-outline reveal">
-          <h3 class="plan-name">Self-Hosted</h3>
+          <h3 class="plan-name" data-i18n="pricing.self.name">Self-Hosted</h3>
           <div class="plan-price">
             <span class="plan-amount">$0</span>
-            <span class="plan-period">forever</span>
+            <span class="plan-period" data-i18n="pricing.self.period">forever</span>
           </div>
-          <p class="plan-desc">Download the binary, run it on your hardware. Full control, full freedom.</p>
-          <a href="#deploy" class="btn btn-secondary plan-cta">Download Binary</a>
+          <p class="plan-desc" data-i18n="pricing.self.desc">Download the binary, run it on your hardware. Full control, full freedom.</p>
+          <a href="#deploy" class="btn btn-secondary plan-cta" data-i18n="pricing.self.cta">Download Binary</a>
           <ul class="plan-features">
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Free forever · 5 members
+              <span data-i18n="pricing.self.f1">Free forever · 5 members</span>
             </li>
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Pro license for unlimited
+              <span data-i18n="pricing.self.f2">Pro license for unlimited</span>
             </li>
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Data never leaves your network
+              <span data-i18n="pricing.self.f3">Data never leaves your network</span>
             </li>
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Run local LLMs
+              <span data-i18n="pricing.self.f4">Run local LLMs</span>
             </li>
             <li>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-              Full source code
+              <span data-i18n="pricing.self.f5">Full source code</span>
             </li>
           </ul>
         </div>
@@ -2218,9 +2232,9 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
   <section class="section" id="compare">
     <div class="container">
       <div class="section-header reveal">
-        <span class="section-eyebrow">Comparison</span>
-        <h2 class="section-title">How Nexus compares.</h2>
-        <p class="section-desc">The features you need without the vendor lock-in you don't.</p>
+        <span class="section-eyebrow" data-i18n="compare.eyebrow">Comparison</span>
+        <h2 class="section-title" data-i18n="compare.title">How Nexus compares.</h2>
+        <p class="section-desc" data-i18n="compare.desc">The features you need without the vendor lock-in you don't.</p>
       </div>
       <div class="table-wrap reveal">
         <table class="compare-table">
@@ -2235,113 +2249,113 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
           </thead>
           <tbody>
             <tr>
-              <td class="row-label">Self-hosted</td>
-              <td class="col-nexus"><span class="check">&#10003;</span> Single binary</td>
+              <td class="row-label" data-i18n="compare.r1.label">Self-hosted</td>
+              <td class="col-nexus" data-i18n-html="compare.r1.nexus"><span class="check">&#10003;</span> Single binary</td>
               <td><span class="cross">&#10005;</span></td>
               <td><span class="cross">&#10005;</span></td>
               <td>Complex setup</td>
             </tr>
             <tr>
-              <td class="row-label">AI with memory</td>
-              <td class="col-nexus"><span class="check">&#10003;</span> Decisions, commitments, policies</td>
-              <td>Bolt-on plugins</td>
-              <td>Copilot (cloud only)</td>
-              <td>Third-party</td>
+              <td class="row-label" data-i18n="compare.r2.label">AI with memory</td>
+              <td class="col-nexus" data-i18n-html="compare.r2.nexus"><span class="check">&#10003;</span> Decisions, commitments, policies</td>
+              <td data-i18n="compare.r2.slack">Bolt-on plugins</td>
+              <td data-i18n="compare.r2.teams">Copilot (cloud only)</td>
+              <td data-i18n="compare.r2.mm">Third-party</td>
             </tr>
             <tr>
-              <td class="row-label">Custom agents</td>
-              <td class="col-nexus"><span class="check">&#10003;</span> Markdown-defined</td>
+              <td class="row-label" data-i18n="compare.r3.label">Custom agents</td>
+              <td class="col-nexus" data-i18n-html="compare.r3.nexus"><span class="check">&#10003;</span> Markdown-defined</td>
               <td><span class="cross">&#10005;</span></td>
-              <td>Limited</td>
+              <td data-i18n="compare.r3.teams">Limited</td>
               <td><span class="cross">&#10005;</span></td>
             </tr>
             <tr>
-              <td class="row-label">Reply threads</td>
+              <td class="row-label" data-i18n="compare.r4.label">Reply threads</td>
+              <td class="col-nexus" data-i18n-html="compare.r4.nexus"><span class="check">&#10003;</span> Built-in</td>
+              <td><span class="check">&#10003;</span></td>
+              <td><span class="check">&#10003;</span></td>
+              <td><span class="check">&#10003;</span></td>
+            </tr>
+            <tr>
+              <td class="row-label" data-i18n="compare.r5.label">Emoji reactions</td>
               <td class="col-nexus"><span class="check">&#10003;</span> Built-in</td>
               <td><span class="check">&#10003;</span></td>
               <td><span class="check">&#10003;</span></td>
               <td><span class="check">&#10003;</span></td>
             </tr>
             <tr>
-              <td class="row-label">Emoji reactions</td>
+              <td class="row-label" data-i18n="compare.r6.label">Desktop notifications</td>
               <td class="col-nexus"><span class="check">&#10003;</span> Built-in</td>
               <td><span class="check">&#10003;</span></td>
               <td><span class="check">&#10003;</span></td>
               <td><span class="check">&#10003;</span></td>
             </tr>
             <tr>
-              <td class="row-label">Desktop notifications</td>
-              <td class="col-nexus"><span class="check">&#10003;</span> Built-in</td>
-              <td><span class="check">&#10003;</span></td>
-              <td><span class="check">&#10003;</span></td>
-              <td><span class="check">&#10003;</span></td>
-            </tr>
-            <tr>
-              <td class="row-label">Data sovereignty</td>
-              <td class="col-nexus"><span class="check">&#10003;</span> Your disk</td>
+              <td class="row-label" data-i18n="compare.r7.label">Data sovereignty</td>
+              <td class="col-nexus" data-i18n-html="compare.r7.nexus"><span class="check">&#10003;</span> Your disk</td>
               <td>AWS / Salesforce</td>
               <td>Azure</td>
               <td>Your server</td>
             </tr>
             <tr>
-              <td class="row-label">Model choice</td>
-              <td class="col-nexus"><span class="check">&#10003;</span> Any (local or cloud)</td>
+              <td class="row-label" data-i18n="compare.r8.label">Model choice</td>
+              <td class="col-nexus" data-i18n-html="compare.r8.nexus"><span class="check">&#10003;</span> Any (local or cloud)</td>
               <td>N/A</td>
-              <td>GPT-4 only</td>
+              <td data-i18n="compare.r8.teams">GPT-4 only</td>
               <td>N/A</td>
             </tr>
             <tr>
-              <td class="row-label">AI cost</td>
-              <td class="col-nexus"><span class="check">&#10003;</span> ~$0.10/user/mo (transparent)</td>
+              <td class="row-label" data-i18n="compare.r9.label">AI cost</td>
+              <td class="col-nexus" data-i18n-html="compare.r9.nexus"><span class="check">&#10003;</span> ~$0.10/user/mo (transparent)</td>
               <td>$10/user/mo (Slack AI)</td>
               <td>$30/user/mo (Copilot)</td>
               <td>N/A</td>
             </tr>
             <tr>
-              <td class="row-label">Knowledge base</td>
-              <td class="col-nexus"><span class="check">&#10003;</span> Auto-extracting</td>
+              <td class="row-label" data-i18n="compare.r10.label">Knowledge base</td>
+              <td class="col-nexus" data-i18n-html="compare.r10.nexus"><span class="check">&#10003;</span> Auto-extracting</td>
               <td><span class="cross">&#10005;</span></td>
               <td>SharePoint</td>
               <td><span class="cross">&#10005;</span></td>
             </tr>
             <tr>
-              <td class="row-label">Signup required</td>
+              <td class="row-label" data-i18n="compare.r11.label">Signup required</td>
               <td class="col-nexus"><span class="check">&#10003;</span> No</td>
               <td>Yes</td>
               <td>Yes</td>
               <td>Yes</td>
             </tr>
             <tr>
-              <td class="row-label">Portable export</td>
-              <td class="col-nexus"><span class="check">&#10003;</span> Single .nexus file</td>
-              <td>Lossy CSV</td>
-              <td>Compliance only</td>
-              <td>Admin export</td>
+              <td class="row-label" data-i18n="compare.r12.label">Portable export</td>
+              <td class="col-nexus" data-i18n-html="compare.r12.nexus"><span class="check">&#10003;</span> Single .nexus file</td>
+              <td data-i18n="compare.r12.slack">Lossy CSV</td>
+              <td data-i18n="compare.r12.teams">Compliance only</td>
+              <td data-i18n="compare.r12.mm">Admin export</td>
             </tr>
             <tr>
-              <td class="row-label">Network transparency</td>
-              <td class="col-nexus"><span class="check">&#10003;</span> Built-in log</td>
+              <td class="row-label" data-i18n="compare.r13.label">Network transparency</td>
+              <td class="col-nexus" data-i18n-html="compare.r13.nexus"><span class="check">&#10003;</span> Built-in log</td>
               <td><span class="cross">&#10005;</span></td>
               <td><span class="cross">&#10005;</span></td>
               <td><span class="cross">&#10005;</span></td>
             </tr>
             <tr>
-              <td class="row-label">Instant data deletion</td>
-              <td class="col-nexus"><span class="check">&#10003;</span> One button</td>
-              <td>30-day request</td>
-              <td>Legal hold</td>
-              <td>Manual</td>
+              <td class="row-label" data-i18n="compare.r14.label">Instant data deletion</td>
+              <td class="col-nexus" data-i18n-html="compare.r14.nexus"><span class="check">&#10003;</span> One button</td>
+              <td data-i18n="compare.r14.slack">30-day request</td>
+              <td data-i18n="compare.r14.teams">Legal hold</td>
+              <td data-i18n="compare.r14.mm">Manual</td>
             </tr>
             <tr>
-              <td class="row-label">AI self-reflection</td>
+              <td class="row-label" data-i18n="compare.r15.label">AI self-reflection</td>
               <td class="col-nexus"><span class="check">&#10003;</span> Built-in</td>
               <td><span class="cross">&#10005;</span></td>
               <td><span class="cross">&#10005;</span></td>
               <td><span class="cross">&#10005;</span></td>
             </tr>
             <tr>
-              <td class="row-label">Cost</td>
-              <td class="col-nexus"><span class="check">&#10003;</span> Free forever</td>
+              <td class="row-label" data-i18n="compare.r16.label">Cost</td>
+              <td class="col-nexus" data-i18n-html="compare.r16.nexus"><span class="check">&#10003;</span> Free forever</td>
               <td>$8.75/user/mo</td>
               <td>$4/user/mo</td>
               <td>Freemium</td>
@@ -2356,20 +2370,20 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
   <section class="section section-dark" id="deploy">
     <div class="container">
       <div class="section-header reveal">
-        <span class="section-eyebrow">Get started</span>
-        <h2 class="section-title">Five ways to start.<br>One brain.</h2>
-        <p class="section-desc">Pick the path that fits your workflow. All five run the same Nexus.</p>
+        <span class="section-eyebrow" data-i18n="deploy.eyebrow">Get started</span>
+        <h2 class="section-title" data-i18n-html="deploy.title">Five ways to start.<br>One brain.</h2>
+        <p class="section-desc" data-i18n="deploy.desc">Pick the path that fits your workflow. All five run the same Nexus.</p>
       </div>
       <div class="deploy-grid-4">
         <!-- Cloud -->
         <div class="deploy-card deploy-card-primary reveal">
-          <div class="deploy-card-badge">Fastest</div>
+          <div class="deploy-card-badge" data-i18n="deploy.cloud.badge">Fastest</div>
           <h3 class="deploy-card-title">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
             Nexus Cloud
           </h3>
-          <p class="deploy-card-desc">Name your workspace, pick a display name, done. No install, no config.</p>
-          <a href="/login" class="btn btn-primary deploy-card-btn">Open Nexus Cloud</a>
+          <p class="deploy-card-desc" data-i18n="deploy.cloud.desc">Name your workspace, pick a display name, done. No install, no config.</p>
+          <a href="/login" class="btn btn-primary deploy-card-btn" data-i18n="deploy.cloud.cta">Open Nexus Cloud</a>
           <span class="deploy-card-time">~10 seconds</span>
         </div>
         <!-- Install script -->
@@ -2378,7 +2392,7 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
             Install Script
           </h3>
-          <p class="deploy-card-desc">One-line installer for Linux servers. Downloads the latest release binary.</p>
+          <p class="deploy-card-desc" data-i18n="deploy.script.desc">One-line installer for Linux servers. Downloads the latest release binary.</p>
           <div class="deploy-terminal">
             <div class="terminal-line"><span class="t-prompt">$</span> curl -fsSL https://raw.githubusercontent.com/vortex-303/nexus/main/install.sh | sh</div>
             <div class="terminal-line"><span class="t-prompt">$</span> nexus serve</div>
@@ -2391,7 +2405,7 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><circle cx="6" cy="6" r="1" fill="var(--accent)"/><circle cx="6" cy="18" r="1" fill="var(--accent)"/></svg>
             Docker
           </h3>
-          <p class="deploy-card-desc">Single command with Docker Compose. Add SSL with the production config.</p>
+          <p class="deploy-card-desc" data-i18n="deploy.docker.desc">Single command with Docker Compose. Add SSL with the production config.</p>
           <div class="deploy-terminal">
             <div class="terminal-line"><span class="t-prompt">$</span> curl -fsSL https://nexusteams.dev/install-docker.sh | bash</div>
           </div>
@@ -2403,7 +2417,7 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><path d="M17.8 19.2L16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"/></svg>
             Fly.io
           </h3>
-          <p class="deploy-card-desc">Deploy to Fly.io's global edge network. Your own private instance with persistent volume.</p>
+          <p class="deploy-card-desc" data-i18n="deploy.fly.desc">Deploy to Fly.io's global edge network. Your own private instance with persistent volume.</p>
           <div class="deploy-terminal">
             <div class="terminal-line"><span class="t-prompt">$</span> fly launch --from https://github.com/vortex-303/nexus</div>
           </div>
@@ -2415,7 +2429,7 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
             Build from Source
           </h3>
-          <p class="deploy-card-desc">Clone the repo, build, run. Requires Go 1.25+ and Node 22+.</p>
+          <p class="deploy-card-desc" data-i18n="deploy.source.desc">Clone the repo, build, run. Requires Go 1.25+ and Node 22+.</p>
           <div class="deploy-terminal">
             <div class="terminal-line"><span class="t-prompt">$</span> git clone https://github.com/vortex-303/nexus</div>
             <div class="terminal-line"><span class="t-prompt">$</span> cd nexus && make build && ./nexus serve</div>
@@ -2426,11 +2440,11 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
       <div class="pills reveal">
         <div class="pill-item">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>
-          <span>Single binary</span>
+          <span data-i18n="deploy.pill1">Single binary</span>
         </div>
         <div class="pill-item">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
-          <span>SQLite, zero config</span>
+          <span data-i18n="deploy.pill2">SQLite, zero config</span>
         </div>
         <div class="pill-item">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
@@ -2438,7 +2452,7 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
         </div>
         <div class="pill-item">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-          <span>MIT licensed</span>
+          <span data-i18n="deploy.pill4">MIT licensed</span>
         </div>
       </div>
     </div>
@@ -2449,16 +2463,16 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
     <div class="glow glow-cta-1"></div>
     <div class="glow glow-cta-2"></div>
     <div class="container cta-container reveal">
-      <h2 class="cta-headline">Ready to give your team<br>a brain?</h2>
-      <p class="cta-sub">Start on the cloud in 10 seconds or self-host forever. No credit card, no catch.</p>
+      <h2 class="cta-headline" data-i18n-html="cta.title">Ready to give your team<br>a brain?</h2>
+      <p class="cta-sub" data-i18n="cta.sub">Start on the cloud in 10 seconds or self-host forever. No credit card, no catch.</p>
       <div class="cta-buttons">
         <a href="/login" class="btn btn-primary btn-xl">
-          Try Nexus Cloud &mdash; Free
+          <span data-i18n="cta.primary">Try Nexus Cloud &mdash; Free</span>
           <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6.5 3.5L11 8L6.5 12.5"/></svg>
         </a>
         <a href="https://github.com/vortex-303/nexus" class="btn btn-secondary btn-lg" target="_blank" rel="noopener">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-          View Source
+          <span data-i18n="cta.source">View Source</span>
         </a>
       </div>
     </div>
@@ -2476,9 +2490,9 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
       <div class="footer-links">
         <a href="https://github.com/vortex-303/nexus" target="_blank" rel="noopener">GitHub</a>
         <span class="footer-sep">&middot;</span>
-        <a href="https://github.com/vortex-303/nexus#readme" target="_blank" rel="noopener">Docs</a>
+        <a href="https://github.com/vortex-303/nexus#readme" target="_blank" rel="noopener" data-i18n="footer.docs">Docs</a>
         <span class="footer-sep">&middot;</span>
-        <span>MIT License</span>
+        <span data-i18n="footer.license">MIT License</span>
       </div>
     </div>
   </footer>
@@ -2767,6 +2781,388 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 });
 
+</script>
+<script>
+// ---- i18n ----
+var translations = {
+  es: {
+    // Meta
+    'meta.title': 'Nexus \u2014 El cerebro de tu equipo. No un chatbot.',
+    'meta.description': 'El espacio de trabajo con IA que coordina personas y agentes. Cada decisi\u00f3n, tarea y compromiso se extrae, atribuye y es buscable. En la nube o autoalojado.',
+
+    // Nav
+    'nav.features': 'Funciones',
+    'nav.pricing': 'Precios',
+    'nav.compare': 'Comparar',
+    'nav.login': 'Iniciar sesi\u00f3n',
+    'nav.getstarted': 'Comenzar',
+    'lang.toggle': 'EN',
+
+    // Hero
+    'hero.badge': 'C\u00f3digo abierto \u00b7 Nube o autoalojado \u00b7 Gratis para empezar',
+    'hero.title': 'El cerebro de tu equipo.<br><span class="accent-text">No un chatbot.</span>',
+    'hero.subtitle': 'El espacio de trabajo con IA que coordina personas y agentes. Cada decisi\u00f3n, tarea y compromiso se extrae, atribuye y es buscable \u2014 construyendo conocimiento de equipo que se acumula con el tiempo.',
+    'hero.cta.create': 'Crear espacio de trabajo',
+    'hero.cta.selfhost': 'Autoalojar',
+    'hero.stat.models': 'Modelos de IA',
+    'hero.stat.agents': 'Agentes integrados',
+    'hero.stat.binary': 'Tama\u00f1o del binario',
+    'hero.stat.forever': 'Para siempre',
+
+    // Providers
+    'providers.label': 'Compatible con cualquier proveedor de LLM',
+    'providers.anycompat': 'Cualquier compatible con OpenAI',
+
+    // Vignette: Brain
+    'vig.brain.n1': 'Decisiones',
+    'vig.brain.n2': 'Personas',
+    'vig.brain.n3': 'Memoria',
+    'vig.brain.n4': 'Tareas',
+    'vig.brain.n5': 'Datos',
+    'vig.brain.title': 'Grafo de conocimiento',
+    'vig.brain.desc': 'Recuerda todo. Conecta los puntos.',
+
+    // Vignette: Calendar
+    'vig.cal.ev1': 'Resumen semanal',
+    'vig.cal.ev2': 'Revisi\u00f3n de pipeline',
+    'vig.cal.ev3': 'Resumen de noticias',
+    'vig.schedule.title': 'Inteligencia programada',
+    'vig.schedule.desc': 'Agentes que trabajan mientras duermes.',
+
+    // Vignette: Cost
+    'vig.cost.header': 'Uso de hoy',
+    'vig.cost.total': 'Total hoy',
+    'vig.cost.title': 'Costos transparentes',
+    'vig.cost.desc': 'Cada token contabilizado.',
+
+    // Vignette: Chat
+    'vig.chat.msg1': 'programa el standup para todos los lunes a las 9am',
+    'vig.chat.msg2': '\u00a1Hecho! Evento recurrente creado: "Standup" cada lunes a las 9:00 AM.',
+    'vig.chat.msg3': 'tambi\u00e9n crea una tarea para preparar la agenda',
+    'vig.chat.title': 'IA que act\u00faa',
+    'vig.chat.desc': 'No solo chat. Herramientas, tareas y acciones reales.',
+
+    // Vignette: Tasks
+    'vig.board.todo': 'Pendiente',
+    'vig.board.t1': 'Dise\u00f1ar landing page',
+    'vig.board.t2': 'Escribir docs de API',
+    'vig.board.t3': 'Configurar CI',
+    'vig.board.inprogress': 'En progreso',
+    'vig.board.t4': 'Flujo de auth',
+    'vig.board.t5': 'Migraciones de BD',
+    'vig.board.done': 'Hecho',
+    'vig.board.t6': 'Iniciar repo',
+    'vig.board.t7': 'Desplegar staging',
+    'vig.tasks.title': 'Gesti\u00f3n de tareas',
+    'vig.tasks.desc': 'De la conversaci\u00f3n a la ejecuci\u00f3n.',
+
+    // Vignette: Shield
+    'vig.shield.b1': 'Tu servidor, tus datos',
+    'vig.shield.b2': 'Cero telemetr\u00eda',
+    'vig.shield.b3': 'Borrado instant\u00e1neo',
+    'vig.shield.b4': 'No entrenan con tus datos',
+    'vig.shield.title': 'Soberan\u00eda de datos',
+    'vig.shield.desc': 'Tus datos. Tus reglas. Punto.',
+
+    // Privacy
+    'privacy.eyebrow': 'Soberan\u00eda de datos',
+    'privacy.title': 'Tus conversaciones no son<br>sus datos de entrenamiento.',
+    'privacy.desc': 'Cada mensaje que env\u00edas en Slack pasa por Salesforce. Cada prompt en Teams alimenta la IA de Microsoft. Les est\u00e1s pagando para que aprendan tu negocio. Hay una forma mejor.',
+
+    'privacy.slack.sub': 'Propiedad de Salesforce',
+    'privacy.slack.i1': 'Mensajes almacenados en infraestructura de Salesforce',
+    'privacy.slack.i2': 'Las funciones de IA procesan tus datos con sus modelos',
+    'privacy.slack.i3': 'Datos de admin compartidos entre productos de Salesforce',
+    'privacy.slack.i4': 'Sin opci\u00f3n autoalojada \u2014 los datos siempre salen de tu control',
+    'privacy.slack.i5': 'Datos retenidos incluso despu\u00e9s de cancelar',
+    'privacy.slack.i6': 'Exportaci\u00f3n limitada y con p\u00e9rdida \u2014 a\u00f1os de contexto perdidos',
+    'privacy.slack.quote': '\u201cLos datos del cliente pueden usarse para proporcionar y mejorar los productos y servicios de Salesforce.\u201d \u2014 T\u00e9rminos empresariales de Slack',
+
+    'privacy.teams.sub': 'Parte de Microsoft 365',
+    'privacy.teams.i1': 'Copilot indexa todos los chats, archivos y correos por defecto',
+    'privacy.teams.i2': 'Datos procesados en Azure \u2014 Microsoft controla las claves',
+    'privacy.teams.i3': 'Telemetr\u00eda y anal\u00edtica de uso siempre activas',
+    'privacy.teams.i4': 'Tus prompts e interacciones con IA pasan por Microsoft',
+    'privacy.teams.i5': 'Modelo limitado a GPT \u2014 Microsoft decide tu IA',
+    'privacy.teams.i6': 'Sin forma de auditar qu\u00e9 datos accede Microsoft',
+    'privacy.teams.quote': '\u201cMicrosoft puede procesar datos del cliente... para proporcionar los servicios en l\u00ednea, incluidas operaciones como funciones de IA.\u201d \u2014 T\u00e9rminos de producto de MS',
+
+    'privacy.nexus.sub': 'Autoalojado o Nexus Cloud',
+    'privacy.nexus.i1': 'Autoaloja en tu servidor \u2014 los datos nunca salen de tu red',
+    'privacy.nexus.i2': 'T\u00fa eliges el modelo y proveedor de IA, o ejecuta localmente',
+    'privacy.nexus.i3': 'Cero telemetr\u00eda, cero anal\u00edtica, cero rastreo',
+    'privacy.nexus.i4': 'Tus conversaciones nunca se usan para entrenar modelos',
+    'privacy.nexus.i5': 'Exportaci\u00f3n completa y borrado con un clic, siempre',
+    'privacy.nexus.i6': 'C\u00f3digo abierto \u2014 audita cada l\u00ednea t\u00fa mismo',
+    'privacy.nexus.quote': 'Nexus autoalojado significa que es matem\u00e1ticamente imposible que accedamos a tus datos. No tenemos las claves. No tenemos el servidor. Ni siquiera sabemos que lo est\u00e1s ejecutando.',
+
+    'privacy.card1.title': 'Espacio de trabajo port\u00e1til',
+    'privacy.card1.desc': 'Descarga tu espacio de trabajo completo como un solo archivo. Mensajes, tareas, documentos, archivos, memoria del Brain \u2014 todo. Imp\u00f3rtalo en cualquier instancia de Nexus. Tu espacio de trabajo es un archivo, no una suscripci\u00f3n. Bot\u00f3n de borrado total para eliminar todo permanentemente \u2014 instant\u00e1neo e irreversible.',
+    'privacy.card2.title': 'Transparencia de red',
+    'privacy.card2.desc': 'Un panel integrado muestra cada conexi\u00f3n saliente de tu instancia. Qu\u00e9 servidor, cu\u00e1ndo, por qu\u00e9. Nexus autoalojado contacta exactamente un servicio externo: el proveedor de IA que elegiste. Verif\u00edcalo t\u00fa mismo.',
+    'privacy.card3.title': 'Transparencia de costos',
+    'privacy.card3.desc': 'Cada llamada de IA rastreada con conteo exacto de tokens y costos. Ve lo que gastas por modelo, por acci\u00f3n, por d\u00eda. Slack AI cobra $10/usuario/mes \u2014 Nexus promedia $0.10. Panel de costos integrado.',
+
+    'privacy.extra1': 'Sin anal\u00edtica ni rastreo',
+    'privacy.extra2': 'Sin compartir datos con terceros',
+    'privacy.extra3': 'Sin registro obligatorio',
+    'privacy.extra4': 'C\u00f3digo abierto \u2014 aud\u00edtalo t\u00fa mismo',
+    'privacy.extra5': 'M\u00e1s de 200 modelos de IA \u00b7 local o nube',
+    'privacy.extra6': 'Un solo binario \u00b7 sin dependencias',
+
+    // Brain
+    'brain.eyebrow': 'El Brain',
+    'brain.title': 'El conocimiento de tu equipo,<br>siempre disponible.',
+    'brain.desc': 'El Brain sigue cada conversaci\u00f3n y guarda lo importante \u2014 qui\u00e9n tom\u00f3 qu\u00e9 decisi\u00f3n, a d\u00f3nde fue el presupuesto, qu\u00e9 se prometi\u00f3 y para cu\u00e1ndo.',
+    'brain.intro': 'El contexto de tu equipo se mantiene intacto, buscable y atribuido \u2014 incluso cuando las personas olvidan. El Brain coordina agentes y humanos, y responsabiliza a todos.',
+
+    'brain.f1.title': 'Guarda lo importante',
+    'brain.f1.desc': 'Decisiones, gastos, compromisos, pol\u00edticas \u2014 extra\u00eddos autom\u00e1ticamente de las conversaciones con contexto completo. Qui\u00e9n lo dijo, en qu\u00e9 canal, cu\u00e1ndo. Busca cualquier cosa meses despu\u00e9s y obt\u00e9n la imagen completa.',
+    'brain.f2.title': 'Equipo de agentes',
+    'brain.f2.desc': '8 agentes integrados para escritura, c\u00f3digo, investigaci\u00f3n, planificaci\u00f3n y m\u00e1s. Crea agentes personalizados con un prompt \u2014 dale a cada uno habilidades, herramientas y una personalidad. Explora e instala desde la biblioteca de agentes.',
+    'brain.f3.title': 'Investigaci\u00f3n y conocimiento',
+    'brain.f3.desc': 'Los agentes buscan en la web, leen documentos y consultan tu base de conocimiento. El Brain sintetiza hallazgos con el contexto del equipo que ninguna herramienta externa tiene.',
+    'brain.f4.title': 'Cualquier modelo',
+    'brain.f4.desc': 'OpenRouter te da m\u00e1s de 200 modelos. Usa Gemini para im\u00e1genes. Ejecuta modelos localmente con Ollama \u2014 sin nube necesaria.',
+    'brain.f5.title': 'Autorreflexion',
+    'brain.f5.desc': 'El Brain analiza peri\u00f3dicamente la actividad del espacio de trabajo, eval\u00faa la alineaci\u00f3n con la misi\u00f3n, detecta qui\u00e9n est\u00e1 inactivo y qu\u00e9 se desv\u00eda \u2014 luego escribe sus conclusiones en su propia memoria. Se vuelve m\u00e1s inteligente sin que nadie se lo pida.',
+    'brain.f6.title': 'Informes vivos',
+    'brain.f6.desc': 'Reportes autogenerados que se mantienen actualizados: pulso del espacio de trabajo, alineaci\u00f3n con el objetivo, salud del equipo. El Brain sintetiza todo en actualizaciones amigables \u2014 sin dashboards que configurar.',
+
+    // AI Together
+    'together.eyebrow': 'IA en equipo',
+    'together.title': 'Deja de usar IA solo.<br>Empieza a usarla en equipo.',
+    'together.desc': 'La mayor\u00eda de los equipos usan IA en privado \u2014 una persona le pregunta a ChatGPT, pega el resultado, y nadie sabe qu\u00e9 se pregunt\u00f3 ni por qu\u00e9. Nexus hace de la IA una experiencia compartida y transparente.',
+
+    'together.old.label': 'La forma vieja',
+    'together.old.i1': 'Usar IA solo en otra pesta\u00f1a',
+    'together.old.i2': 'Copiar y pegar resultados en Slack',
+    'together.old.i3': 'Nadie ve el prompt ni el modelo',
+    'together.old.i4': 'Contexto perdido entre conversaciones',
+    'together.old.i5': 'Cada miembro tiene una configuraci\u00f3n de IA diferente',
+    'together.old.i6': 'La respuesta de la IA se trata como opini\u00f3n de alguien',
+
+    'together.new.label': 'La forma Nexus',
+    'together.new.i1': '@Brain en cualquier canal \u2014 todos lo ven',
+    'together.new.i2': 'El modelo, el prompt, el razonamiento \u2014 todo visible',
+    'together.new.i3': 'Brain recuerda cada conversaci\u00f3n del equipo',
+    'together.new.i4': 'Agentes compartidos con habilidades y conocimiento compartidos',
+    'together.new.i5': 'Un compa\u00f1ero de IA que conoce todo el espacio de trabajo',
+    'together.new.i6': 'Respuestas de IA atribuidas, buscables y con responsabilidad',
+
+    'together.card1.title': 'Transparencia total',
+    'together.card1.desc': 'Cada interacci\u00f3n con IA ocurre en un canal. El equipo ve qu\u00e9 se pregunt\u00f3, qu\u00e9 modelo respondi\u00f3 y qu\u00e9 herramientas se usaron. Sin cajas negras.',
+    'together.card2.title': 'Contexto compartido',
+    'together.card2.desc': 'El Brain acumula conocimiento de cada conversaci\u00f3n, decisi\u00f3n y documento. Cuando alguien hace una pregunta, Brain recurre al contexto de todo el equipo \u2014 no solo al historial de una persona.',
+    'together.card3.title': 'IA con responsabilidad',
+    'together.card3.desc': 'Las respuestas de IA est\u00e1n atribuidas, fechadas y son buscables. Meses despu\u00e9s, puedes rastrear cualquier conclusi\u00f3n generada por IA hasta la pregunta original y el contexto que se le dio.',
+
+    // Scheduled Intelligence
+    'autopilot.eyebrow': 'Inteligencia programada',
+    'autopilot.title': 'Pon a tu equipo en piloto autom\u00e1tico.',
+    'autopilot.desc': 'Programa cualquier agente en un calendario \u2014 res\u00famenes diarios, alertas de precios, reportes de investigaci\u00f3n, seguimiento de tareas. Config\u00faralo y olv\u00eddalo.',
+    'autopilot.terminal.title': 'Tareas programadas',
+
+    'autopilot.freq.daily': 'Diario',
+    'autopilot.freq.weekdays': 'D\u00edas h\u00e1biles',
+    'autopilot.freq.mondays': 'Lunes',
+    'autopilot.freq.daily2': 'Diario',
+    'autopilot.freq.fridays': 'Viernes',
+    'autopilot.status.done': 'hecho',
+    'autopilot.status.done2': 'hecho',
+    'autopilot.status.done3': 'hecho',
+    'autopilot.status.pending': 'pendiente',
+    'autopilot.status.pending2': 'pendiente',
+
+    'autopilot.job1.prompt': '"Buscar el precio del oro y publicar en #markets"',
+    'autopilot.job1.result': '<span class="cron-arrow">&rarr;</span> Brain public\u00f3: <strong>Oro $2,847/oz</strong> (+0.3%) \u2014 3 fuentes citadas',
+    'autopilot.job2.prompt': '"Resumir los mensajes de ayer y publicar un resumen en #daily-summary"',
+    'autopilot.job2.result': '<span class="cron-arrow">&rarr;</span> Brain public\u00f3: <strong>3 decisiones, 2 preguntas abiertas, 1 bloqueante</strong>',
+    'autopilot.job3.prompt': '"Revisar todas las tareas abiertas y publicar una actualizaci\u00f3n en #general"',
+    'autopilot.job3.result': '<span class="cron-arrow">&rarr;</span> Brain public\u00f3: <strong>12 tareas abiertas, 3 vencidas, 5 para esta semana</strong>',
+    'autopilot.job4.prompt': '"Revisar Hacker News en busca de noticias sobre agentes de IA y publicar en #research"',
+    'autopilot.job4.result': '\u2192 Programado \u2014 se ejecuta en 4h 12m',
+    'autopilot.job5.prompt': '"Generar un reporte semanal de tareas completadas y publicar en #reports"',
+    'autopilot.job5.result': '\u2192 Programado \u2014 pr\u00f3ximo viernes',
+
+    'autopilot.card1.title': 'Nativo de calendario',
+    'autopilot.card1.desc': 'Programa agentes igual que programas reuniones. Elige una hora, un agente, escribe el prompt. Una vez o recurrente \u2014 diario, semanal, expresiones cron.',
+    'autopilot.card2.title': 'Cualquier modelo, cualquier tarea',
+    'autopilot.card2.desc': 'Cambia el modelo por tarea. Usa un modelo r\u00e1pido para verificar precios, uno de razonamiento para reportes de investigaci\u00f3n. M\u00e1s de 200 modelos con OpenRouter.',
+    'autopilot.card3.title': 'Funciona mientras duermes',
+    'autopilot.card3.desc': 'El servidor ejecuta agentes seg\u00fan el horario, est\u00e9 alguien conectado o no. Despierta con un resumen, un reporte de precios o un an\u00e1lisis de investigaci\u00f3n ya listo.',
+
+    // Features
+    'features.eyebrow': 'Funciones',
+    'features.title': 'Coordina personas y agentes.',
+    'features.desc': 'Chat, tareas, eventos, agentes de IA y una base de conocimiento que se construye sola \u2014 todo en un solo lugar.',
+
+    'features.f1.title': 'Chat en tiempo real',
+    'features.f1.desc': 'Canales, mensajes directos, hilos de respuesta, reacciones con emoji, @menciones con autocompletado, notificaciones de escritorio, arrastrar y soltar archivos, y markdown con resaltado de sintaxis.',
+    'features.f2.title': 'Tareas y programaci\u00f3n',
+    'features.f2.desc': 'Crea tareas desde conversaciones con un clic. Asigna a personas o agentes, establece plazos, sigue el progreso. Brain da seguimiento autom\u00e1ticamente cuando los plazos se acercan.',
+    'features.f3.title': 'Eventos y coordinaci\u00f3n',
+    'features.f3.desc': 'Programa eventos, coordina entre miembros del equipo y agentes. Registra qui\u00e9n se comprometi\u00f3 a qu\u00e9 y cu\u00e1ndo \u2014 el Brain responsabiliza a todos.',
+    'features.f4.title': 'Agentes de IA',
+    'features.f4.desc': '8 agentes integrados: escritor, programador, analista, planificador, investigador y m\u00e1s. Crea agentes personalizados con un prompt y dale a cada uno habilidades y herramientas. Explora la biblioteca de agentes con plantillas listas.',
+    'features.f5.title': 'Herramientas MCP',
+    'features.f5.desc': 'Extiende agentes con servidores del Model Context Protocol. B\u00fasqueda web, calendarios, bases de datos, APIs \u2014 si hay un servidor MCP para eso, Nexus puede usarlo.',
+    'features.f6.title': 'Roles y permisos',
+    'features.f6.desc': '9 roles desde invitado hasta super admin, 22 permisos granulares y un organigrama. Controla exactamente qui\u00e9n ve qu\u00e9, qui\u00e9n puede invitar y qui\u00e9n administra agentes.',
+
+    // Pricing
+    'pricing.eyebrow': 'Precios',
+    'pricing.title': 'Empieza gratis. Escala cuando est\u00e9s listo.',
+    'pricing.desc': 'Todos los planes incluyen Brain AI, mensajes ilimitados y todas las funciones. Actualiza para m\u00e1s miembros, o autoaloja para control total.',
+
+    'pricing.free.name': 'Gratis',
+    'pricing.free.period': 'para siempre',
+    'pricing.free.desc': 'Comienza al instante. Sin tarjeta de cr\u00e9dito, sin trampas.',
+    'pricing.free.cta': 'Crear espacio de trabajo',
+    'pricing.free.f1': 'Hasta 5 miembros de equipo',
+    'pricing.free.f2': 'Brain AI + todas las funciones',
+    'pricing.free.f3': 'Mensajes y tareas ilimitados',
+    'pricing.free.f4': 'Soporte de la comunidad',
+
+    'pricing.pro.period': '/mes',
+    'pricing.pro.desc': 'Todo lo de Gratis, m\u00e1s miembros ilimitados y soporte prioritario.',
+    'pricing.pro.cta': 'Unirse a la lista de espera',
+    'pricing.pro.success': '\u00a1Est\u00e1s en la lista! Nos pondremos en contacto pronto.',
+    'pricing.pro.f1': 'Miembros ilimitados',
+    'pricing.pro.f2': 'Soporte prioritario',
+    'pricing.pro.f3': 'SSO / SAML (pr\u00f3ximamente)',
+
+    'pricing.self.name': 'Autoalojado',
+    'pricing.self.period': 'para siempre',
+    'pricing.self.desc': 'Descarga el binario, ejec\u00fatalo en tu hardware. Control total, libertad total.',
+    'pricing.self.cta': 'Descargar binario',
+    'pricing.self.f1': 'Gratis para siempre \u00b7 5 miembros',
+    'pricing.self.f2': 'Licencia Pro para ilimitados',
+    'pricing.self.f3': 'Los datos nunca salen de tu red',
+    'pricing.self.f4': 'Ejecuta LLMs locales',
+    'pricing.self.f5': 'C\u00f3digo fuente completo',
+
+    // Comparison
+    'compare.eyebrow': 'Comparaci\u00f3n',
+    'compare.title': 'C\u00f3mo se compara Nexus.',
+    'compare.desc': 'Las funciones que necesitas sin la dependencia de proveedores que no.',
+
+    'compare.r1.label': 'Autoalojado',
+    'compare.r1.nexus': '<span class="check">&#10003;</span> Un solo binario',
+    'compare.r2.label': 'IA con memoria',
+    'compare.r2.nexus': '<span class="check">&#10003;</span> Decisiones, compromisos, pol\u00edticas',
+    'compare.r2.slack': 'Plugins adicionales',
+    'compare.r2.teams': 'Copilot (solo nube)',
+    'compare.r2.mm': 'Terceros',
+    'compare.r3.label': 'Agentes personalizados',
+    'compare.r3.nexus': '<span class="check">&#10003;</span> Definidos en Markdown',
+    'compare.r3.teams': 'Limitado',
+    'compare.r4.label': 'Hilos de respuesta',
+    'compare.r4.nexus': '<span class="check">&#10003;</span> Integrado',
+    'compare.r5.label': 'Reacciones con emoji',
+    'compare.r6.label': 'Notificaciones de escritorio',
+    'compare.r7.label': 'Soberan\u00eda de datos',
+    'compare.r7.nexus': '<span class="check">&#10003;</span> Tu disco',
+    'compare.r8.label': 'Elecci\u00f3n de modelo',
+    'compare.r8.nexus': '<span class="check">&#10003;</span> Cualquiera (local o nube)',
+    'compare.r8.teams': 'Solo GPT-4',
+    'compare.r9.label': 'Costo de IA',
+    'compare.r9.nexus': '<span class="check">&#10003;</span> ~$0.10/usuario/mes (transparente)',
+    'compare.r10.label': 'Base de conocimiento',
+    'compare.r10.nexus': '<span class="check">&#10003;</span> Extracci\u00f3n autom\u00e1tica',
+    'compare.r11.label': 'Registro obligatorio',
+    'compare.r12.label': 'Exportaci\u00f3n portable',
+    'compare.r12.nexus': '<span class="check">&#10003;</span> Un solo archivo .nexus',
+    'compare.r12.slack': 'CSV con p\u00e9rdida',
+    'compare.r12.teams': 'Solo cumplimiento',
+    'compare.r12.mm': 'Exportaci\u00f3n admin',
+    'compare.r13.label': 'Transparencia de red',
+    'compare.r13.nexus': '<span class="check">&#10003;</span> Registro integrado',
+    'compare.r14.label': 'Borrado instant\u00e1neo de datos',
+    'compare.r14.nexus': '<span class="check">&#10003;</span> Un bot\u00f3n',
+    'compare.r14.slack': 'Solicitud de 30 d\u00edas',
+    'compare.r14.teams': 'Retenci\u00f3n legal',
+    'compare.r14.mm': 'Manual',
+    'compare.r15.label': 'Autorreflexion de IA',
+    'compare.r16.label': 'Costo',
+    'compare.r16.nexus': '<span class="check">&#10003;</span> Gratis para siempre',
+
+    // Deploy
+    'deploy.eyebrow': 'Empezar',
+    'deploy.title': 'Cinco formas de empezar.<br>Un solo cerebro.',
+    'deploy.desc': 'Elige el camino que se adapte a tu flujo de trabajo. Los cinco ejecutan el mismo Nexus.',
+    'deploy.cloud.badge': 'M\u00e1s r\u00e1pido',
+    'deploy.cloud.desc': 'Nombra tu espacio de trabajo, elige un nombre visible, listo. Sin instalaci\u00f3n, sin configuraci\u00f3n.',
+    'deploy.cloud.cta': 'Abrir Nexus Cloud',
+    'deploy.script.desc': 'Instalador de una l\u00ednea para servidores Linux. Descarga el \u00faltimo binario.',
+    'deploy.docker.desc': 'Un solo comando con Docker Compose. A\u00f1ade SSL con la configuraci\u00f3n de producci\u00f3n.',
+    'deploy.fly.desc': 'Despliega en la red global edge de Fly.io. Tu propia instancia privada con volumen persistente.',
+    'deploy.source.desc': 'Clona el repositorio, compila, ejecuta. Requiere Go 1.25+ y Node 22+.',
+
+    'deploy.pill1': 'Un solo binario',
+    'deploy.pill2': 'SQLite, sin configuraci\u00f3n',
+    'deploy.pill4': 'Licencia MIT',
+
+    // CTA
+    'cta.title': '\u00bfListo para darle a tu equipo<br>un cerebro?',
+    'cta.sub': 'Empieza en la nube en 10 segundos o autoaloja para siempre. Sin tarjeta de cr\u00e9dito, sin trampas.',
+    'cta.primary': 'Prueba Nexus Cloud \u2014 Gratis',
+    'cta.source': 'Ver c\u00f3digo fuente',
+
+    // Footer
+    'footer.docs': 'Documentaci\u00f3n',
+    'footer.license': 'Licencia MIT'
+  }
+};
+
+var currentLang = localStorage.getItem('nexus-lang') || (navigator.language.startsWith('es') ? 'es' : 'en');
+
+function setLang(lang) {
+  currentLang = lang;
+  localStorage.setItem('nexus-lang', lang);
+  document.documentElement.lang = lang;
+
+  if (lang === 'en') {
+    document.querySelectorAll('[data-i18n]').forEach(function(el) {
+      if (el.dataset.i18nEn) el.textContent = el.dataset.i18nEn;
+    });
+    document.querySelectorAll('[data-i18n-html]').forEach(function(el) {
+      if (el.dataset.i18nHtmlEn) el.innerHTML = el.dataset.i18nHtmlEn;
+    });
+    // Restore meta
+    document.title = 'Nexus \u2014 Your team\u2019s brain. Not a chatbot.';
+    var desc = document.querySelector('meta[name="description"]');
+    if (desc) desc.content = 'The AI workspace that coordinates humans and agents. Every decision, task, and commitment is extracted, attributed, and searchable. Cloud or self-hosted.';
+  } else {
+    document.querySelectorAll('[data-i18n]').forEach(function(el) {
+      var key = el.dataset.i18n;
+      if (!el.dataset.i18nEn) el.dataset.i18nEn = el.textContent;
+      if (translations[lang] && translations[lang][key]) el.textContent = translations[lang][key];
+    });
+    document.querySelectorAll('[data-i18n-html]').forEach(function(el) {
+      var key = el.dataset.i18nHtml;
+      if (!el.dataset.i18nHtmlEn) el.dataset.i18nHtmlEn = el.innerHTML;
+      if (translations[lang] && translations[lang][key]) el.innerHTML = translations[lang][key];
+    });
+    // Update meta
+    if (translations[lang]) {
+      if (translations[lang]['meta.title']) document.title = translations[lang]['meta.title'];
+      var desc = document.querySelector('meta[name="description"]');
+      if (desc && translations[lang]['meta.description']) desc.content = translations[lang]['meta.description'];
+    }
+  }
+
+  // Update toggle button text
+  var toggle = document.querySelector('.lang-toggle');
+  if (toggle) toggle.textContent = lang === 'en' ? 'ES' : 'EN';
+}
+
+function toggleLang() {
+  setLang(currentLang === 'en' ? 'es' : 'en');
+}
+
+// Apply on load
+if (currentLang !== 'en') setLang(currentLang);
 </script>
 </body>
 </html>
