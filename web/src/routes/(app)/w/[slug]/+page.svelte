@@ -48,6 +48,7 @@
 	let pinnedMessagesList = $state<any[]>([]);
 	let memoryPinnedIds = $state<Set<string>>(new Set());
 	let inviteCopied = $state('');
+	let mobileSidebarOpen = $state(false);
 	let showUpgradeModal = $state(false);
 	let waitlistEmail = $state('');
 	let waitlistStatus = $state<'idle' | 'sending' | 'done'>('idle');
@@ -887,6 +888,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 	}
 
 	async function selectChannel(ch: Channel, targetMessageId?: string) {
+		mobileSidebarOpen = false;
 		activeChannel.set(ch);
 		const data = await getMessages(slug, ch.id);
 		messages.set(data.messages);
@@ -3700,8 +3702,11 @@ autonomy: reactive
 {/if}
 
 <div class="workspace">
+	{#if mobileSidebarOpen}
+		<div class="mobile-backdrop" onclick={() => mobileSidebarOpen = false}></div>
+	{/if}
 	<!-- Sidebar -->
-	<aside class="sidebar">
+	<aside class="sidebar" class:mobile-open={mobileSidebarOpen}>
 		<div class="sidebar-header">
 			<button class="logo-row" onclick={() => {
 				const brainDM = $channels.find(ch => ch.type === 'dm' && ch.name.includes('brain'));
@@ -4020,6 +4025,9 @@ autonomy: reactive
 			<!-- Channel header -->
 			<header class="chat-header">
 				<div class="chat-header-left">
+					<button class="mobile-menu-btn" onclick={() => mobileSidebarOpen = !mobileSidebarOpen} aria-label="Menu">
+						<svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+					</button>
 					{#if isDMChannel($activeChannel)}
 						<span class="header-hash">@</span>
 						<h2>{getDMPartnerName($activeChannel)}</h2>
@@ -12092,9 +12100,56 @@ autonomy: reactive
 	}
 
 	/* Responsive */
-	@media (max-width: 640px) {
-		.sidebar { width: 220px; min-width: 220px; }
-		.thread-panel { width: 100%; min-width: 100%; position: absolute; right: 0; z-index: 50; }
+	/* ── Mobile: hidden on desktop ── */
+	.mobile-menu-btn { display: none; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: var(--radius-md); color: var(--text-secondary); flex-shrink: 0; }
+	.mobile-menu-btn:hover { color: var(--text-primary); background: var(--bg-raised); }
+	.mobile-backdrop { display: none; }
+
+	@media (max-width: 768px) {
+		.mobile-menu-btn { display: flex; }
+
+		.mobile-backdrop { display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 199; }
+
+		/* Sidebar: slide-out drawer */
+		.sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 200;
+			width: 280px !important; min-width: 280px !important;
+			transform: translateX(-100%); transition: transform 0.25s ease; }
+		.sidebar.mobile-open { transform: translateX(0); box-shadow: var(--shadow-lg); }
+
+		/* Member drawer + pins panel: right overlay */
+		.member-drawer { position: fixed; right: 0; top: 0; bottom: 0;
+			z-index: 150; width: 280px !important; min-width: 280px !important; box-shadow: var(--shadow-lg); }
+
+		/* Thread panel: fullscreen overlay */
+		.thread-panel { width: 100% !important; min-width: 100% !important;
+			position: fixed; inset: 0; z-index: 100; }
+
+		/* Notification panel: fluid width */
+		.notif-panel { left: 8px; right: 8px; width: auto; }
+
+		/* Touch targets (minimum 44px) */
+		.send-button { min-width: 44px; min-height: 44px; padding: 10px; }
+		.toolbar-item { min-height: 40px; }
+		.nav-item { min-height: 40px; }
+
+		/* Prevent iOS zoom on input focus */
+		.input-wrapper input { font-size: 16px !important; }
+		.thread-input input { font-size: 16px !important; }
+
+		/* Tighter header */
+		.chat-header { padding: var(--space-sm) var(--space-md); }
+		.chat-header h2 { font-size: var(--text-base); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+		/* Dynamic viewport height (accounts for iOS keyboard) */
+		.workspace { height: 100dvh; }
+
+		/* Safe area insets for notched iPhones */
+		.workspace { padding-top: env(safe-area-inset-top); }
+		.input-bar { padding-bottom: calc(var(--space-lg) + env(safe-area-inset-bottom)); }
+		.sidebar { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+
+		/* Message area: less padding on mobile */
+		.messages-area { padding: var(--space-md) var(--space-md); }
 	}
 
 	/* Invite join page */
