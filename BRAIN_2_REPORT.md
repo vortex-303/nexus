@@ -397,4 +397,160 @@ go func() {
 | **Streaming** | Not used | Can stream synthesizer output |
 | **Testing** | N/A | Feature flag, per-workspace, A/B ready |
 
-**Bottom line:** Brain v1 is reliable but slow and rigid. Brain v2 (Hermes pipeline) adds parallelism, planning, and flexibility while keeping the same tools and context system. Test it in one workspace with a feature flag — zero risk to production.
+---
+
+## 9. Self-Improving Memory System
+
+Brain v1 extracts facts passively. Brain v2 should **learn and improve** like a conversational AI agent with persistent memory. This is what makes the difference between a tool and a teammate.
+
+### 9.1 Memory Types (Expanded)
+
+v1 has: `fact`, `decision`, `commitment`, `policy`, `person`, `insight`
+
+v2 adds:
+
+| Type | Purpose | Example |
+|------|---------|---------|
+| **feedback** | User corrections — what NOT to do, what worked | "Don't summarize after every response" / "Single bundled PR was the right call" |
+| **preference** | Per-member work style, communication preferences | "Nico prefers terse answers", "Alex likes bullet points" |
+| **project** | Ongoing initiatives, deadlines, context not in code | "Merge freeze after March 5 for mobile release" |
+| **reference** | Pointers to external systems | "Pipeline bugs tracked in Linear project INGEST" |
+| **self** | Brain's own learned behaviors and patterns | "When asked about pricing, always check the PRICING.md first" |
+
+### 9.2 Feedback Loop
+
+When a user corrects Brain or confirms a non-obvious approach:
+
+```
+User: "no, don't create a separate channel for that — just post in #general"
+  ↓
+Reflector detects correction pattern ("no", "don't", negation + instruction)
+  ↓
+Saves feedback memory:
+  type: feedback
+  content: "Don't create new channels for one-off topics. Use #general."
+  confidence: 0.9
+  member_id: nico
+  ↓
+Next time similar request → feedback memory is in context → Brain behaves correctly
+```
+
+Also captures **positive confirmation** (harder to detect but equally important):
+```
+User: "perfect, exactly what I needed"
+  ↓
+Reflector: saves what approach was used and that it was validated
+  type: feedback
+  content: "Nico prefers detailed task breakdowns with due dates when planning sprints"
+```
+
+### 9.3 User Modeling
+
+Per-member profile that accumulates over time:
+
+```go
+type MemberProfile struct {
+    MemberID       string
+    Role           string   // "data scientist", "frontend lead" — learned, not from DB
+    Expertise      []string // ["Go", "infrastructure", "pricing"]
+    Style          string   // "terse", "detailed", "visual"
+    Preferences    []string // ["prefers bullet points", "hates emojis"]
+    ActiveProjects []string // ["Brain 2.0", "mobile optimization"]
+    LastUpdated    string
+}
+```
+
+Built incrementally from:
+- What they talk about (topic detection)
+- How they respond to Brain (feedback signals)
+- What they ask for (request patterns)
+- What corrections they make (preference signals)
+
+Injected into system prompt when that member talks to Brain:
+```
+You are talking to: **Nico** (Admin)
+- Role: Full-stack developer, product lead
+- Prefers: terse responses, no trailing summaries, structured plans before implementation
+- Currently working on: Brain 2.0, mobile optimization
+```
+
+### 9.4 Behavioral Self-Improvement
+
+The Reflector stage (runs async after every response) does:
+
+1. **Response quality check** — Did the user follow up with a correction? Did they say thanks? Did they ignore the response?
+2. **Pattern detection** — Is Brain making the same kind of error repeatedly?
+3. **Self-memory creation** — Brain writes `self` type memories about its own behavior:
+   - "When Nico asks about deployment, always mention both nexusteams.dev and nexus-workspace.fly.dev"
+   - "When creating tasks, default to 'todo' status not 'backlog' — users kept changing it"
+4. **SOUL evolution** — Periodically (weekly), Brain reviews its `self` memories and proposes updates to SOUL.md or INSTRUCTIONS.md (shown to admin for approval, not auto-applied)
+
+### 9.5 Pinned Memories
+
+Some memories should **always** be in context, not just when they match a semantic query:
+
+```sql
+ALTER TABLE brain_memories ADD COLUMN pinned BOOLEAN NOT NULL DEFAULT FALSE;
+```
+
+Pinned memories are injected into the system prompt regardless of the user's message. Use cases:
+- "Our pricing is $0 free, $29/mo pro" — always relevant when discussing the product
+- "Never share API keys in chat" — safety constraint
+- "Deploy process: make build → fly deploy" — operational knowledge
+
+Admin can pin/unpin from the Brain memory panel.
+
+### 9.6 Memory Lifecycle
+
+```
+Conversation message
+  ↓
+Rule-based extraction (instant, zero cost)
+  ↓ every 30 messages
+LLM extraction (batched, ~$0.01)
+  ↓ after every Brain response
+Reflector: feedback/preference/self detection (~$0.001)
+  ↓ every 6 hours
+Consolidation: dedup, supersede, create insights (~$0.01)
+  ↓ weekly
+Self-review: propose SOUL/INSTRUCTIONS updates (admin approval)
+```
+
+### 9.7 How This Changes the Pipeline
+
+```
+User message
+  ↓
+PLANNER (+ user profile + feedback memories + pinned memories)
+  → Better plans because it knows user's preferences
+  ↓
+EXECUTOR (same as before)
+  ↓
+SYNTHESIZER (+ user profile → tailored response style)
+  → Terse for Nico, detailed for Alex
+  ↓
+REFLECTOR (async)
+  → Check for corrections/confirmations
+  → Update user profile
+  → Save feedback/self memories
+  → No user-facing latency
+```
+
+---
+
+## 10. Updated Implementation Phases
+
+| Phase | What | Commit |
+|-------|------|--------|
+| 1 | Scaffold: `brain2/` directory, feature flag, route toggle | 1 |
+| 2 | Planner: fast model, tool catalog, plan JSON | 1 |
+| 3 | Parallel Executor: concurrent tools, 30s timeout | 1 |
+| 4 | Synthesizer: dynamic MaxTokens, full context | 1 |
+| 5 | Reflector: async feedback detection, user profile, self-memories | 1 |
+| 6 | Pinned memories + expanded memory types migration | 1 |
+| 7 | UI: Brain settings toggle (v1/v2), pinned memory management | 1 |
+| 8 | A/B evaluation: compare v1 vs v2 on identical prompts | — |
+
+---
+
+**Bottom line:** Brain v1 is a reliable single-shot reasoner. Brain v2 becomes a self-improving teammate — it learns each user's style, remembers its own mistakes, plans before acting, executes in parallel, and gets better every day. The Hermes pipeline gives it speed; the feedback loop gives it wisdom. Test it in one workspace with a feature flag — zero risk to production.
