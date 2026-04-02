@@ -538,19 +538,238 @@ REFLECTOR (async)
 
 ---
 
-## 10. Updated Implementation Phases
+## 10. Hermes Tool Calling — Research Findings
 
-| Phase | What | Commit |
-|-------|------|--------|
-| 1 | Scaffold: `brain2/` directory, feature flag, route toggle | 1 |
-| 2 | Planner: fast model, tool catalog, plan JSON | 1 |
-| 3 | Parallel Executor: concurrent tools, 30s timeout | 1 |
-| 4 | Synthesizer: dynamic MaxTokens, full context | 1 |
-| 5 | Reflector: async feedback detection, user profile, self-memories | 1 |
-| 6 | Pinned memories + expanded memory types migration | 1 |
-| 7 | UI: Brain settings toggle (v1/v2), pinned memory management | 1 |
-| 8 | A/B evaluation: compare v1 vs v2 on identical prompts | — |
+### 10.1 How Hermes Does It
+
+Hermes models (NousResearch) are **fine-tuned on function-calling datasets** — tool use is in the model weights, not prompt-hacked. The format:
+
+```
+System prompt embeds tools in <tools> XML tags (OpenAI JSON schema inside)
+  ↓
+Model reasons in <scratch_pad> (GOAP: Goal → Actions → Observation → Reflection)
+  ↓
+Model outputs <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+  ↓
+Runtime validates args against schema BEFORE execution
+  ↓
+Result fed back in <tool_response> with role: tool
+  ↓
+Model either calls another tool or produces final answer
+  ↓
+Loop continues up to max_depth (5-10 iterations)
+```
+
+### 10.2 What Hermes Does That We Don't
+
+| Hermes Pattern | Nexus v1 | Impact |
+|---|---|---|
+| **Scratch pad planning** (GOAP reasoning before tool calls) | No planning — model picks tools blind | Wrong tool selection, unnecessary calls |
+| **Argument validation** (type check, required args, enum check before execution) | No validation — raw JSON goes to executeTool() | Silent failures, bad data |
+| **Self-correction loop** (error + traceback fed back, model retries) | 2 rounds max, error is a generic string | Can't recover from mistakes |
+| **Configurable depth** (5-10 iterations) | Hardcoded 2 rounds | Complex tasks can't iterate |
+| **Structured error feedback** (full schema + received args + traceback) | "Error: missing title" | Model can't understand what went wrong |
+| **Tool scoping** ("one tool at a time" recommended) | All 20+ tools dumped every request | Model overwhelmed, picks wrong tools |
+
+### 10.3 Ollama Translation Layer
+
+Ollama handles format conversion automatically for Hermes models:
+
+```
+Nexus (OpenAI format) → Ollama API → Hermes XML tags → Model → XML response → Ollama → OpenAI format → Nexus
+```
+
+**No code changes needed for basic Hermes tool calling via Ollama.** The translation is built into Ollama's chat template system. Hermes GGUF files embed their own template.
+
+### 10.4 Tools 2.0 — What Brain v2 Needs
+
+#### A. Validation Layer
+
+Before executing any tool call, validate against the schema:
+
+```go
+type ToolValidationError struct {
+    Tool     string   `json:"tool"`
+    Error    string   `json:"error"`
+    Schema   any      `json:"schema"`   // expected
+    Received any      `json:"received"` // what model sent
+}
+
+func validateToolCall(call ToolCall, schema ToolSchema) *ToolValidationError {
+    // Check required arguments exist
+    // Type-check each argument
+    // Validate enum values
+    // Return structured error if invalid
+}
+```
+
+Invalid calls get fed back to the model with full context — not executed.
+
+#### B. Self-Correction Loop
+
+```go
+maxDepth := getBrainSetting(slug, "tool_max_depth", "5")
+
+for depth := 0; depth < maxDepth; depth++ {
+    response, toolCalls := LLM.CompleteWithTools(...)
+
+    if len(toolCalls) == 0 {
+        break // Model is done, has final answer
+    }
+
+    for _, call := range toolCalls {
+        if err := validateToolCall(call, schema); err != nil {
+            // Feed structured error back, let model retry
+            appendToolError(conversation, err)
+            continue
+        }
+        result := executeWithTimeout(call, 30*time.Second)
+        appendToolResult(conversation, result)
+    }
+}
+```
+
+#### C. Tool Scoping
+
+The Planner stage selects relevant tools instead of dumping all 20+:
+
+```go
+// Planner output includes which tools are needed
+type Plan struct {
+    Steps []Step `json:"steps"`
+    Tools []string `json:"tools"` // only these tools sent to executor
+}
+
+// Executor only passes selected tools to the LLM
+scopedTools := filterTools(allTools, plan.Tools)
+```
+
+For simple queries ("what time is it?"), the model sees 2-3 tools instead of 25+.
+
+#### D. Structured Error Feedback
+
+When a tool fails (validation or execution), send rich context:
+
+```json
+{
+    "tool": "create_task",
+    "status": "error",
+    "error": "missing required argument: title",
+    "expected_schema": {
+        "required": ["title"],
+        "properties": {"title": {"type": "string"}, "status": {"type": "string", "enum": ["todo","in_progress","done"]}}
+    },
+    "received_arguments": {"status": "todo"},
+    "hint": "Please provide the 'title' argument and retry."
+}
+```
+
+The model gets enough context to self-correct on the next iteration.
+
+#### E. Hermes-Compatible Local Mode
+
+When running with Hermes via Ollama, Brain v2 can use Hermes-optimal settings:
+
+| Setting | Cloud Models | Hermes Local |
+|---------|-------------|--------------|
+| Temperature | 0.7 | 0.8 (Hermes recommended) |
+| Repetition penalty | 1.0 | 1.1 (Hermes recommended) |
+| Tool scoping | Planner selects | "One tool at a time" (Hermes best practice) |
+| Max depth | 5 | 5-10 (local = free, can iterate more) |
+| Planning | LLM planner | Hermes scratch_pad (native, no extra call needed) |
+
+When `ollama_model` is a Hermes variant, Brain v2 adjusts inference parameters automatically.
 
 ---
 
-**Bottom line:** Brain v1 is a reliable single-shot reasoner. Brain v2 becomes a self-improving teammate — it learns each user's style, remembers its own mistakes, plans before acting, executes in parallel, and gets better every day. The Hermes pipeline gives it speed; the feedback loop gives it wisdom. Test it in one workspace with a feature flag — zero risk to production.
+## 11. Updated Implementation Phases
+
+| Phase | What | Details | Commit |
+|-------|------|---------|--------|
+| 1 | **Scaffold** | `brain2/` directory, feature flag (`brain_version` setting), route toggle (one `if/else` in ws.go), metrics struct | 1 |
+| 2 | **Tool Validation** | `brain2/validate.go` — schema validation, structured errors, type checking | 1 |
+| 3 | **Self-Correction Loop** | `brain2/executor.go` — configurable max_depth (default 5), error feedback, tool timeout (30s) | 1 |
+| 4 | **Planner** | `brain2/planner.go` — fast model, tool scoping, plan JSON output, dependency graph | 1 |
+| 5 | **Parallel Executor** | `brain2/executor.go` update — concurrent tool execution with dependency resolution | 1 |
+| 6 | **Synthesizer** | `brain2/synthesizer.go` — dynamic MaxTokens per model, full context assembly (reuses v1 BuildSystemPrompt) | 1 |
+| 7 | **Reflector** | `brain2/reflector.go` — async feedback detection, user profiles, self-memories, behavioral learning | 1 |
+| 8 | **Memory 2.0** | Pinned memories, expanded types (feedback/preference/project/reference/self), member profiles | 1 |
+| 9 | **Hermes Optimization** | Auto-detect Hermes models, adjust inference params, scratch_pad support, local-optimized settings | 1 |
+| 10 | **UI** | Brain settings toggle (v1/v2 Beta), pinned memory management, tool depth setting | 1 |
+| 11 | **A/B Evaluation** | Test protocol: v1 vs v2-cloud vs v2-hermes-local, same prompts, compare metrics | — |
+
+### Phase Dependencies
+
+```
+Phase 1 (scaffold)
+  ├── Phase 2 (validation) ── no dependencies, can start immediately
+  ├── Phase 3 (self-correction) ── depends on 2 (uses validation)
+  ├── Phase 4 (planner) ── independent
+  └── Phase 8 (memory 2.0) ── independent
+
+Phase 5 (parallel executor) ── depends on 3 + 4
+Phase 6 (synthesizer) ── depends on 5
+Phase 7 (reflector) ── depends on 6 + 8
+Phase 9 (hermes) ── depends on 6
+Phase 10 (UI) ── depends on all above
+Phase 11 (evaluation) ── depends on 10
+```
+
+Phases 2, 4, and 8 can run in parallel after Phase 1.
+
+---
+
+## 12. Ollama Integration Status (Verified 2026-04-02)
+
+### Current State: FUNCTIONAL
+
+| Component | File | Status |
+|-----------|------|--------|
+| Direct client | `internal/brain/openrouter.go:247` | Complete — `NewOllamaClient()` |
+| Bridge client | `internal/brain/bridge_client.go` | Complete — WebSocket proxy with tool support |
+| Model routing | `internal/server/brain.go:588` | Complete — Ollama prioritized when enabled |
+| Settings | brain_settings table | Complete — `ollama_enabled`, `ollama_model`, `ollama_url` |
+| Frontend UI | +page.svelte | Complete — radio button, model input, URL input |
+| Models API | `GET /workspaces/{slug}/ollama/models` | Complete — lists local models |
+| Tool calling | Via Ollama's OpenAI-compat API | Works — Ollama translates to/from Hermes XML format |
+
+### How to Test
+
+```bash
+ollama pull hermes3          # or llama3.2, mistral
+ollama serve                 # starts on localhost:11434
+
+# In Nexus UI → Brain → Settings:
+# Engine: Ollama (Local AI)
+# Model: hermes3
+# URL: http://localhost:11434
+# → Apply → @Brain in any channel
+```
+
+### Hermes-Specific Test
+
+```bash
+ollama pull nous-hermes2-pro    # Best for tool calling (7B)
+ollama pull hermes3             # Latest, has scratch_pad planning
+```
+
+Both should work with Nexus tool calling through Ollama's translation layer. Hermes 3 will produce higher quality tool calls due to GOAP reasoning.
+
+---
+
+## 13. Risk Assessment (Updated)
+
+| Risk | Mitigation |
+|------|-----------|
+| v2 breaks v1 | Separate code path, one `if/else` in ws.go, feature flag, instant rollback |
+| Planner makes bad plans | Falls back to v1 behavior (direct tool calling, no plan) |
+| Validation rejects valid calls | Validation is advisory in Phase 2 (log + execute), strict in Phase 3 |
+| Hermes model not available | Falls back to cloud model via OpenRouter |
+| Self-correction loops forever | Configurable max_depth (default 5), hard cap at 10 |
+| Tool timeout kills long operations | 30s is generous; most tools complete in 1-5s |
+| Memory 2.0 conflicts with v1 memories | Same table, new types additive, v1 ignores unknown types |
+| Parallel tool execution race condition | Tools are stateless functions, no shared mutable state |
+
+---
+
+**Bottom line:** Brain v2 is not just a faster pipeline — it's a fundamentally better tool-calling system. Hermes-style validation, self-correction, and tool scoping address the root causes of v1's tool-calling failures. The self-improving memory system makes it learn from every interaction. And with Hermes models via Ollama, the entire system runs locally at zero cost. Test it in one workspace with a feature flag — zero risk to production.
