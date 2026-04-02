@@ -799,6 +799,7 @@ func (s *Server) handleUpdateBrainSettings(w http.ResponseWriter, r *http.Reques
 		"standard_chat_enabled": true, "llm_enabled": true,
 		"webllm_enabled": true, "webllm_model": true, "webllm_system_prompt": true,
 		"ollama_enabled": true, "ollama_model": true, "ollama_url": true,
+		"brain_version": true, "tool_max_depth": true,
 		"north_star": true, "north_star_why": true, "north_star_success": true, "strategic_themes": true,
 		"reflection_enabled": true, "reflection_time": true,
 		// Integrations
