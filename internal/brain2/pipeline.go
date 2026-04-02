@@ -3,6 +3,7 @@
 package brain2
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/nexus-chat/nexus/internal/brain"
@@ -122,7 +123,9 @@ func Run(cfg PipelineConfig) PipelineResult {
 
 	// Last resort: if still empty, do a plain completion
 	if response == "" {
+		fmt.Printf("[brain2] pipeline: no response from executor, trying plain Complete\n")
 		plainResp, _, err := cfg.Client.Complete(cfg.SystemPrompt, cfg.Messages)
+		fmt.Printf("[brain2] pipeline fallback: err=%v len=%d\n", err, len(plainResp))
 		if err == nil && plainResp != "" {
 			response = plainResp
 		}
