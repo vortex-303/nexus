@@ -126,83 +126,96 @@ func executeStep(cfg PipelineConfig, step Step) StepResult {
 	}
 }
 
-// executeSelfCorrectingLoop is the fallback when the planner doesn't produce
-// specific steps. It uses the LLM to decide tools iteratively (Hermes-style).
+// executeSelfCorrectingLoop mirrors v1's proven tool-calling pattern but adds
+// validation, timeouts, and multi-round self-correction.
 func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []string) {
 	scopedTools := ScopeTools(cfg.AllTools, plan.ScopedTools)
-	messages := make([]brain.Message, len(cfg.Messages))
-	copy(messages, cfg.Messages)
 
 	var allResults []StepResult
 	var toolsUsed []string
 
-	for depth := 0; depth < cfg.MaxDepth; depth++ {
-		responseContent, toolCalls, _, err := cfg.Client.CompleteWithTools(cfg.SystemPrompt, messages, scopedTools)
+	// Round 1: CompleteWithTools (same as v1)
+	responseContent, toolCalls, _, err := cfg.Client.CompleteWithTools(cfg.SystemPrompt, cfg.Messages, scopedTools)
+	if err != nil {
+		fmt.Printf("[brain2] executor CompleteWithTools error: %v\n", err)
+		// Fallback: plain completion
+		plainResp, _, plainErr := cfg.Client.Complete(cfg.SystemPrompt, cfg.Messages)
+		fmt.Printf("[brain2] fallback Complete: err=%v len=%d\n", plainErr, len(plainResp))
+		if plainErr == nil && plainResp != "" {
+			allResults = append(allResults, StepResult{
+				StepID: "fallback_0", Tool: "_response", Result: plainResp,
+			})
+		}
+		return allResults, toolsUsed
+	}
+
+	// No tool calls — model answered directly (this is fine, same as v1)
+	if len(toolCalls) == 0 {
+		if responseContent != "" {
+			allResults = append(allResults, StepResult{
+				StepID: "direct_0", Tool: "_response", Result: responseContent,
+			})
+		}
+		return allResults, toolsUsed
+	}
+
+	// Execute tool calls with validation and timeout
+	assistantMsg := brain.Message{Role: "assistant", Content: responseContent, ToolCalls: toolCalls}
+	followUp := make([]brain.Message, len(cfg.Messages))
+	copy(followUp, cfg.Messages)
+	followUp = append(followUp, assistantMsg)
+
+	for _, call := range toolCalls {
+		// Validate before executing
+		if vErr := ValidateToolCall(call, scopedTools); vErr != nil {
+			fmt.Printf("[brain2] validation error for %s: %s\n", call.Function.Name, vErr.Error)
+			followUp = append(followUp, brain.Message{
+				Role: "tool", Content: vErr.String(), ToolCallID: call.ID,
+			})
+			continue
+		}
+
+		result := executeWithTimeout(cfg, call)
+		toolsUsed = append(toolsUsed, call.Function.Name)
+		allResults = append(allResults, StepResult{
+			StepID: call.ID, Tool: call.Function.Name, Result: result,
+		})
+		followUp = append(followUp, brain.Message{
+			Role: "tool", Content: result, ToolCallID: call.ID,
+		})
+	}
+
+	// Round 2+: self-correction loop (v2 improvement over v1's fixed 2 rounds)
+	for depth := 1; depth < cfg.MaxDepth; depth++ {
+		roundResp, roundCalls, _, err := cfg.Client.CompleteWithTools(cfg.SystemPrompt, followUp, scopedTools)
 		if err != nil {
-			fmt.Printf("[brain2] executor error at depth %d: %v\n", depth, err)
-			// On error, try a plain completion as last resort
-			if depth == 0 {
-				plainResp, _, plainErr := cfg.Client.Complete(cfg.SystemPrompt, messages)
-				fmt.Printf("[brain2] fallback Complete: err=%v len=%d\n", plainErr, len(plainResp))
-				if plainErr == nil && plainResp != "" {
-					allResults = append(allResults, StepResult{
-						StepID: "fallback_0", Tool: "_response", Result: plainResp,
-					})
-				}
-			}
 			break
 		}
-
-		if len(toolCalls) == 0 {
-			// Model is done — response is the final answer (passed to synthesizer)
-			if responseContent != "" {
+		if len(roundCalls) == 0 {
+			// Model is done — save final synthesis response
+			if roundResp != "" {
 				allResults = append(allResults, StepResult{
-					StepID: fmt.Sprintf("final_%d", depth),
-					Tool:   "_response",
-					Result: responseContent,
+					StepID: fmt.Sprintf("synth_%d", depth), Tool: "_response", Result: roundResp,
 				})
 			}
 			break
 		}
-
-		// Execute each tool call
-		for _, call := range toolCalls {
-			// Validate first
+		// More tool calls — execute them
+		followUp = append(followUp, brain.Message{Role: "assistant", Content: roundResp, ToolCalls: roundCalls})
+		for _, call := range roundCalls {
 			if vErr := ValidateToolCall(call, scopedTools); vErr != nil {
-				// Feed structured error back to model for self-correction
-				messages = append(messages, brain.Message{
-					Role:       "assistant",
-					Content:    responseContent,
-					ToolCalls:  []brain.ToolCall{call},
-				})
-				messages = append(messages, brain.Message{
-					Role:       "tool",
-					Content:    vErr.String(),
-					ToolCallID: call.ID,
+				followUp = append(followUp, brain.Message{
+					Role: "tool", Content: vErr.String(), ToolCallID: call.ID,
 				})
 				continue
 			}
-
-			// Execute with timeout
 			result := executeWithTimeout(cfg, call)
 			toolsUsed = append(toolsUsed, call.Function.Name)
-
 			allResults = append(allResults, StepResult{
-				StepID: call.ID,
-				Tool:   call.Function.Name,
-				Result: result,
+				StepID: call.ID, Tool: call.Function.Name, Result: result,
 			})
-
-			// Append to conversation for next iteration
-			messages = append(messages, brain.Message{
-				Role:       "assistant",
-				Content:    responseContent,
-				ToolCalls:  []brain.ToolCall{call},
-			})
-			messages = append(messages, brain.Message{
-				Role:       "tool",
-				Content:    result,
-				ToolCallID: call.ID,
+			followUp = append(followUp, brain.Message{
+				Role: "tool", Content: result, ToolCallID: call.ID,
 			})
 		}
 	}
