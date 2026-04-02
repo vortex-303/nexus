@@ -60,6 +60,11 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 		apiKey := s.getBrainSetting(slug, "api_key")
 		systemPrompt = s.buildContextForMode(slug, wdb, channelID, parentID, content, senderName, apiKey, brainDir, systemPrompt)
 
+		// v2 additions: pinned memories, feedback, self-memories (always in context)
+		systemPrompt += brain2.BuildPinnedMemoryContext(wdb.DB)
+		systemPrompt += brain2.BuildFeedbackContext(wdb.DB)
+		systemPrompt += brain2.BuildSelfMemoryContext(wdb.DB)
+
 		// Get messages (reuses v1)
 		messages := s.getThreadOrChannelMessages(wdb, channelID, parentID, 40)
 
@@ -107,6 +112,18 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 
 		// Track for memory extraction (reuses v1)
 		s.trackMessageAndMaybeExtract(slug, channelID, msgID, result.Response, brain.BrainName)
+
+		// Async reflector — detects feedback, updates profiles, saves self-memories
+		go brain2.RunReflector(brain2.ReflectorConfig{
+			DB:            wdb.DB,
+			Slug:          slug,
+			ChannelID:     channelID,
+			SenderName:    senderName,
+			SenderID:      "", // TODO: pass sender member ID when available
+			UserMessage:   content,
+			BrainResponse: result.Response,
+			ToolsUsed:     result.ToolsUsed,
+		})
 
 		metrics.MessagesTotal.WithLabelValues(slug).Inc()
 

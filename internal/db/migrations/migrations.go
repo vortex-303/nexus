@@ -1066,8 +1066,18 @@ var workspaceMigrations54 = migration{
 	`,
 }
 
+var workspaceMigrations55 = migration{
+	version: 55,
+	name:    "brain memory v2: pinned memories and member association",
+	sql: `
+		ALTER TABLE brain_memories ADD COLUMN pinned BOOLEAN NOT NULL DEFAULT FALSE;
+		ALTER TABLE brain_memories ADD COLUMN member_id TEXT NOT NULL DEFAULT '';
+		CREATE INDEX IF NOT EXISTS idx_brain_memories_pinned ON brain_memories(pinned);
+	`,
+}
+
 func init() {
-	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54)
+	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55)
 }
 
 func RunGlobal(db *sql.DB) error {

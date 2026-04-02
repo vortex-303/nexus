@@ -435,6 +435,8 @@
 	let brainOllamaEnabled = $state(_cachedBrain?.ollama_enabled ?? false);
 	let brainOllamaModel = $state(_cachedBrain?.ollama_model || '');
 	let brainOllamaURL = $state(_cachedBrain?.ollama_url || 'http://localhost:11434');
+	let brainVersion = $state(_cachedBrain?.brain_version || 'v1');
+	let brainToolMaxDepth = $state(_cachedBrain?.tool_max_depth || '5');
 	let bridgeConnected = $state(false);
 	let bridgeModels = $state<any[]>([]);
 	const DEFAULT_WEBLLM_PROMPT = `You are Brain, the AI assistant for this Nexus workspace. You run locally in the user's browser.
@@ -2210,6 +2212,8 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			brainOllamaEnabled = brainSettings.ollama_enabled === 'true';
 			brainOllamaModel = brainSettings.ollama_model || '';
 			brainOllamaURL = brainSettings.ollama_url || 'http://localhost:11434';
+			brainVersion = brainSettings.brain_version || 'v1';
+			brainToolMaxDepth = brainSettings.tool_max_depth || '5';
 			bridgeConnected = brainSettings.bridge_connected === 'true';
 			try { bridgeModels = JSON.parse(brainSettings.bridge_models || '[]'); } catch { bridgeModels = []; }
 			brainSystemMemoryEnabled = brainSettings.system_memory_enabled !== 'false';
@@ -2322,6 +2326,8 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 				ollama_enabled: String(brainOllamaEnabled),
 				ollama_model: brainOllamaModel,
 				ollama_url: brainOllamaURL,
+				brain_version: brainVersion,
+				tool_max_depth: brainToolMaxDepth,
 				system_memory_enabled: String(brainSystemMemoryEnabled),
 				memory_engine: brainMemoryEngine,
 				memory_model: brainMemoryModel,
@@ -6259,6 +6265,35 @@ autonomy: reactive
 						Active: <strong>Standard Chat</strong> — pattern-matching only, no AI
 					{/if}
 				</div>
+			</div>
+			<div class="brain-section">
+				<h3 class="brain-section-title">Brain Pipeline</h3>
+				<label class="brain-toggle-row">
+					<input type="radio" name="brain-version" checked={brainVersion === 'v1'} onchange={() => brainVersion = 'v1'} />
+					<div>
+						<strong>v1 Classic</strong>
+						<span class="brain-hint" style="display: block; margin-top: 2px;">2-round sequential tool calling</span>
+					</div>
+				</label>
+				<label class="brain-toggle-row">
+					<input type="radio" name="brain-version" checked={brainVersion === 'v2'} onchange={() => brainVersion = 'v2'} />
+					<div>
+						<strong>v2 Pipeline <span style="color: var(--accent); font-size: 0.7rem;">BETA</span></strong>
+						<span class="brain-hint" style="display: block; margin-top: 2px;">Plan, parallel tools, self-correction, feedback learning</span>
+					</div>
+				</label>
+				{#if brainVersion === 'v2'}
+					<div style="margin-top: 8px; display: flex; align-items: center; gap: 8px; font-size: 0.8rem;">
+						<label style="color: var(--text-secondary); white-space: nowrap;">Max tool depth:</label>
+						<select class="brain-input" style="padding: 4px 8px; font-size: 0.8rem;" bind:value={brainToolMaxDepth}>
+							<option value="3">3</option>
+							<option value="5">5 (default)</option>
+							<option value="7">7</option>
+							<option value="10">10</option>
+						</select>
+					</div>
+					<span class="brain-hint" style="margin-top: 4px;">Self-correction iterations. Higher = more retries. Local models can use 10 (free).</span>
+				{/if}
 			</div>
 			{:else}
 			<div class="brain-section">
