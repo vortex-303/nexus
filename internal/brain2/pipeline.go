@@ -120,9 +120,18 @@ func Run(cfg PipelineConfig) PipelineResult {
 		m.LLMCalls++
 	}
 
+	// Last resort: if still empty, do a plain completion
+	if response == "" {
+		plainResp, _, err := cfg.Client.Complete(cfg.SystemPrompt, cfg.Messages)
+		if err == nil && plainResp != "" {
+			response = plainResp
+		}
+		m.LLMCalls++
+	}
+
 	m.SynthLatency = time.Since(synthStart)
 
-	m.Success = true
+	m.Success = response != ""
 	m.TotalLatency = time.Since(start)
 	return PipelineResult{Response: response, Metrics: m, ToolsUsed: toolsUsed}
 }

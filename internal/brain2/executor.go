@@ -139,6 +139,15 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []s
 	for depth := 0; depth < cfg.MaxDepth; depth++ {
 		responseContent, toolCalls, _, err := cfg.Client.CompleteWithTools(cfg.SystemPrompt, messages, scopedTools)
 		if err != nil {
+			// On error, try a plain completion as last resort
+			if depth == 0 {
+				plainResp, _, plainErr := cfg.Client.Complete(cfg.SystemPrompt, messages)
+				if plainErr == nil && plainResp != "" {
+					allResults = append(allResults, StepResult{
+						StepID: "fallback_0", Tool: "_response", Result: plainResp,
+					})
+				}
+			}
 			break
 		}
 
