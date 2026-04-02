@@ -15,6 +15,7 @@ import (
 	"golang.org/x/net/html"
 
 	"github.com/nexus-chat/nexus/internal/brain"
+	"github.com/nexus-chat/nexus/internal/brain2"
 	"github.com/nexus-chat/nexus/internal/db"
 	"github.com/nexus-chat/nexus/internal/hub"
 	"github.com/nexus-chat/nexus/internal/id"
@@ -1390,6 +1391,14 @@ func (s *Server) toolWebSearch(slug, argsJSON string) string {
 		}
 	}
 
+	// Try direct Google scrape (no API key needed)
+	log.Info().Msg("web_search: trying Google scrape")
+	if googleResult, err := brain2.SearchGoogle(args.Query, args.NumResults); err == nil && googleResult != "" {
+		return googleResult
+	} else if err != nil {
+		log.Warn().Err(err).Msg("web_search: Google scrape failed")
+	}
+
 	// Fallback: DuckDuckGo HTML scraping
 	log.Info().Msg("web_search: trying DuckDuckGo HTML")
 	result := searchDDG(args.Query, args.NumResults)
@@ -1761,9 +1770,16 @@ func toolFetchURL(argsJSON string) string {
 
 	title, content := extractHTMLText(string(bodyBytes))
 
-	// Truncate to 8000 chars
-	if len(content) > 8000 {
-		content = content[:8000] + "\n\n[content truncated]"
+	// If standard extraction got very little, try brain2's readability extraction
+	if len(content) < 200 {
+		if better, err := brain2.FetchAndExtract(args.URL, 10000); err == nil && len(better) > len(content) {
+			return better
+		}
+	}
+
+	// Truncate to 10000 chars
+	if len(content) > 10000 {
+		content = content[:10000] + "\n\n[content truncated]"
 	}
 
 	if title != "" {
