@@ -84,7 +84,7 @@ type PipelineResult struct {
 	ToolsUsed []string
 }
 
-// Run executes the full Brain v2 pipeline: Plan → Execute → Synthesize.
+// Run executes the Brain v2 pipeline with self-correcting tool loop.
 // This is the main entry point called from server/brain2.go.
 func Run(cfg PipelineConfig) PipelineResult {
 	start := time.Now()
@@ -93,63 +93,33 @@ func Run(cfg PipelineConfig) PipelineResult {
 	if cfg.MaxDepth == 0 {
 		cfg.MaxDepth = 5
 	}
-	if cfg.PlannerClient == nil {
-		cfg.PlannerClient = cfg.Client
-	}
 
-	// Phase 1: Plan
-	planStart := time.Now()
-	plan := RunPlanner(cfg)
-	m.PlanLatency = time.Since(planStart)
-	m.LLMCalls++
-
-	// Phase 2: Execute
-	// Even for "direct_answer" plans, use the self-correction loop so
-	// the model CAN call tools if it decides to (planner is advisory, not gating).
+	// Self-correcting tool loop: LLM decides tools, validates, retries on error.
+	// This is the core v2 improvement over v1's fixed 2-round loop.
 	execStart := time.Now()
+	plan := Plan{ScopedTools: nil} // no scoping — model sees all tools
 	results, toolsUsed := RunExecutor(cfg, plan)
 	m.ExecLatency = time.Since(execStart)
 	m.ToolCalls = len(results)
 
-	// Phase 3: Synthesize (only if tools were actually called)
+	// Extract response
 	var response string
 	synthStart := time.Now()
-	if len(toolsUsed) > 0 {
-		response = RunSynthesizer(cfg, plan, results)
-		m.LLMCalls++
-	} else {
-		// No tools called — check if executor produced a direct response
-		for _, r := range results {
-			if r.Tool == "_response" && r.Result != "" {
-				response = r.Result
-				break
-			}
-		}
-		if response == "" {
-			// Fallback: simple completion with tools available
-			resp, toolCalls, usage, err := cfg.Client.CompleteWithTools(cfg.SystemPrompt, cfg.Messages, cfg.AllTools)
-			if err == nil {
-				response = resp
-				if usage != nil {
-					m.InputTokens += usage.PromptTokens
-					m.OutputTokens += usage.CompletionTokens
-				}
-				// If model decided to call tools after all, execute them
-				if len(toolCalls) > 0 {
-					for _, call := range toolCalls {
-						result := executeWithTimeout(cfg, call)
-						toolsUsed = append(toolsUsed, call.Function.Name)
-						results = append(results, StepResult{
-							StepID: call.ID, Tool: call.Function.Name, Result: result,
-						})
-					}
-					response = RunSynthesizer(cfg, plan, results)
-					m.LLMCalls++
-				}
-			}
-			m.LLMCalls++
+
+	// Check if executor produced a direct text response (no tools called)
+	for _, r := range results {
+		if r.Tool == "_response" && r.Result != "" {
+			response = r.Result
+			break
 		}
 	}
+
+	// If tools were called, synthesize a final response from the results
+	if response == "" && len(toolsUsed) > 0 {
+		response = RunSynthesizer(cfg, plan, results)
+		m.LLMCalls++
+	}
+
 	m.SynthLatency = time.Since(synthStart)
 
 	m.Success = true
