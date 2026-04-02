@@ -103,36 +103,54 @@ func Run(cfg PipelineConfig) PipelineResult {
 	m.PlanLatency = time.Since(planStart)
 	m.LLMCalls++
 
-	// If no tools needed, go straight to synthesis
-	if plan.DirectAnswer {
-		synthStart := time.Now()
-		response, usage, err := cfg.Client.Complete(cfg.SystemPrompt, cfg.Messages)
-		m.SynthLatency = time.Since(synthStart)
-		m.LLMCalls++
-		if usage != nil {
-			m.InputTokens += usage.PromptTokens
-			m.OutputTokens += usage.CompletionTokens
-		}
-		if err != nil {
-			m.TotalLatency = time.Since(start)
-			return PipelineResult{Response: "Sorry, I encountered an error.", Metrics: m}
-		}
-		m.Success = true
-		m.TotalLatency = time.Since(start)
-		return PipelineResult{Response: response, Metrics: m}
-	}
-
-	// Phase 2: Execute (with self-correction loop)
+	// Phase 2: Execute
+	// Even for "direct_answer" plans, use the self-correction loop so
+	// the model CAN call tools if it decides to (planner is advisory, not gating).
 	execStart := time.Now()
 	results, toolsUsed := RunExecutor(cfg, plan)
 	m.ExecLatency = time.Since(execStart)
 	m.ToolCalls = len(results)
 
-	// Phase 3: Synthesize
+	// Phase 3: Synthesize (only if tools were actually called)
+	var response string
 	synthStart := time.Now()
-	response := RunSynthesizer(cfg, plan, results)
+	if len(toolsUsed) > 0 {
+		response = RunSynthesizer(cfg, plan, results)
+		m.LLMCalls++
+	} else {
+		// No tools called — check if executor produced a direct response
+		for _, r := range results {
+			if r.Tool == "_response" && r.Result != "" {
+				response = r.Result
+				break
+			}
+		}
+		if response == "" {
+			// Fallback: simple completion with tools available
+			resp, toolCalls, usage, err := cfg.Client.CompleteWithTools(cfg.SystemPrompt, cfg.Messages, cfg.AllTools)
+			if err == nil {
+				response = resp
+				if usage != nil {
+					m.InputTokens += usage.PromptTokens
+					m.OutputTokens += usage.CompletionTokens
+				}
+				// If model decided to call tools after all, execute them
+				if len(toolCalls) > 0 {
+					for _, call := range toolCalls {
+						result := executeWithTimeout(cfg, call)
+						toolsUsed = append(toolsUsed, call.Function.Name)
+						results = append(results, StepResult{
+							StepID: call.ID, Tool: call.Function.Name, Result: result,
+						})
+					}
+					response = RunSynthesizer(cfg, plan, results)
+					m.LLMCalls++
+				}
+			}
+			m.LLMCalls++
+		}
+	}
 	m.SynthLatency = time.Since(synthStart)
-	m.LLMCalls++
 
 	m.Success = true
 	m.TotalLatency = time.Since(start)
