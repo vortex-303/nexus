@@ -68,6 +68,16 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 		// Get messages (reuses v1)
 		messages := s.getThreadOrChannelMessages(wdb, channelID, parentID, 40)
 
+		// Attach recent channel images to the last user message (vision support)
+		if images := s.getRecentChannelImages(slug, wdb, channelID, messageTime.Add(-2*time.Minute), 3); len(images) > 0 {
+			for i := len(messages) - 1; i >= 0; i-- {
+				if messages[i].Role == "user" {
+					messages[i].Images = images
+					break
+				}
+			}
+		}
+
 		// Resolve model and create client (reuses v1)
 		model := s.getBrainSetting(slug, "model", "openai/gpt-4o-mini")
 		resolvedModel, fallbacks := s.resolveFreeAuto(model, slug)

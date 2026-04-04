@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -575,6 +576,45 @@ func (s *Server) getXAIKey(slug string) string {
 	var key string
 	_ = wdb.DB.QueryRow("SELECT value FROM brain_settings WHERE key = 'xai_api_key'").Scan(&key)
 	return key
+}
+
+// getRecentChannelImages retrieves images uploaded to a channel within a time window,
+// reads them from the blob store, and returns them as base64-encoded MessageImages.
+func (s *Server) getRecentChannelImages(slug string, wdb *db.WorkspaceDB, channelID string, since time.Time, limit int) []brain.MessageImage {
+	if limit <= 0 {
+		limit = 3
+	}
+	rows, err := wdb.DB.Query(
+		`SELECT hash, mime FROM files WHERE channel_id = ? AND created_at > ? AND mime LIKE 'image/%' ORDER BY created_at DESC LIMIT ?`,
+		channelID, since.Format(time.RFC3339), limit,
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var images []brain.MessageImage
+	for rows.Next() {
+		var hash, mime string
+		if rows.Scan(&hash, &mime) != nil || len(hash) < 3 {
+			continue
+		}
+		// Read blob from disk
+		blobPath := filepath.Join(s.ws.BlobsDir(slug), hash[:2], hash)
+		data, err := os.ReadFile(blobPath)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		// Skip files > 10MB
+		if len(data) > 10*1024*1024 {
+			continue
+		}
+		encoded := base64.StdEncoding.EncodeToString(data)
+		img := brain.MessageImage{Type: "image_url"}
+		img.ImageURL.URL = "data:" + mime + ";base64," + encoded
+		images = append(images, img)
+	}
+	return images
 }
 
 // brainCompleter is the interface that both brain.Client and brain.BridgeClient satisfy.

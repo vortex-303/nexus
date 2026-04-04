@@ -138,12 +138,88 @@ type MessageImage struct {
 
 // Message represents a chat message for the LLM.
 type Message struct {
-	Role       string         `json:"role"`
-	Content    string         `json:"content"`
-	Name       string         `json:"name,omitempty"`
-	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
-	Images     []MessageImage `json:"images,omitempty"`
+	Role       string         `json:"-"`
+	Content    string         `json:"-"`
+	Name       string         `json:"-"`
+	ToolCalls  []ToolCall     `json:"-"`
+	ToolCallID string         `json:"-"`
+	Images     []MessageImage `json:"-"`
+}
+
+// MarshalJSON custom marshals Message. When Images is populated, content is
+// serialized as an OpenAI multimodal content array. Otherwise, plain string.
+func (m Message) MarshalJSON() ([]byte, error) {
+	type plain struct {
+		Role       string     `json:"role"`
+		Content    any        `json:"content"`
+		Name       string     `json:"name,omitempty"`
+		ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+		ToolCallID string     `json:"tool_call_id,omitempty"`
+	}
+
+	p := plain{
+		Role:       m.Role,
+		Name:       m.Name,
+		ToolCalls:  m.ToolCalls,
+		ToolCallID: m.ToolCallID,
+	}
+
+	if len(m.Images) > 0 {
+		// Multimodal: content is array of parts
+		parts := make([]any, 0, 1+len(m.Images))
+		if m.Content != "" {
+			parts = append(parts, map[string]string{"type": "text", "text": m.Content})
+		}
+		for _, img := range m.Images {
+			parts = append(parts, img)
+		}
+		p.Content = parts
+	} else {
+		p.Content = m.Content
+	}
+
+	return json.Marshal(p)
+}
+
+// UnmarshalJSON handles both plain string and multimodal array content formats.
+func (m *Message) UnmarshalJSON(data []byte) error {
+	type plain struct {
+		Role       string          `json:"role"`
+		Content    json.RawMessage `json:"content"`
+		Name       string          `json:"name,omitempty"`
+		ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
+		ToolCallID string          `json:"tool_call_id,omitempty"`
+	}
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	m.Role = p.Role
+	m.Name = p.Name
+	m.ToolCalls = p.ToolCalls
+	m.ToolCallID = p.ToolCallID
+
+	// Try string first
+	var s string
+	if err := json.Unmarshal(p.Content, &s); err == nil {
+		m.Content = s
+		return nil
+	}
+
+	// Try array of content parts
+	var parts []map[string]any
+	if err := json.Unmarshal(p.Content, &parts); err == nil {
+		for _, part := range parts {
+			if t, ok := part["type"].(string); ok {
+				if t == "text" {
+					if text, ok := part["text"].(string); ok {
+						m.Content = text
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // CompletionRequest is the request to OpenRouter.
