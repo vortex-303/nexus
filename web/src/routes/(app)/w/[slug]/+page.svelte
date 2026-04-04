@@ -800,6 +800,12 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			if ('Notification' in window && Notification.permission === 'default') {
 				Notification.requestPermission();
 			}
+			// Ensure Brain DM always exists
+			if (!chs.some((ch: Channel) => ch.type === 'dm' && ch.name.includes('brain'))) {
+				triggerBrainWelcome(slug).then(() => {
+					listChannels(slug).then(updated => channels.set(updated)).catch(() => {});
+				}).catch(() => {});
+			}
 
 			if (chs.length > 0) {
 				const urlChannelId = new URLSearchParams(window.location.search).get('c');
@@ -1260,16 +1266,19 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 				return next;
 			});
 		} else if (type === 'file.new') {
-			// Show file as a message-like entry
+			// Show file as a message-like entry with image preview
 			let current: Channel | null = null;
 			activeChannel.subscribe(v => current = v)();
 			if (payload.channel_id === current?.id) {
+				const isImage = payload.mime && payload.mime.startsWith('image/');
 				messages.update(msgs => [...msgs, {
 					id: payload.id,
 					channel_id: payload.channel_id,
 					sender_id: payload.uploader_id,
 					sender_name: getMemberName(payload.uploader_id),
-					content: `📎 [${payload.name}](${payload.url})`,
+					content: isImage
+						? `![${payload.name}](${payload.url})`
+						: `📎 [${payload.name}](${payload.url})`,
 					created_at: payload.created_at,
 					file: payload
 				}]);
