@@ -503,6 +503,18 @@ func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Prevent archiving Brain DM — it should always be visible
+	if chType == "dm" && strings.Contains(chName, "brain") {
+		// Just clear messages instead of archiving
+		_, _ = wdb.DB.Exec("UPDATE messages SET deleted = TRUE WHERE channel_id = ?", channelID)
+		h := s.hubs.Get(slug)
+		if h != nil {
+			h.Broadcast(channelID, hub.MakeEnvelope(hub.TypeChannelCleared, hub.ChannelClearedPayload{ChannelID: channelID}), "")
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
+		return
+	}
+
 	// Archive the channel
 	_, err = wdb.DB.Exec("UPDATE channels SET archived = TRUE WHERE id = ?", channelID)
 	if err != nil {
