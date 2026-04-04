@@ -723,7 +723,7 @@ func (s *Server) handleGetBrainSettings(w http.ResponseWriter, r *http.Request) 
 	}
 
 	settings := map[string]string{
-		"model":                 FreeAutoModelID,
+		"model":                 "google/gemma-4-26b-a4b-it",
 		"image_model":           brain.DefaultGeminiImageModel,
 		"memory_model":          "openai/gpt-4o-mini",
 		"memory_enabled":        "true",
