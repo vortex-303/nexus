@@ -1362,7 +1362,15 @@ func (s *Server) toolWebSearch(slug, argsJSON string) string {
 	}
 	log.Info().Str("query", args.Query).Int("num", args.NumResults).Msg("web_search starting")
 
-	// Try Brave Search API first (works reliably from cloud servers)
+	// 1. Jina AI search (free, 1000/day, returns full page content)
+	log.Info().Msg("web_search: trying Jina AI")
+	if jinaResult, err := brain2.SearchJina(args.Query, args.NumResults); err == nil && jinaResult != "" {
+		return jinaResult
+	} else if err != nil {
+		log.Warn().Err(err).Msg("web_search: Jina failed")
+	}
+
+	// 2. Brave Search API (if key configured)
 	var braveKey string
 	if wdb, err := s.ws.Open(slug); err == nil {
 		_ = wdb.DB.QueryRow("SELECT value FROM brain_settings WHERE key = 'brave_api_key'").Scan(&braveKey)
@@ -1372,17 +1380,26 @@ func (s *Server) toolWebSearch(slug, argsJSON string) string {
 		if result := searchBrave(braveKey, args.Query, args.NumResults); result != "" {
 			return result
 		}
-		log.Warn().Msg("web_search: Brave API returned no results")
 	}
 
-	// Try MCP web search tools (ddg__duckduckgo_web_search, brave__search, etc.)
+	// 3. Google scrape (fragile but free, no API key)
+	log.Info().Msg("web_search: trying Google scrape")
+	if googleResult, err := brain2.SearchGoogle(args.Query, args.NumResults); err == nil && googleResult != "" {
+		return googleResult
+	} else if err != nil {
+		log.Warn().Err(err).Msg("web_search: Google scrape failed")
+	}
+
+	// 4. MCP search tools (skip DDG, only use non-DDG MCP tools like Brave MCP or SearX)
 	mgr := s.getMCPManager(slug)
 	if mgr != nil {
 		for _, t := range mgr.AllTools() {
 			name := strings.ToLower(t.QualName)
-			// Only match actual web search tools, not memory/knowledge/workspace search
+			// Skip DDG tools — they're blocked from server IPs
+			if strings.HasPrefix(name, "ddg__") {
+				continue
+			}
 			isWebSearch := (strings.Contains(name, "web_search") || strings.Contains(name, "web-search") ||
-				(strings.HasPrefix(name, "ddg__") && strings.Contains(name, "search")) ||
 				(strings.HasPrefix(name, "brave__") && strings.Contains(name, "search")) ||
 				(strings.HasPrefix(name, "searx") && strings.Contains(name, "search")))
 			if !isWebSearch {
@@ -1396,42 +1413,11 @@ func (s *Server) toolWebSearch(slug, argsJSON string) string {
 			if err == nil && result != "" && len(result) > 50 && !strings.Contains(result, "error") {
 				return fmt.Sprintf("Web search results for \"%s\":\n\n%s", args.Query, result)
 			}
-			if err != nil {
-				log.Warn().Err(err).Str("tool", t.QualName).Msg("web_search: MCP tool failed")
-			}
 		}
 	}
 
-	// Try Jina AI search (free, 1000/day, returns actual content)
-	log.Info().Msg("web_search: trying Jina AI")
-	if jinaResult, err := brain2.SearchJina(args.Query, args.NumResults); err == nil && jinaResult != "" {
-		return jinaResult
-	} else if err != nil {
-		log.Warn().Err(err).Msg("web_search: Jina failed")
-	}
-
-	// Try direct Google scrape (no API key needed)
-	log.Info().Msg("web_search: trying Google scrape")
-	if googleResult, err := brain2.SearchGoogle(args.Query, args.NumResults); err == nil && googleResult != "" {
-		return googleResult
-	} else if err != nil {
-		log.Warn().Err(err).Msg("web_search: Google scrape failed")
-	}
-
-	// Fallback: DuckDuckGo HTML scraping
-	log.Info().Msg("web_search: trying DuckDuckGo HTML")
-	result := searchDDG(args.Query, args.NumResults)
-	if strings.Contains(result, "No results found") {
-		log.Warn().Str("result", result).Msg("web_search: DDG returned no results")
-		// Try DuckDuckGo Lite as last resort
-		log.Info().Msg("web_search: trying DuckDuckGo Lite")
-		liteResult := searchDDGLite(args.Query, args.NumResults)
-		if !strings.Contains(liteResult, "No results found") {
-			return liteResult
-		}
-		log.Warn().Msg("web_search: all providers failed")
-	}
-	return result
+	log.Warn().Msg("web_search: all providers failed")
+	return fmt.Sprintf("Web search failed for \"%s\". Try asking me to fetch a specific URL instead (e.g., fetch coinmarketcap.com).", args.Query)
 }
 
 func (s *Server) toolSearchX(slug, argsJSON string) string {
