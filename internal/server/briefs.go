@@ -610,6 +610,9 @@ func (s *Server) checkScheduledBriefs() {
 	slugs := s.hubs.ActiveSlugs()
 
 	for _, slug := range slugs {
+		if s.getBrainSetting(slug, "automations_enabled") != "true" {
+			continue
+		}
 		apiKey, _ := s.getBrainSettings(slug)
 		if apiKey == "" {
 			continue

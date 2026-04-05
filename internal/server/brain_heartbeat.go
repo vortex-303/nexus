@@ -23,6 +23,9 @@ func (s *Server) checkHeartbeats() {
 	now := time.Now()
 
 	for _, slug := range slugs {
+		if s.getBrainSetting(slug, "automations_enabled") != "true" {
+			continue
+		}
 		apiKey, model := s.getBrainSettings(slug)
 		if apiKey == "" {
 			continue

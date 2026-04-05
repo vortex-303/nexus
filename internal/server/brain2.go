@@ -123,7 +123,8 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 		// Track for memory extraction (reuses v1)
 		s.trackMessageAndMaybeExtract(slug, channelID, msgID, result.Response, brain.BrainName)
 
-		// Async reflector — detects feedback, updates profiles, saves self-memories
+		// Async reflector — detects feedback, updates profiles, saves self-memories (requires automations)
+		if s.getBrainSetting(slug, "automations_enabled") == "true" {
 		go brain2.RunReflector(brain2.ReflectorConfig{
 			DB:            wdb.DB,
 			Slug:          slug,
@@ -134,6 +135,7 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 			BrainResponse: result.Response,
 			ToolsUsed:     result.ToolsUsed,
 		})
+		}
 
 		metrics.MessagesTotal.WithLabelValues(slug).Inc()
 

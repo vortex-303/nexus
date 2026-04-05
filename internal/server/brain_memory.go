@@ -34,7 +34,10 @@ func (s *Server) trackMessageAndMaybeExtract(slug, channelID, messageID, message
 		}
 	}
 
-	// Check if LLM memory extraction is enabled
+	// Check if LLM memory extraction is enabled (requires automations_enabled)
+	if s.getBrainSetting(slug, "automations_enabled") != "true" {
+		return
+	}
 	enabled, freq, _ := s.getMemorySettings(slug)
 	if !enabled {
 		return

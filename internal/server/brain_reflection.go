@@ -378,6 +378,9 @@ func (s *Server) checkReflections() {
 	slugs := s.hubs.ActiveSlugs()
 
 	for _, slug := range slugs {
+		if s.getBrainSetting(slug, "automations_enabled") != "true" {
+			continue
+		}
 		// Check if workspace has an API key
 		apiKey, _ := s.getBrainSettings(slug)
 		if apiKey == "" {

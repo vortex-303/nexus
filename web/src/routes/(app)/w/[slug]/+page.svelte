@@ -437,6 +437,7 @@
 	let brainOllamaURL = $state(_cachedBrain?.ollama_url || 'http://localhost:11434');
 	let brainVersion = $state(_cachedBrain?.brain_version || 'v1');
 	let brainToolMaxDepth = $state(_cachedBrain?.tool_max_depth || '5');
+	let brainAutomationsEnabled = $state(_cachedBrain?.automations_enabled === 'true');
 	let bridgeConnected = $state(false);
 	let bridgeModels = $state<any[]>([]);
 	const DEFAULT_WEBLLM_PROMPT = `You are Brain, the AI assistant for this Nexus workspace. You run locally in the user's browser.
@@ -2223,6 +2224,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			brainOllamaURL = brainSettings.ollama_url || 'http://localhost:11434';
 			brainVersion = brainSettings.brain_version || 'v1';
 			brainToolMaxDepth = brainSettings.tool_max_depth || '5';
+			brainAutomationsEnabled = brainSettings.automations_enabled === 'true';
 			bridgeConnected = brainSettings.bridge_connected === 'true';
 			try { bridgeModels = JSON.parse(brainSettings.bridge_models || '[]'); } catch { bridgeModels = []; }
 			brainSystemMemoryEnabled = brainSettings.system_memory_enabled !== 'false';
@@ -2337,6 +2339,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 				ollama_url: brainOllamaURL,
 				brain_version: brainVersion,
 				tool_max_depth: brainToolMaxDepth,
+				automations_enabled: String(brainAutomationsEnabled),
 				system_memory_enabled: String(brainSystemMemoryEnabled),
 				memory_engine: brainMemoryEngine,
 				memory_model: brainMemoryModel,
@@ -6274,6 +6277,16 @@ autonomy: reactive
 						Active: <strong>Standard Chat</strong> — pattern-matching only, no AI
 					{/if}
 				</div>
+			</div>
+			<div class="brain-section">
+				<h3 class="brain-section-title">Automations</h3>
+				<label class="brain-toggle-row">
+					<input type="checkbox" checked={brainAutomationsEnabled} onchange={(e) => brainAutomationsEnabled = (e.target as HTMLInputElement).checked} />
+					<div>
+						<strong>Enable automated actions</strong>
+						<span class="brain-hint" style="display: block; margin-top: 2px;">Heartbeat (morning brief), memory extraction, reflection, scheduled briefs. Costs tokens when active.</span>
+					</div>
+				</label>
 			</div>
 			<div class="brain-section">
 				<h3 class="brain-section-title">Brain Pipeline</h3>
