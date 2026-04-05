@@ -617,6 +617,14 @@ func (s *Server) getRecentChannelImages(slug string, wdb *db.WorkspaceDB, channe
 	return images
 }
 
+// handleGoogleAIModels returns available Google AI text and image models.
+func (s *Server) handleGoogleAIModels(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"text_models":  brain.GeminiTextModels,
+		"image_models": brain.GeminiImageModels,
+	})
+}
+
 // brainCompleter is the interface that both brain.Client and brain.BridgeClient satisfy.
 type brainCompleter interface {
 	Complete(systemPrompt string, messages []brain.Message) (string, *brain.CompletionUsage, error)
@@ -658,6 +666,14 @@ func (s *Server) makeBrainClient(slug, apiKey, resolvedModel string, fallbacks [
 			return brain.NewXAIClient(xaiKey, resolvedModel)
 		}
 	}
+
+	// Route Google/Gemini/Gemma models to Google AI API if gemini_api_key exists
+	if brain.IsGeminiModel(resolvedModel) {
+		if geminiKey := s.getGeminiAPIKey(slug); geminiKey != "" {
+			return brain.NewGeminiClient(geminiKey, resolvedModel)
+		}
+	}
+
 	client := brain.NewClient(apiKey, resolvedModel)
 	client.FreeModelFallbacks = fallbacks
 	return client

@@ -6702,6 +6702,7 @@ autonomy: reactive
 										<option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image</option>
 										<option value="gemini-3-pro-image-preview">Gemini 3 Pro Image</option>
 										<option value="gemini-3.1-flash-image-preview">Gemini 3.1 Flash Image</option>
+										<option value="imagen-4.0-generate-001">Imagen 4.0</option>
 									</select>
 								</div>
 							</div>

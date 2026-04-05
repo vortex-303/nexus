@@ -287,6 +287,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/workspaces/{slug}/bridge", s.handleBridge)
 	s.mux.Handle("GET /api/workspaces/{slug}/bridge/status", authed(http.HandlerFunc(s.handleBridgeStatus)))
 	s.mux.Handle("GET /api/workspaces/{slug}/ollama/models", authed(http.HandlerFunc(s.requireAdmin(s.handleOllamaModels))))
+	s.mux.Handle("GET /api/workspaces/{slug}/google/models", authed(http.HandlerFunc(s.handleGoogleAIModels)))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/definitions/{file}", authed(http.HandlerFunc(s.handleGetBrainDefinition)))
 	s.mux.Handle("PUT /api/workspaces/{slug}/brain/definitions/{file}", authed(http.HandlerFunc(s.handleUpdateBrainDefinition)))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/memories", authed(http.HandlerFunc(s.handleListMemories)))
