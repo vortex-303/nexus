@@ -17,6 +17,82 @@ var (
 	wsCollapser = regexp.MustCompile(`\s+`)
 )
 
+// SearchJina uses Jina AI's free search API (1000 requests/day, no key needed).
+// Returns search results with actual page content, not just snippets.
+func SearchJina(query string, numResults int) (string, error) {
+	if numResults <= 0 {
+		numResults = 5
+	}
+
+	searchURL := "https://s.jina.ai/" + url.QueryEscape(query)
+	req, err := http.NewRequest("GET", searchURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-No-Cache", "true")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("jina search failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("jina returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 500_000))
+	if err != nil {
+		return "", err
+	}
+
+	result := string(body)
+	if len(result) < 50 {
+		return "", fmt.Errorf("jina returned empty results")
+	}
+
+	// Truncate if too long
+	if len(result) > 15000 {
+		result = result[:15000] + "\n[...truncated]"
+	}
+
+	return fmt.Sprintf("Web search results for \"%s\":\n\n%s", query, result), nil
+}
+
+// FetchJinaReader uses Jina AI's reader API to extract clean content from a URL.
+// Returns markdown-formatted page content. Free: 1000/day.
+func FetchJinaReader(targetURL string) (string, error) {
+	readerURL := "https://r.jina.ai/" + targetURL
+	req, err := http.NewRequest("GET", readerURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "text/markdown")
+	req.Header.Set("X-No-Cache", "true")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("jina reader failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("jina reader returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 500_000))
+	if err != nil {
+		return "", err
+	}
+
+	result := string(body)
+	if len(result) > 15000 {
+		result = result[:15000] + "\n[...truncated]"
+	}
+	return result, nil
+}
+
 // SearchGoogle performs a direct Google scrape without any API key.
 // Returns a formatted list of search results with titles, URLs, and snippets.
 func SearchGoogle(query string, numResults int) (string, error) {

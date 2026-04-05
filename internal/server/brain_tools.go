@@ -1402,6 +1402,14 @@ func (s *Server) toolWebSearch(slug, argsJSON string) string {
 		}
 	}
 
+	// Try Jina AI search (free, 1000/day, returns actual content)
+	log.Info().Msg("web_search: trying Jina AI")
+	if jinaResult, err := brain2.SearchJina(args.Query, args.NumResults); err == nil && jinaResult != "" {
+		return jinaResult
+	} else if err != nil {
+		log.Warn().Err(err).Msg("web_search: Jina failed")
+	}
+
 	// Try direct Google scrape (no API key needed)
 	log.Info().Msg("web_search: trying Google scrape")
 	if googleResult, err := brain2.SearchGoogle(args.Query, args.NumResults); err == nil && googleResult != "" {
@@ -1735,6 +1743,11 @@ func toolFetchURL(argsJSON string) string {
 	}
 	if args.URL == "" {
 		return "Error: url is required"
+	}
+
+	// Try Jina Reader first (clean markdown extraction, free)
+	if result, err := brain2.FetchJinaReader(args.URL); err == nil && len(result) > 100 {
+		return result
 	}
 
 	parsed, err := url.Parse(args.URL)
