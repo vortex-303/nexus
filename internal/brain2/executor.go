@@ -187,7 +187,10 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []s
 
 	// Round 2+: self-correction loop (v2 improvement over v1's fixed 2 rounds)
 	for depth := 1; depth < cfg.MaxDepth; depth++ {
-		roundResp, roundCalls, _, err := cfg.Client.CompleteWithTools(cfg.SystemPrompt, followUp, scopedTools)
+		// Compress old tool results to save context (keep last 6 full)
+		compressedFollowUp := CompressOldToolResults(followUp, 6)
+
+		roundResp, roundCalls, _, err := cfg.Client.CompleteWithTools(cfg.SystemPrompt, compressedFollowUp, scopedTools)
 		if err != nil {
 			break
 		}
@@ -214,8 +217,12 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []s
 			allResults = append(allResults, StepResult{
 				StepID: call.ID, Tool: call.Function.Name, Result: result,
 			})
+
+			// Inject budget pressure warning if running low
+			budgetWarning := InjectBudgetWarning(depth, cfg.MaxDepth)
+
 			followUp = append(followUp, brain.Message{
-				Role: "tool", Content: result, ToolCallID: call.ID,
+				Role: "tool", Content: result + budgetWarning, ToolCallID: call.ID,
 			})
 		}
 	}
