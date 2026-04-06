@@ -17,24 +17,26 @@ var (
 	wsCollapser = regexp.MustCompile(`\s+`)
 )
 
-// SearchJina uses Jina AI's free search API (1000 requests/day, no key needed).
-// Returns search results with actual page content, not just snippets.
+// SearchJina uses Jina AI's reader to fetch Google search results page.
+// Falls back from s.jina.ai (requires auth) to r.jina.ai/google.com/search (no auth).
 func SearchJina(query string, numResults int) (string, error) {
 	if numResults <= 0 {
 		numResults = 5
 	}
 
-	searchURL := "https://s.jina.ai/" + url.QueryEscape(query)
-	req, err := http.NewRequest("GET", searchURL, nil)
+	// Use Jina Reader to fetch a Google search results page (no auth needed)
+	googleURL := fmt.Sprintf("https://www.google.com/search?q=%s&num=%d", url.QueryEscape(query), numResults)
+	readerURL := "https://r.jina.ai/" + googleURL
+
+	req, err := http.NewRequest("GET", readerURL, nil)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-No-Cache", "true")
+	req.Header.Set("Accept", "text/markdown")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("jina search failed: %w", err)
+		return "", fmt.Errorf("jina reader failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -48,7 +50,7 @@ func SearchJina(query string, numResults int) (string, error) {
 	}
 
 	result := string(body)
-	if len(result) < 50 {
+	if len(result) < 100 {
 		return "", fmt.Errorf("jina returned empty results")
 	}
 
