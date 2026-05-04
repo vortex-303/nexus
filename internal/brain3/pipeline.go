@@ -30,6 +30,24 @@ type Metrics struct {
 	MemoryStoreID string        `json:"memory_store_id"`
 }
 
+// TraceRecorder is the minimal observability surface brain3 needs to feed
+// pipeline events into the existing brain_traces / brain_trace_steps tables.
+// Method shapes match brain2.TraceCollector exactly so the server handler
+// can pass a *brain2.TraceCollector via duck typing — keeping brain3's
+// package boundary clean (no internal/brain2 import inside this package)
+// while still sharing the observatory UI between v2 and v3.
+type TraceRecorder interface {
+	AddToolCall(toolName, args, result, errMsg string, elapsed time.Duration)
+	AddLLMCall(model string, elapsed time.Duration, errMsg string)
+}
+
+// noopTrace is used when no recorder is provided so call sites don't need
+// nil checks.
+type noopTrace struct{}
+
+func (noopTrace) AddToolCall(string, string, string, string, time.Duration) {}
+func (noopTrace) AddLLMCall(string, time.Duration, string)                  {}
+
 // PipelineConfig is the input to a Brain v3 turn.
 type PipelineConfig struct {
 	Slug         string
@@ -43,6 +61,7 @@ type PipelineConfig struct {
 	Settings     SettingsStore
 	DB           *sql.DB            // workspace DB for brain_managed_sessions
 	ExecuteTool  func(slug, channelID, senderMemberID string, call brain.ToolCall) string
+	Trace        TraceRecorder      // optional; pipeline substitutes a noop if nil
 }
 
 // Result is the output of a Brain v3 turn.
@@ -65,6 +84,10 @@ type Result struct {
 func Run(ctx context.Context, cfg PipelineConfig) Result {
 	start := time.Now()
 	m := Metrics{Version: VersionTag, Model: DefaultModel}
+
+	if cfg.Trace == nil {
+		cfg.Trace = noopTrace{}
+	}
 
 	apiKey := cfg.Settings.Get(cfg.Slug, "anthropic_api_key")
 	client, err := NewClient(apiKey)
@@ -117,6 +140,7 @@ func Run(ctx context.Context, cfg PipelineConfig) Result {
 	}
 
 	m.ToolCalls = turn.ToolCalls
+	m.LLMCalls = turn.LLMCalls
 	m.InputTokens = turn.InputTokens
 	m.OutputTokens = turn.OutputTokens
 

@@ -19,6 +19,7 @@ type turnResult struct {
 	ResponseText string
 	ToolsUsed    []string
 	ToolCalls    int
+	LLMCalls     int
 	InputTokens  int
 	OutputTokens int
 	Terminated   bool
@@ -81,9 +82,11 @@ func consumeStream(
 	cfg PipelineConfig,
 ) (turnResult, error) {
 	var (
-		out          turnResult
-		responseBuf  strings.Builder
-		toolsUsedSet = map[string]struct{}{}
+		out                 turnResult
+		responseBuf         strings.Builder
+		toolsUsedSet        = map[string]struct{}{}
+		modelRequestStarts  = map[string]time.Time{} // span.model_request_start ID → start time
+		model               = resolveModel(cfg.Settings, cfg.Slug)
 	)
 
 	for stream.Next() {
@@ -101,10 +104,21 @@ func consumeStream(
 		case "agent.custom_tool_use":
 			// Bridge to Nexus's existing tool handler. Track the Nexus name
 			// so traces/logs match v1/v2 conventions.
-			toolsUsedSet[NexusToolName(ev.Name)] = struct{}{}
+			nexusName := NexusToolName(ev.Name)
+			toolsUsedSet[nexusName] = struct{}{}
 			out.ToolCalls++
 
+			toolStart := time.Now()
 			result := dispatchCustomTool(ev, cfg)
+			elapsed := time.Since(toolStart)
+
+			argsSummary := ""
+			if ev.Input != nil {
+				if b, err := json.Marshal(ev.Input); err == nil {
+					argsSummary = string(b)
+				}
+			}
+			cfg.Trace.AddToolCall(nexusName, argsSummary, result, "", elapsed)
 
 			if err := sendToolResult(ctx, client, sessionID, ev.ID, result); err != nil {
 				return out, fmt.Errorf("send tool result: %w", err)
@@ -114,10 +128,25 @@ func consumeStream(
 			// Built-in or MCP tool — Anthropic-side execution. Only counted.
 			toolsUsedSet[ev.Name] = struct{}{}
 			out.ToolCalls++
+			cfg.Trace.AddToolCall(ev.Name, "", "(server-executed)", "", 0)
+
+		case "span.model_request_start":
+			modelRequestStarts[ev.ID] = time.Now()
 
 		case "span.model_request_end":
 			out.InputTokens += int(ev.ModelUsage.InputTokens)
 			out.OutputTokens += int(ev.ModelUsage.OutputTokens)
+			out.LLMCalls++
+			var elapsed time.Duration
+			if startTime, ok := modelRequestStarts[ev.ModelRequestStartID]; ok {
+				elapsed = time.Since(startTime)
+				delete(modelRequestStarts, ev.ModelRequestStartID)
+			}
+			errMsg := ""
+			if ev.IsError {
+				errMsg = "model request failed"
+			}
+			cfg.Trace.AddLLMCall(model, elapsed, errMsg)
 
 		case "session.status_idle":
 			// Idle is transient if the agent is waiting on a custom_tool_result.

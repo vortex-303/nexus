@@ -103,6 +103,11 @@ func (s *Server) handleBrainV3(slug, channelID, parentID, senderName, content st
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
+		// brain2.TraceCollector satisfies brain3.TraceRecorder via duck typing —
+		// keeps brain3 free of any internal/brain2 import while v2 and v3
+		// traces share the same observatory tables and UI.
+		trace := brain3.NewTraceCollector()
+
 		result := brain3.Run(ctx, brain3.PipelineConfig{
 			Slug:         slug,
 			ChannelID:    channelID,
@@ -115,6 +120,7 @@ func (s *Server) handleBrainV3(slug, channelID, parentID, senderName, content st
 			Settings:     brain3Settings{s: s, slug: slug},
 			DB:           wdb.DB,
 			ExecuteTool:  s.executeTool,
+			Trace:        trace,
 		})
 
 		if result.Response == "" {
@@ -125,6 +131,35 @@ func (s *Server) handleBrainV3(slug, channelID, parentID, senderName, content st
 
 		actionID := id.New()
 		brain.LogAction(wdb.DB, actionID, "brain_v3", channelID, content, result.Response, brain3.DefaultModel, result.ToolsUsed)
+
+		// Persist the trace to the existing observatory tables so v3 turns
+		// show up alongside v2 with brain_version='v3'.
+		errMsg := ""
+		if !result.Metrics.Success {
+			errMsg = result.Response
+		}
+		traceID := id.New()
+		if err := trace.FlushToDB(wdb.DB, brain3.TraceRecord{
+			ID:             traceID,
+			ActionLogID:    actionID,
+			BrainVersion:   brain3.VersionTag,
+			ChannelID:      channelID,
+			SenderName:     senderName,
+			TriggerText:    content,
+			Model:          s.getBrainSetting(slug, "mga_provisioned_model", brain3.DefaultModel),
+			TotalLatencyMs: result.Metrics.TotalLatency.Milliseconds(),
+			ExecLatencyMs:  result.Metrics.StreamMs, // closest analog to v2's "exec" — time spent on the agent loop
+			SynthLatencyMs: result.Metrics.PreloadMs + result.Metrics.SessionMs,
+			ToolCalls:      result.Metrics.ToolCalls,
+			LLMCalls:       result.Metrics.LLMCalls,
+			InputTokens:    result.Metrics.InputTokens,
+			OutputTokens:   result.Metrics.OutputTokens,
+			CostUSD:        result.Metrics.CostUSD,
+			Success:        result.Metrics.Success,
+			ErrorMessage:   errMsg,
+		}); err != nil {
+			logger.WithCategory(logger.CatBrain).Warn().Err(err).Msg("v3: failed to persist trace")
+		}
 
 		s.trackMessageAndMaybeExtract(slug, channelID, msgID, result.Response, brain.BrainName)
 

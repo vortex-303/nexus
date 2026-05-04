@@ -1095,8 +1095,66 @@ var workspaceMigrations58 = migration{
 	`,
 }
 
+// migrations 59 + 60 create the observatory tables. On production these
+// already exist (created by an earlier non-clean-branch deploy) and
+// CREATE TABLE IF NOT EXISTS is a no-op. On a fresh DB, brain3's trace
+// flush needs them, so we re-declare them here in the clean v3 branch
+// rather than depend on the wip branch's uncommitted migrations.
+var workspaceMigrations59 = migration{
+	version: 59,
+	name:    "brain observatory: traces table (idempotent)",
+	sql: `
+		CREATE TABLE IF NOT EXISTS brain_traces (
+			id TEXT PRIMARY KEY,
+			action_log_id TEXT DEFAULT '',
+			brain_version TEXT NOT NULL DEFAULT 'v1',
+			channel_id TEXT DEFAULT '',
+			sender_name TEXT DEFAULT '',
+			trigger_text TEXT DEFAULT '',
+			model TEXT DEFAULT '',
+			total_latency_ms INTEGER DEFAULT 0,
+			exec_latency_ms INTEGER DEFAULT 0,
+			synth_latency_ms INTEGER DEFAULT 0,
+			tool_calls INTEGER DEFAULT 0,
+			llm_calls INTEGER DEFAULT 0,
+			input_tokens INTEGER DEFAULT 0,
+			output_tokens INTEGER DEFAULT 0,
+			cost_usd REAL DEFAULT 0,
+			skills_matched TEXT DEFAULT '[]',
+			memories_included INTEGER DEFAULT 0,
+			knowledge_chunks INTEGER DEFAULT 0,
+			success BOOLEAN DEFAULT TRUE,
+			error_message TEXT DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_brain_traces_created ON brain_traces(created_at);
+		CREATE INDEX IF NOT EXISTS idx_brain_traces_channel ON brain_traces(channel_id);
+		CREATE INDEX IF NOT EXISTS idx_brain_traces_version ON brain_traces(brain_version);
+	`,
+}
+
+var workspaceMigrations60 = migration{
+	version: 60,
+	name:    "brain observatory: trace steps table (idempotent)",
+	sql: `
+		CREATE TABLE IF NOT EXISTS brain_trace_steps (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			trace_id TEXT NOT NULL,
+			step_order INTEGER NOT NULL DEFAULT 0,
+			step_type TEXT NOT NULL DEFAULT '',
+			tool_name TEXT DEFAULT '',
+			args_summary TEXT DEFAULT '',
+			result_summary TEXT DEFAULT '',
+			error TEXT DEFAULT '',
+			latency_ms INTEGER DEFAULT 0,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_trace_steps_trace ON brain_trace_steps(trace_id);
+	`,
+}
+
 func init() {
-	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55, workspaceMigrations58)
+	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55, workspaceMigrations58, workspaceMigrations59, workspaceMigrations60)
 }
 
 func RunGlobal(db *sql.DB) error {
