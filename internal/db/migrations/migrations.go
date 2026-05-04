@@ -1076,8 +1076,27 @@ var workspaceMigrations55 = migration{
 	`,
 }
 
+var workspaceMigrations56 = migration{
+	version: 56,
+	name:    "brain v3: claude managed agents session map",
+	sql: `
+		CREATE TABLE IF NOT EXISTS brain_managed_sessions (
+			channel_id TEXT NOT NULL,
+			parent_id TEXT NOT NULL DEFAULT '',
+			anthropic_session_id TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'idle',
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			last_event_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			PRIMARY KEY (channel_id, parent_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_brain_managed_sessions_channel ON brain_managed_sessions(channel_id);
+		CREATE INDEX IF NOT EXISTS idx_brain_managed_sessions_status ON brain_managed_sessions(status);
+	`,
+}
+
 func init() {
-	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55)
+	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55, workspaceMigrations56)
 }
 
 func RunGlobal(db *sql.DB) error {

@@ -857,6 +857,9 @@ func (s *Server) handleUpdateBrainSettings(w http.ResponseWriter, r *http.Reques
 		"webllm_enabled": true, "webllm_model": true, "webllm_system_prompt": true,
 		"ollama_enabled": true, "ollama_model": true, "ollama_url": true,
 		"brain_version": true, "tool_max_depth": true, "automations_enabled": true,
+		// Brain v3 (Claude Managed Agents) — see internal/brain3/
+		"anthropic_api_key": true, "mga_agent_id": true, "mga_agent_version": true,
+		"mga_environment_id": true, "mga_memory_store_id": true, "mga_default_effort": true,
 		"north_star": true, "north_star_why": true, "north_star_success": true, "strategic_themes": true,
 		"reflection_enabled": true, "reflection_time": true,
 		// Integrations
@@ -876,6 +879,7 @@ func (s *Server) handleUpdateBrainSettings(w http.ResponseWriter, r *http.Reques
 	sensitiveKeys := map[string]bool{
 		"api_key": true, "gemini_api_key": true, "xai_api_key": true, "openai_api_key": true, "telegram_bot_token": true,
 		"email_outbound_pass": true, "brave_api_key": true,
+		"anthropic_api_key": true,
 	}
 	// Keys that also get logged to brain_action_log (visible in Activity tab)
 	activityKeys := map[string]bool{

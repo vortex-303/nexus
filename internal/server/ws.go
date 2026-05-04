@@ -360,9 +360,12 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 	if !p.WebLLM {
 		if brain.ContainsMention(p.Content) || isBrainDM {
 			brainTriggered = true
-			if s.getBrainSetting(conn.WorkspaceSlug, "brain_version") == "v2" {
+			switch s.getBrainSetting(conn.WorkspaceSlug, "brain_version") {
+			case "v3":
+				s.handleBrainV3(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
+			case "v2":
 				s.handleBrainV2(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
-			} else {
+			default:
 				s.handleBrainMentionWithTools(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
 			}
 		}
