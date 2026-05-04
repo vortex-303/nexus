@@ -1076,8 +1076,8 @@ var workspaceMigrations55 = migration{
 	`,
 }
 
-var workspaceMigrations56 = migration{
-	version: 56,
+var workspaceMigrations58 = migration{
+	version: 58,
 	name:    "brain v3: claude managed agents session map",
 	sql: `
 		CREATE TABLE IF NOT EXISTS brain_managed_sessions (
@@ -1096,7 +1096,7 @@ var workspaceMigrations56 = migration{
 }
 
 func init() {
-	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55, workspaceMigrations56)
+	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55, workspaceMigrations58)
 }
 
 func RunGlobal(db *sql.DB) error {
