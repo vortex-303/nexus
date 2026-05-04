@@ -6328,17 +6328,12 @@ autonomy: reactive
 					</div>
 				</label>
 				{#if brainVersion === 'v3'}
-					<div style="margin-top: 8px; padding: 10px; background: var(--surface-2, rgba(255,255,255,0.03)); border-radius: 6px; font-size: 0.8rem;">
-						<div style="display: flex; flex-direction: column; gap: 6px;">
-							<label style="color: var(--text-secondary);">Anthropic API key</label>
-							<input type="password" class="brain-input" placeholder={brainSettings.anthropic_api_key_set === 'true' ? `Active (${brainSettings.anthropic_api_key_masked || 'sk-ant-...'}) — type new key to replace` : 'sk-ant-...'} bind:value={brainAnthropicKey} />
-						</div>
-						<div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 12px; color: var(--text-secondary);">
-							<span>Agent: <strong style="color: var(--text);">{brainSettings.mga_agent_id ? `${brainSettings.mga_agent_id.slice(0,12)}…` : 'not yet provisioned'}</strong></span>
-							<span>Env: <strong style="color: var(--text);">{brainSettings.mga_environment_id ? `${brainSettings.mga_environment_id.slice(0,12)}…` : '—'}</strong></span>
-							<span>Memory: <strong style="color: var(--text);">{brainSettings.mga_memory_store_id ? `${brainSettings.mga_memory_store_id.slice(0,12)}…` : '—'}</strong></span>
-						</div>
-						<span class="brain-hint" style="margin-top: 6px; display: block;">First @Brain message provisions environment + agent + memory_store (~2–4s one-time). Sessions are per channel-thread; memories live in the Anthropic memory_store, not in Nexus's brain_memories table — completely siloed from v1/v2.</span>
+					<div style="margin-top: 8px; padding: 8px 10px; font-size: 0.8rem; color: var(--text-secondary);">
+						{#if brainSettings.anthropic_api_key_set === 'true'}
+							✓ Anthropic key configured. Sessions are per channel-thread; memories live in the Anthropic memory_store, completely siloed from v1/v2.
+						{:else}
+							⚠ Requires an Anthropic API key — configure it in the <strong>Anthropic / Claude</strong> provider card below before saving.
+						{/if}
 					</div>
 				{/if}
 			</div>
@@ -6646,67 +6641,51 @@ autonomy: reactive
 						</details>
 					</div>
 
-					<!-- Grok / xAI -->
-					<div class="service-card" class:service-active={brainSettings.xai_api_key_set === 'true' && !!brainXAIModel}>
+					<!-- Anthropic / Claude (Managed Agents — Brain v3) -->
+					<div class="service-card" class:service-active={brainSettings.anthropic_api_key_set === 'true'}>
 						<div class="service-header">
-							<div class="service-status-dot" class:active={brainSettings.xai_api_key_set === 'true' && !!brainXAIModel}></div>
+							<div class="service-status-dot" class:active={brainSettings.anthropic_api_key_set === 'true'}></div>
 							<div class="service-title-area">
-								<span class="service-name">Grok / xAI</span>
-								<span class="service-badge">
-									{#if brainSettings.xai_api_key_set === 'true' && brainXAIModel}
-										Active &middot; {brainXAIModel}
-									{:else if brainSettings.xai_api_key_set === 'true'}
-										Key set &middot; Select a model
-									{:else}
-										Not configured
-									{/if}
-								</span>
+								<span class="service-name">Anthropic / Claude</span>
+								<span class="service-badge">{brainSettings.anthropic_api_key_set === 'true' ? 'Connected' : 'Not configured'}</span>
 							</div>
 						</div>
 						<div class="service-desc">
-							{#if brainSettings.xai_api_key_set === 'true' && brainXAIModel}
-								Brain routes all requests via xAI &mdash; lower latency, native X/Twitter search.
+							{#if brainSettings.anthropic_api_key_set === 'true'}
+								Powers Brain v3 — Claude Managed Agents (hosted runtime, persistent sessions, native memory_store).
+								{#if brainSettings.anthropic_api_key_masked}Key: {brainSettings.anthropic_api_key_masked}{/if}
+								{#if brainSettings.mga_agent_id}&middot; Agent: <code style="font-size: 0.75em;">{brainSettings.mga_agent_id.slice(0,16)}…</code>{/if}
 							{:else}
-								Direct access to Grok models with native X/Twitter search. No OpenRouter needed.
+								Required for <strong>Brain v3</strong> (Claude Managed Agent option above). Hosted agent runtime with per-thread sessions and Anthropic-managed memory.
 							{/if}
 						</div>
-						<details class="service-details" open={!brainSettings.xai_api_key_set || !brainXAIModel}>
+						<details class="service-details" open={brainVersion === 'v3' && !brainSettings.anthropic_api_key_set}>
 							<summary>Configure</summary>
 							<div class="service-fields">
 								<div class="brain-field">
 									<label>API Key</label>
-									{#if brainSettings.xai_api_key_set === 'true'}
-										<div class="brain-key-status">Active ({brainSettings.xai_api_key_masked})</div>
+									{#if brainSettings.anthropic_api_key_set === 'true'}
+										<div class="brain-key-status">Active ({brainSettings.anthropic_api_key_masked})</div>
 									{/if}
-									<input type="password" class="brain-input" placeholder="xai-..." bind:value={brainXAIKey} />
-									<span class="brain-hint">Get a key at <a href="https://console.x.ai" target="_blank" rel="noopener">console.x.ai</a> &mdash; includes free credits</span>
+									<input type="password" class="brain-input" placeholder="sk-ant-..." bind:value={brainAnthropicKey} autocomplete="off" />
+									<span class="brain-hint">Get a key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>. Stored encrypted, masked on read. Type a new key to replace.</span>
 								</div>
-								<div class="brain-field">
-									<label>Model</label>
-									<select class="brain-input" bind:value={brainXAIModel}>
-										<option value="">Select a model...</option>
-										<option value="grok-4-1-fast-non-reasoning">Grok 4.1 Fast — $0.20/$0.50/M, 2M context</option>
-										<option value="grok-4-0709">Grok 4 — $3/$15/M</option>
-										<option value="grok-3-fast">Grok 3 Fast</option>
-										<option value="grok-3-mini-fast">Grok 3 Mini Fast</option>
-										<option value="grok-3">Grok 3</option>
-										<option value="grok-3-mini">Grok 3 Mini</option>
-									</select>
-								</div>
+								{#if brainSettings.anthropic_api_key_set === 'true'}
+									<div class="brain-field">
+										<label>Provisioning</label>
+										<div class="brain-key-status" style="display: flex; flex-direction: column; gap: 4px; font-family: var(--font-mono, monospace); font-size: 0.78rem;">
+											<span>Agent: <strong>{brainSettings.mga_agent_id || 'not yet provisioned'}</strong>{#if brainSettings.mga_agent_version}<span style="color: var(--text-secondary);"> v{brainSettings.mga_agent_version}</span>{/if}</span>
+											<span>Environment: <strong>{brainSettings.mga_environment_id || '—'}</strong></span>
+											<span>Memory store: <strong>{brainSettings.mga_memory_store_id || '—'}</strong></span>
+										</div>
+										<span class="brain-hint">First @Brain message provisions all three (~2–4s, one-time). Memory store is FUSE-mounted in the session container at /mnt/memory/brain/.</span>
+									</div>
+								{/if}
 							</div>
 						</details>
 					</div>
-				</div>
 
-				<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveBrainSettings} disabled={brainSaving}>
-					{brainSaving ? 'Saving...' : 'Save Settings'}
-				</button>
-			</div>
-
-			<div class="brain-section">
-				<h3 class="brain-section-title">Services</h3>
-				<div class="service-cards">
-					<!-- Gemini -->
+					<!-- Google Gemini -->
 					<div class="service-card" class:service-active={brainSettings.gemini_api_key_set === 'true'}>
 						<div class="service-header">
 							<div class="service-status-dot" class:active={brainSettings.gemini_api_key_set === 'true'}></div>
@@ -6746,7 +6725,16 @@ autonomy: reactive
 							</div>
 						</details>
 					</div>
+				</div>
 
+				<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveBrainSettings} disabled={brainSaving}>
+					{brainSaving ? 'Saving...' : 'Save Settings'}
+				</button>
+			</div>
+
+			<div class="brain-section">
+				<h3 class="brain-section-title">Services</h3>
+				<div class="service-cards">
 					<!-- OpenAI -->
 					<div class="service-card" class:service-active={brainSettings.openai_api_key_set === 'true'}>
 						<div class="service-header">
@@ -6806,6 +6794,57 @@ autonomy: reactive
 									{/if}
 									<input type="password" class="brain-input" placeholder="BSA..." bind:value={brainBraveKey} />
 									<span class="brain-hint">Get a key at <a href="https://brave.com/search/api/" target="_blank" rel="noopener">brave.com/search/api</a></span>
+								</div>
+							</div>
+						</details>
+					</div>
+
+					<!-- Grok / xAI -->
+					<div class="service-card" class:service-active={brainSettings.xai_api_key_set === 'true' && !!brainXAIModel}>
+						<div class="service-header">
+							<div class="service-status-dot" class:active={brainSettings.xai_api_key_set === 'true' && !!brainXAIModel}></div>
+							<div class="service-title-area">
+								<span class="service-name">Grok / xAI</span>
+								<span class="service-badge">
+									{#if brainSettings.xai_api_key_set === 'true' && brainXAIModel}
+										Active &middot; {brainXAIModel}
+									{:else if brainSettings.xai_api_key_set === 'true'}
+										Key set &middot; Select a model
+									{:else}
+										Not configured
+									{/if}
+								</span>
+							</div>
+						</div>
+						<div class="service-desc">
+							{#if brainSettings.xai_api_key_set === 'true' && brainXAIModel}
+								Brain routes all requests via xAI &mdash; lower latency, native X/Twitter search.
+							{:else}
+								Direct access to Grok models with native X/Twitter search. No OpenRouter needed.
+							{/if}
+						</div>
+						<details class="service-details" open={!brainSettings.xai_api_key_set || !brainXAIModel}>
+							<summary>Configure</summary>
+							<div class="service-fields">
+								<div class="brain-field">
+									<label>API Key</label>
+									{#if brainSettings.xai_api_key_set === 'true'}
+										<div class="brain-key-status">Active ({brainSettings.xai_api_key_masked})</div>
+									{/if}
+									<input type="password" class="brain-input" placeholder="xai-..." bind:value={brainXAIKey} />
+									<span class="brain-hint">Get a key at <a href="https://console.x.ai" target="_blank" rel="noopener">console.x.ai</a> &mdash; includes free credits</span>
+								</div>
+								<div class="brain-field">
+									<label>Model</label>
+									<select class="brain-input" bind:value={brainXAIModel}>
+										<option value="">Select a model...</option>
+										<option value="grok-4-1-fast-non-reasoning">Grok 4.1 Fast — $0.20/$0.50/M, 2M context</option>
+										<option value="grok-4-0709">Grok 4 — $3/$15/M</option>
+										<option value="grok-3-fast">Grok 3 Fast</option>
+										<option value="grok-3-mini-fast">Grok 3 Mini Fast</option>
+										<option value="grok-3">Grok 3</option>
+										<option value="grok-3-mini">Grok 3 Mini</option>
+									</select>
 								</div>
 							</div>
 						</details>
