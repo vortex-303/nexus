@@ -1220,6 +1220,14 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 					return { ...m, reactions };
 				});
 			}
+		} else if (type === 'brain.chunk') {
+			// v3 streaming: append text delta to the empty message that was
+			// pre-created via message.new. If the message hasn't arrived yet
+			// (rare race), the delta is dropped — the final message.edited
+			// at end-of-turn carries the complete content as a backstop.
+			messages.update(msgs => msgs.map(m =>
+				m.id === payload.message_id ? { ...m, content: (m.content || '') + payload.delta } : m
+			));
 		} else if (type === 'message.edited') {
 			messages.update(msgs => msgs.map(m =>
 				m.id === payload.message_id ? { ...m, content: payload.content, edited_at: payload.edited_at } : m

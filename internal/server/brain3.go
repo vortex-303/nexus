@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/nexus-chat/nexus/internal/brain"
 	"github.com/nexus-chat/nexus/internal/brain3"
+	"github.com/nexus-chat/nexus/internal/hub"
 	"github.com/nexus-chat/nexus/internal/id"
 	"github.com/nexus-chat/nexus/internal/logger"
 	"github.com/nexus-chat/nexus/internal/metrics"
@@ -103,10 +105,15 @@ func (s *Server) handleBrainV3(slug, channelID, parentID, senderName, content st
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
-		// brain2.TraceCollector satisfies brain3.TraceRecorder via duck typing —
-		// keeps brain3 free of any internal/brain2 import while v2 and v3
-		// traces share the same observatory tables and UI.
+		// brain3.TraceCollector — writes to the same observatory tables v2 uses
+		// (brain_traces / brain_trace_steps) so the existing UI lights up
+		// for v3 with brain_version='v3' as the discriminator.
 		trace := brain3.NewTraceCollector()
+
+		// Pre-create an empty brain message so the streaming UI has a target
+		// to append deltas to. The final content gets written via UPDATE +
+		// message.edited broadcast at the end.
+		streamMsgID := s.createEmptyBrainMessage(slug, channelID, parentID)
 
 		result := brain3.Run(ctx, brain3.PipelineConfig{
 			Slug:         slug,
@@ -121,13 +128,28 @@ func (s *Server) handleBrainV3(slug, channelID, parentID, senderName, content st
 			DB:           wdb.DB,
 			ExecuteTool:  s.executeTool,
 			Trace:        trace,
+			OnTextDelta: func(delta string) {
+				if streamMsgID == "" {
+					return
+				}
+				s.broadcastBrainChunk(slug, channelID, parentID, streamMsgID, delta)
+			},
 		})
 
 		if result.Response == "" {
 			result.Response = "I processed your request but couldn't generate a response."
 		}
 
-		msgID := s.sendBrainMessage(slug, channelID, parentID, result.Response)
+		// Finalize the streaming message: write final content + broadcast
+		// message.edited so any client that joined mid-stream catches up.
+		// If pre-create failed, fall back to a fresh sendBrainMessage.
+		var msgID string
+		if streamMsgID != "" {
+			s.finalizeBrainMessage(slug, channelID, parentID, streamMsgID, result.Response, result.ToolsUsed)
+			msgID = streamMsgID
+		} else {
+			msgID = s.sendBrainMessage(slug, channelID, parentID, result.Response)
+		}
 
 		actionID := id.New()
 		brain.LogAction(wdb.DB, actionID, "brain_v3", channelID, content, result.Response, brain3.DefaultModel, result.ToolsUsed)
@@ -174,4 +196,97 @@ func (s *Server) handleBrainV3(slug, channelID, parentID, senderName, content st
 			Bool("success", result.Metrics.Success).
 			Msg("brain v3 complete")
 	}()
+}
+
+// createEmptyBrainMessage inserts a Brain-authored message with empty content
+// and broadcasts message.new so streaming-aware clients can render an empty
+// bubble that grows as deltas arrive. Returns the new message ID, or "" on
+// error (caller falls back to the non-streaming sendBrainMessage path).
+func (s *Server) createEmptyBrainMessage(slug, channelID, parentID string) string {
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return ""
+	}
+
+	msgID := id.New()
+	now := time.Now().UTC().Format(time.RFC3339)
+	metadata := "{}"
+
+	if parentID != "" {
+		_, err = wdb.DB.Exec(
+			"INSERT INTO messages (id, channel_id, sender_id, content, metadata, parent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			msgID, channelID, brain.BrainMemberID, "", metadata, parentID, now,
+		)
+	} else {
+		_, err = wdb.DB.Exec(
+			"INSERT INTO messages (id, channel_id, sender_id, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+			msgID, channelID, brain.BrainMemberID, "", metadata, now,
+		)
+	}
+	if err != nil {
+		logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("v3: failed to pre-create streaming message")
+		return ""
+	}
+
+	if parentID != "" {
+		wdb.DB.Exec("UPDATE messages SET reply_count = reply_count + 1, latest_reply_at = ? WHERE id = ?", now, parentID)
+	}
+
+	h := s.hubs.Get(slug)
+	h.Broadcast(channelID, hub.MakeEnvelope(hub.TypeMessageNew, hub.MessageNewPayload{
+		ID:         msgID,
+		ChannelID:  channelID,
+		SenderID:   brain.BrainMemberID,
+		SenderName: brain.BrainName,
+		Content:    "",
+		CreatedAt:  now,
+		ParentID:   parentID,
+	}), "")
+	return msgID
+}
+
+// finalizeBrainMessage updates the streaming message's content + tools_used
+// metadata and broadcasts message.edited so any late-joining client gets the
+// final state. Idempotent — safe to call once at the end of a turn.
+func (s *Server) finalizeBrainMessage(slug, channelID, parentID, msgID, content string, toolsUsed []string) {
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	metadata := "{}"
+	if len(toolsUsed) > 0 {
+		if metaJSON, err := json.Marshal(map[string]any{"tools_used": toolsUsed}); err == nil {
+			metadata = string(metaJSON)
+		}
+	}
+
+	if _, err := wdb.DB.Exec(
+		"UPDATE messages SET content = ?, metadata = ?, edited_at = ? WHERE id = ?",
+		content, metadata, now, msgID,
+	); err != nil {
+		logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("v3: failed to finalize streaming message")
+		return
+	}
+
+	h := s.hubs.Get(slug)
+	h.Broadcast(channelID, hub.MakeEnvelope(hub.TypeMessageEdited, hub.MessageEditedPayload{
+		MessageID: msgID,
+		ChannelID: channelID,
+		Content:   content,
+		EditedAt:  now,
+	}), "")
+}
+
+// broadcastBrainChunk sends an incremental text delta for a streaming message.
+// Clients append `delta` to the message identified by msgID.
+func (s *Server) broadcastBrainChunk(slug, channelID, parentID, msgID, delta string) {
+	h := s.hubs.Get(slug)
+	h.Broadcast(channelID, hub.MakeEnvelope(hub.TypeBrainChunk, hub.BrainChunkPayload{
+		ChannelID: channelID,
+		ParentID:  parentID,
+		MessageID: msgID,
+		Delta:     delta,
+	}), "")
 }

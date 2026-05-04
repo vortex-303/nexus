@@ -141,6 +141,16 @@ func createEnvironment(ctx context.Context, client *anthropic.Client, slug strin
 	})
 }
 
+// DefaultAnthropicSkills are the pre-built skills v3 enables on every agent
+// by default. Each gives the agent native handling of a common file format —
+// users frequently drop these into Nexus channels and Brain becomes
+// substantially more useful when it can read/edit them properly.
+//
+// Cost is "free" in the sense that skills load on-demand (only the
+// description sits in the agent's awareness; full content is pulled when
+// the task warrants it).
+var DefaultAnthropicSkills = []string{"docx", "xlsx", "pdf", "pptx"}
+
 // resolveModel returns the workspace's chosen Anthropic model from
 // brain_settings.mga_model, falling back to DefaultModel. Validates against a
 // short allowlist so a fat-fingered setting doesn't 400 at agent-create time.
@@ -162,6 +172,18 @@ func createAgent(ctx context.Context, client *anthropic.Client, settings Setting
 
 	model := anthropic.BetaManagedAgentsModel(resolveModel(settings, slug))
 
+	// Pre-built Anthropic skills. Set Type explicitly because the SDK helper
+	// doesn't (same pattern as the user.message Type discriminator bug).
+	skills := make([]anthropic.BetaManagedAgentsSkillParamsUnion, 0, len(DefaultAnthropicSkills))
+	for _, id := range DefaultAnthropicSkills {
+		skills = append(skills, anthropic.BetaManagedAgentsSkillParamsUnion{
+			OfAnthropic: &anthropic.BetaManagedAgentsAnthropicSkillParams{
+				SkillID: id,
+				Type:    anthropic.BetaManagedAgentsAnthropicSkillParamsTypeAnthropic,
+			},
+		})
+	}
+
 	params := anthropic.BetaAgentNewParams{
 		Name: AgentName(slug),
 		Model: anthropic.BetaManagedAgentsModelConfigParams{
@@ -169,6 +191,7 @@ func createAgent(ctx context.Context, client *anthropic.Client, settings Setting
 		},
 		Description: param.NewOpt("Brain v3 (Claude Managed Agent) for Nexus workspace " + slug),
 		Tools:       ConvertTools(tools),
+		Skills:      skills,
 	}
 	// Append the v3 memory addendum so Claude knows the layout, the in-turn
 	// write discipline, and the <context> pre-injection convention. Captured

@@ -48,6 +48,7 @@ const (
 	TypeSocialPulseDeleted = "social_pulse.deleted"
 	TypeBridgeStatus       = "bridge.status"
 	TypeNotification       = "notification.new"
+	TypeBrainChunk         = "brain.chunk" // v3 streaming: incremental text deltas
 )
 
 // Payload types for messages
@@ -192,6 +193,18 @@ type AgentStatePayload struct {
 	ParentID  string `json:"parent_id,omitempty"`
 	State     string `json:"state"`               // "thinking", "tool_executing", "idle"
 	ToolName  string `json:"tool_name,omitempty"`
+}
+
+// BrainChunkPayload broadcasts an incremental text delta during a v3 streaming
+// turn. Clients append `delta` to the message identified by `message_id`. The
+// message is created (empty) before streaming starts via the normal
+// message.new path; a final message.edited at the end carries the complete
+// content for any client that joined mid-stream.
+type BrainChunkPayload struct {
+	ChannelID string `json:"channel_id"`
+	ParentID  string `json:"parent_id,omitempty"`
+	MessageID string `json:"message_id"`
+	Delta     string `json:"delta"`
 }
 
 // Calendar event payloads (server → client broadcasts)

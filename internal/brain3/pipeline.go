@@ -62,6 +62,10 @@ type PipelineConfig struct {
 	DB           *sql.DB            // workspace DB for brain_managed_sessions
 	ExecuteTool  func(slug, channelID, senderMemberID string, call brain.ToolCall) string
 	Trace        TraceRecorder      // optional; pipeline substitutes a noop if nil
+	// OnTextDelta is called for every agent.message text block as it arrives
+	// on the SSE stream. Optional — if nil, streaming is disabled and the
+	// caller gets only the final aggregated text in Result.Response.
+	OnTextDelta func(delta string)
 }
 
 // Result is the output of a Brain v3 turn.

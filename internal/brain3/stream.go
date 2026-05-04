@@ -94,10 +94,14 @@ func consumeStream(
 
 		switch ev.Type {
 		case "agent.message":
-			// Final assistant text. Append every text block.
+			// Assistant text. Buffer for the final Result and stream each
+			// block as a delta to subscribed UIs.
 			for _, blk := range ev.Content.OfBetaManagedAgentsTextBlockArray {
 				if blk.Text != "" {
 					responseBuf.WriteString(blk.Text)
+					if cfg.OnTextDelta != nil {
+						cfg.OnTextDelta(blk.Text)
+					}
 				}
 			}
 
