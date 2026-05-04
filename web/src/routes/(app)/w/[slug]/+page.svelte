@@ -400,6 +400,7 @@
 	let brainBraveKey = $state('');
 	let brainOpenAIKey = $state('');
 	let brainAnthropicKey = $state(''); // Brain v3 (Claude Managed Agents) — write-only, masked by backend
+	let brainAnthropicModel = $state('claude-sonnet-4-6'); // v3 agent model — sonnet by default
 	let northStar = $state('');
 	let northStarWhy = $state('');
 	let northStarSuccess = $state('');
@@ -516,7 +517,21 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 		'Hermes-2-Pro-Llama-3-8B-q4f16_1-MLC': 'Hermes 2 Pro 8B',
 		'Hermes-2-Pro-Mistral-7B-q4f16_1-MLC': 'Hermes 2 Pro Mistral 7B',
 	};
+	// Pretty-print Claude model IDs: "claude-sonnet-4-6" → "Sonnet 4.6"
+	function prettyClaudeModel(id: string): string {
+		const m = id.replace(/^claude-/, '');
+		const parts = m.split('-');
+		if (parts.length >= 3) {
+			const tier = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+			return `${tier} ${parts.slice(1).join('.')}`;
+		}
+		return m;
+	}
 	let modelStatusLabel = $derived.by(() => {
+		if (brainVersion === 'v3') {
+			const m = brainAnthropicModel || 'claude-sonnet-4-6';
+			return `Claude: ${prettyClaudeModel(m)}`;
+		}
 		if ((brainWebLLMEnabled || userWebLLMEnabled) && brainWebLLMModel) {
 			const name = recommendedModelNames[brainWebLLMModel] || brainWebLLMModel.replace(/-/g, ' ');
 			return `Local: ${name}`;
@@ -527,6 +542,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 		return 'Brain: Off';
 	});
 	let modelStatusColor = $derived.by(() => {
+		if (brainVersion === 'v3') return '#d97757'; // Anthropic terracotta
 		if ((brainWebLLMEnabled || userWebLLMEnabled) && brainWebLLMModel) return 'var(--accent)';
 		if (brainOllamaEnabled) return 'var(--green, #22c55e)';
 		if (brainLLMEnabled && !userWebLLMEnabled) return '#3b82f6';
@@ -2216,6 +2232,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			brainMemoryModel = brainSettings.memory_model || 'openai/gpt-4o-mini';
 			brainOpenAIKey = '';
 			brainAnthropicKey = '';
+			brainAnthropicModel = brainSettings.mga_model || 'claude-sonnet-4-6';
 			brainStandardChatEnabled = brainSettings.standard_chat_enabled !== 'false';
 			brainLLMEnabled = brainSettings.llm_enabled !== 'false';
 			brainWebLLMEnabled = brainSettings.webllm_enabled === 'true';
@@ -2366,6 +2383,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			if (brainOpenAIKey) updates.openai_api_key = brainOpenAIKey;
 			if (brainBraveKey) updates.brave_api_key = brainBraveKey;
 			if (brainAnthropicKey) updates.anthropic_api_key = brainAnthropicKey;
+			updates.mga_model = brainAnthropicModel;
 			await updateBrainSettings(slug, updates);
 			await loadBrainSettings();
 			brainApiKey = '';
@@ -6678,6 +6696,22 @@ autonomy: reactive
 									{/if}
 									<input type="password" class="brain-input" placeholder="sk-ant-..." bind:value={brainAnthropicKey} autocomplete="off" />
 									<span class="brain-hint">Get a key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>. Stored encrypted, masked on read. Type a new key to replace.</span>
+								</div>
+								<div class="brain-field">
+									<label>Model</label>
+									<select class="brain-input" bind:value={brainAnthropicModel}>
+										<option value="claude-sonnet-4-6">Claude Sonnet 4.6 — balanced ($3 / $15 per 1M, recommended)</option>
+										<option value="claude-haiku-4-5">Claude Haiku 4.5 — fastest, cheapest ($1 / $5 per 1M)</option>
+										<option value="claude-opus-4-7">Claude Opus 4.7 — most capable ($5 / $25 per 1M)</option>
+										<option value="claude-opus-4-6">Claude Opus 4.6 — previous Opus ($5 / $25 per 1M)</option>
+									</select>
+									<span class="brain-hint">
+										{#if brainSettings.mga_provisioned_model && brainSettings.mga_provisioned_model !== brainAnthropicModel}
+											⚠ Agent currently running <strong>{brainSettings.mga_provisioned_model}</strong>. Saving will bump the agent version on the next @Brain message; new sessions use the new model.
+										{:else}
+											Captured at agent-create time. Switching swaps the model on the next @Brain message via an automatic version bump.
+										{/if}
+									</span>
 								</div>
 								{#if brainSettings.anthropic_api_key_set === 'true'}
 									<div class="brain-field">

@@ -65,11 +65,14 @@ func EnsureProvisioned(ctx context.Context, settings SettingsStore, slug string,
 	versionStr := settings.Get(slug, "mga_agent_version")
 	memID := settings.Get(slug, "mga_memory_store_id")
 
-	// Fast path: all IDs persisted, return without API roundtrips.
+	// Fast path: all IDs persisted. Still check for model drift — if the user
+	// changed the model in settings, we need to bump the agent's version so
+	// new sessions pick it up.
 	if envID != "" && agentID != "" && memID != "" {
 		var v int64
 		_, _ = fmt.Sscanf(versionStr, "%d", &v)
-		return AgentInfo{AgentID: agentID, AgentVersion: v, EnvironmentID: envID, MemoryStoreID: memID}, nil
+		info := AgentInfo{AgentID: agentID, AgentVersion: v, EnvironmentID: envID, MemoryStoreID: memID}
+		return applyModelDriftIfNeeded(ctx, client, settings, slug, info)
 	}
 
 	// Slow path: provision whichever pieces are missing. Order matters —
@@ -95,7 +98,7 @@ func EnsureProvisioned(ctx context.Context, settings SettingsStore, slug string,
 	}
 
 	if agentID == "" {
-		agent, err := createAgent(ctx, client, slug, systemPrompt, tools)
+		agent, err := createAgent(ctx, client, settings, slug, systemPrompt, tools)
 		if err != nil {
 			return AgentInfo{}, fmt.Errorf("create agent: %w", err)
 		}
@@ -105,6 +108,11 @@ func EnsureProvisioned(ctx context.Context, settings SettingsStore, slug string,
 		}
 		if err := settings.Set(slug, "mga_agent_version", fmt.Sprintf("%d", agent.Version)); err != nil {
 			return AgentInfo{}, fmt.Errorf("persist agent version: %w", err)
+		}
+		// Record the model the agent was created with so applyModelDriftIfNeeded
+		// can detect future changes.
+		if err := settings.Set(slug, "mga_provisioned_model", resolveModel(settings, slug)); err != nil {
+			return AgentInfo{}, fmt.Errorf("persist provisioned model: %w", err)
 		}
 		return AgentInfo{AgentID: agent.ID, AgentVersion: agent.Version, EnvironmentID: envID, MemoryStoreID: memID}, nil
 	}
@@ -133,14 +141,26 @@ func createEnvironment(ctx context.Context, client *anthropic.Client, slug strin
 	})
 }
 
+// resolveModel returns the workspace's chosen Anthropic model from
+// brain_settings.mga_model, falling back to DefaultModel. Validates against a
+// short allowlist so a fat-fingered setting doesn't 400 at agent-create time.
+func resolveModel(settings SettingsStore, slug string) string {
+	chosen := settings.Get(slug, "mga_model")
+	switch chosen {
+	case "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5":
+		return chosen
+	}
+	return DefaultModel
+}
+
 // createAgent provisions the workspace's Anthropic agent with Nexus's tool
 // catalog mapped to custom tools. The system prompt is captured at this
 // point — to evolve it, bump the agent version (Phase 1.5).
-func createAgent(ctx context.Context, client *anthropic.Client, slug, systemPrompt string, tools []brain.ToolDef) (*anthropic.BetaManagedAgentsAgent, error) {
+func createAgent(ctx context.Context, client *anthropic.Client, settings SettingsStore, slug, systemPrompt string, tools []brain.ToolDef) (*anthropic.BetaManagedAgentsAgent, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	model := anthropic.BetaManagedAgentsModel(DefaultModel)
+	model := anthropic.BetaManagedAgentsModel(resolveModel(settings, slug))
 
 	params := anthropic.BetaAgentNewParams{
 		Name: AgentName(slug),
@@ -160,4 +180,42 @@ func createAgent(ctx context.Context, client *anthropic.Client, slug, systemProm
 	}
 
 	return client.Beta.Agents.New(ctx, params)
+}
+
+// applyModelDriftIfNeeded compares the user's chosen model (mga_model) to the
+// model that was active when the agent was last provisioned (mga_provisioned_model).
+// If they differ, it calls Beta.Agents.Update to bump the agent's version with
+// the new model. New sessions will pin to the latest version automatically;
+// existing sessions keep running on whatever version they were created with.
+//
+// Cost: one ~200-500ms API call on the first message after a model change.
+// No-op on every subsequent message until the user changes the setting again.
+func applyModelDriftIfNeeded(ctx context.Context, client *anthropic.Client, settings SettingsStore, slug string, info AgentInfo) (AgentInfo, error) {
+	desired := resolveModel(settings, slug)
+	provisioned := settings.Get(slug, "mga_provisioned_model")
+	if desired == provisioned || info.AgentID == "" {
+		// First-ever provision will be reconciled below in the create path.
+		return info, nil
+	}
+
+	updateCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	updated, err := client.Beta.Agents.Update(updateCtx, info.AgentID, anthropic.BetaAgentUpdateParams{
+		Version: info.AgentVersion,
+		Model: anthropic.BetaManagedAgentsModelConfigParams{
+			ID: anthropic.BetaManagedAgentsModel(desired),
+		},
+	})
+	if err != nil {
+		return info, fmt.Errorf("update agent model: %w", err)
+	}
+	info.AgentVersion = updated.Version
+	if err := settings.Set(slug, "mga_agent_version", fmt.Sprintf("%d", updated.Version)); err != nil {
+		return info, fmt.Errorf("persist agent version: %w", err)
+	}
+	if err := settings.Set(slug, "mga_provisioned_model", desired); err != nil {
+		return info, fmt.Errorf("persist provisioned model: %w", err)
+	}
+	return info, nil
 }

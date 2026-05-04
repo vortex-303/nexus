@@ -865,6 +865,7 @@ func (s *Server) handleUpdateBrainSettings(w http.ResponseWriter, r *http.Reques
 		// Brain v3 (Claude Managed Agents) — see internal/brain3/
 		"anthropic_api_key": true, "mga_agent_id": true, "mga_agent_version": true,
 		"mga_environment_id": true, "mga_memory_store_id": true, "mga_default_effort": true,
+		"mga_model": true, "mga_provisioned_model": true,
 		"north_star": true, "north_star_why": true, "north_star_success": true, "strategic_themes": true,
 		"reflection_enabled": true, "reflection_time": true,
 		// Integrations

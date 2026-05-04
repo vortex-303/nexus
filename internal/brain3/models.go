@@ -28,10 +28,10 @@ const VersionTag = "v3"
 // fallback we may need.
 const AnthropicBetaHeader = "managed-agents-2026-04-01"
 
-// Default model for v3 agents. Claude Opus 4.7 — adaptive thinking only,
-// `xhigh` effort recommended for agentic workloads. Override via the
-// brain_settings.model setting.
-const DefaultModel = "claude-opus-4-7"
+// Default model for v3 agents. Claude Sonnet 4.6 — best speed/intelligence
+// balance, $3/$15 per 1M tokens. User can switch to Opus or Haiku via the
+// brain_settings.mga_model setting (Anthropic provider card dropdown).
+const DefaultModel = "claude-sonnet-4-6"
 
 // EnvironmentName returns the deterministic Anthropic environment name for a
 // workspace slug. Used so we can find an existing environment by name on
