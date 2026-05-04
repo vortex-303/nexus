@@ -41,12 +41,21 @@ func runTurn(ctx context.Context, client *anthropic.Client, sessionID string, us
 	stream := client.Beta.Sessions.Events.StreamEvents(ctx, sessionID, anthropic.BetaSessionEventStreamParams{})
 	defer stream.Close()
 
-	// Send the user message now that the stream is buffering.
+	// Send the user message now that the stream is buffering. We build the
+	// params struct directly because the SDK's
+	// BetaManagedAgentsEventParamsOfUserMessage helper doesn't set the
+	// required Type discriminator and the API rejects the event with
+	// "events[0].type: Field required".
 	_, err := client.Beta.Sessions.Events.Send(ctx, sessionID, anthropic.BetaSessionEventSendParams{
 		Events: []anthropic.BetaManagedAgentsEventParamsUnion{
-			anthropic.BetaManagedAgentsEventParamsOfUserMessage([]anthropic.BetaManagedAgentsUserMessageEventParamsContentUnion{
-				{OfText: &anthropic.BetaManagedAgentsTextBlockParam{Text: userMessage, Type: anthropic.BetaManagedAgentsTextBlockTypeText}},
-			}),
+			{
+				OfUserMessage: &anthropic.BetaManagedAgentsUserMessageEventParams{
+					Type: anthropic.BetaManagedAgentsUserMessageEventParamsTypeUserMessage,
+					Content: []anthropic.BetaManagedAgentsUserMessageEventParamsContentUnion{
+						{OfText: &anthropic.BetaManagedAgentsTextBlockParam{Text: userMessage, Type: anthropic.BetaManagedAgentsTextBlockTypeText}},
+					},
+				},
+			},
 		},
 	})
 	if err != nil {
@@ -203,10 +212,13 @@ func sendToolResult(ctx context.Context, client *anthropic.Client, sessionID, cu
 }
 
 // toolResultEvent builds a user.custom_tool_result event with a single text
-// content block holding the tool's stdout-equivalent output.
+// content block holding the tool's stdout-equivalent output. We set the Type
+// discriminator explicitly because the SDK's OfUserCustomToolResult helper
+// doesn't, and the API requires it.
 func toolResultEvent(customToolUseID, result string) anthropic.BetaManagedAgentsEventParamsUnion {
 	out := anthropic.BetaManagedAgentsEventParamsOfUserCustomToolResult(customToolUseID)
 	if out.OfUserCustomToolResult != nil {
+		out.OfUserCustomToolResult.Type = anthropic.BetaManagedAgentsUserCustomToolResultEventParamsTypeUserCustomToolResult
 		out.OfUserCustomToolResult.Content = []anthropic.BetaManagedAgentsUserCustomToolResultEventParamsContentUnion{
 			{OfText: &anthropic.BetaManagedAgentsTextBlockParam{Text: result, Type: anthropic.BetaManagedAgentsTextBlockTypeText}},
 		}
