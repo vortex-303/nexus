@@ -786,6 +786,11 @@ func (s *Server) handleGetBrainSettings(w http.ResponseWriter, r *http.Request) 
 					settings["brave_api_key_masked"] = v[:4] + "..." + v[len(v)-4:]
 				}
 				settings["brave_api_key_set"] = "true"
+			} else if k == "anthropic_api_key" {
+				if len(v) > 8 {
+					settings["anthropic_api_key_masked"] = v[:4] + "..." + v[len(v)-4:]
+				}
+				settings["anthropic_api_key_set"] = "true"
 			} else {
 				settings[k] = v
 			}
@@ -820,7 +825,7 @@ func (s *Server) handleGetBrainSettings(w http.ResponseWriter, r *http.Request) 
 
 	// Non-admins: strip API key info entirely
 	if claims.Role != "admin" {
-		for _, k := range []string{"api_key_masked", "api_key_set", "gemini_api_key_masked", "gemini_api_key_set", "openai_api_key_masked", "openai_api_key_set", "brave_api_key_masked", "brave_api_key_set"} {
+		for _, k := range []string{"api_key_masked", "api_key_set", "gemini_api_key_masked", "gemini_api_key_set", "openai_api_key_masked", "openai_api_key_set", "brave_api_key_masked", "brave_api_key_set", "anthropic_api_key_masked", "anthropic_api_key_set"} {
 			delete(settings, k)
 		}
 	}

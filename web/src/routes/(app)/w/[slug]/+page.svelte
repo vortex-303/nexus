@@ -399,6 +399,7 @@
 	let brainXAIEnabled = $state(_cachedBrain?.xai_enabled ?? false);
 	let brainBraveKey = $state('');
 	let brainOpenAIKey = $state('');
+	let brainAnthropicKey = $state(''); // Brain v3 (Claude Managed Agents) — write-only, masked by backend
 	let northStar = $state('');
 	let northStarWhy = $state('');
 	let northStarSuccess = $state('');
@@ -2214,6 +2215,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			brainMemoryEngine = brainSettings.memory_engine || 'openrouter';
 			brainMemoryModel = brainSettings.memory_model || 'openai/gpt-4o-mini';
 			brainOpenAIKey = '';
+			brainAnthropicKey = '';
 			brainStandardChatEnabled = brainSettings.standard_chat_enabled !== 'false';
 			brainLLMEnabled = brainSettings.llm_enabled !== 'false';
 			brainWebLLMEnabled = brainSettings.webllm_enabled === 'true';
@@ -2363,12 +2365,14 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			updates.xai_enabled = String(brainXAIEnabled);
 			if (brainOpenAIKey) updates.openai_api_key = brainOpenAIKey;
 			if (brainBraveKey) updates.brave_api_key = brainBraveKey;
+			if (brainAnthropicKey) updates.anthropic_api_key = brainAnthropicKey;
 			await updateBrainSettings(slug, updates);
 			await loadBrainSettings();
 			brainApiKey = '';
 			brainXAIKey = '';
 			brainOpenAIKey = '';
 			brainBraveKey = '';
+			brainAnthropicKey = '';
 		} catch (e: any) {
 			alert(e.message);
 		}
@@ -6315,6 +6319,27 @@ autonomy: reactive
 						</select>
 					</div>
 					<span class="brain-hint" style="margin-top: 4px;">Self-correction iterations. Higher = more retries. Local models can use 10 (free).</span>
+				{/if}
+				<label class="brain-toggle-row">
+					<input type="radio" name="brain-version" checked={brainVersion === 'v3'} onchange={() => brainVersion = 'v3'} />
+					<div>
+						<strong>v3 Claude Managed Agent <span style="color: var(--accent); font-size: 0.7rem;">BETA</span></strong>
+						<span class="brain-hint" style="display: block; margin-top: 2px;">Anthropic-hosted agent runtime, persistent per-thread sessions, native memory_store. Requires an Anthropic API key.</span>
+					</div>
+				</label>
+				{#if brainVersion === 'v3'}
+					<div style="margin-top: 8px; padding: 10px; background: var(--surface-2, rgba(255,255,255,0.03)); border-radius: 6px; font-size: 0.8rem;">
+						<div style="display: flex; flex-direction: column; gap: 6px;">
+							<label style="color: var(--text-secondary);">Anthropic API key</label>
+							<input type="password" class="brain-input" placeholder={brainSettings.anthropic_api_key_set === 'true' ? `Active (${brainSettings.anthropic_api_key_masked || 'sk-ant-...'}) — type new key to replace` : 'sk-ant-...'} bind:value={brainAnthropicKey} />
+						</div>
+						<div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 12px; color: var(--text-secondary);">
+							<span>Agent: <strong style="color: var(--text);">{brainSettings.mga_agent_id ? `${brainSettings.mga_agent_id.slice(0,12)}…` : 'not yet provisioned'}</strong></span>
+							<span>Env: <strong style="color: var(--text);">{brainSettings.mga_environment_id ? `${brainSettings.mga_environment_id.slice(0,12)}…` : '—'}</strong></span>
+							<span>Memory: <strong style="color: var(--text);">{brainSettings.mga_memory_store_id ? `${brainSettings.mga_memory_store_id.slice(0,12)}…` : '—'}</strong></span>
+						</div>
+						<span class="brain-hint" style="margin-top: 6px; display: block;">First @Brain message provisions environment + agent + memory_store (~2–4s one-time). Sessions are per channel-thread; memories live in the Anthropic memory_store, not in Nexus's brain_memories table — completely siloed from v1/v2.</span>
+					</div>
 				{/if}
 			</div>
 			{:else}
