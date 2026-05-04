@@ -6199,6 +6199,14 @@ autonomy: reactive
 
 			{#if brainTab === 'settings'}
 			{#if isAdmin}
+			{#if brainVersion === 'v3'}
+			<div class="brain-section">
+				<h3 class="brain-section-title">Engine Mode</h3>
+				<div class="engine-status">
+					Active: <strong>Anthropic / Claude</strong> — v3 uses Claude Managed Agents directly. Engine selection doesn't apply.
+				</div>
+			</div>
+			{:else}
 			<div class="brain-section">
 				<h3 class="brain-section-title">Engine Mode</h3>
 				<label class="brain-toggle-row">
@@ -6282,6 +6290,7 @@ autonomy: reactive
 					{/if}
 				</div>
 			</div>
+			{/if}
 			<div class="brain-section">
 				<h3 class="brain-section-title">Automations</h3>
 				<label class="brain-toggle-row">
