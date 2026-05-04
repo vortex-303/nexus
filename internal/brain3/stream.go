@@ -90,9 +90,9 @@ func consumeStream(
 			}
 
 		case "agent.custom_tool_use":
-			// Bridge to Nexus's existing tool handler.
-			toolName := ev.Name
-			toolsUsedSet[toolName] = struct{}{}
+			// Bridge to Nexus's existing tool handler. Track the Nexus name
+			// so traces/logs match v1/v2 conventions.
+			toolsUsedSet[NexusToolName(ev.Name)] = struct{}{}
 			out.ToolCalls++
 
 			result := dispatchCustomTool(ev, cfg)
@@ -173,11 +173,13 @@ func dispatchCustomTool(ev anthropic.BetaManagedAgentsStreamSessionEventsUnion, 
 		argsJSON = "{}"
 	}
 
+	// Reverse the AnthropicToolName rename so s.executeTool sees the
+	// original Nexus tool name (e.g. "web_search", not "nexus_web_search").
 	call := brain.ToolCall{
 		ID:   ev.ID,
 		Type: "function",
 	}
-	call.Function.Name = ev.Name
+	call.Function.Name = NexusToolName(ev.Name)
 	call.Function.Arguments = argsJSON
 
 	// senderMemberID is "" for now; v3 doesn't have it in scope yet (see

@@ -2,11 +2,58 @@ package brain3
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/nexus-chat/nexus/internal/brain"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 )
+
+// reservedAgentToolNames are tool names Anthropic reserves for the built-in
+// agent_toolset_20260401, regardless of whether that toolset is enabled on
+// the agent. Custom tools using these names cause a 400 at agent-create time:
+//
+//	tools.N.custom.name: custom tool name "web_search" conflicts with agent tool name
+//
+// We rename conflicting Nexus tools transparently — the Anthropic schema
+// gets "nexus_<name>", dispatch resolves back to "<name>" before calling
+// s.executeTool(). The model sees the prefixed name; everything else is
+// unchanged.
+var reservedAgentToolNames = map[string]bool{
+	"bash":       true,
+	"read":       true,
+	"write":      true,
+	"edit":       true,
+	"glob":       true,
+	"grep":       true,
+	"web_fetch":  true,
+	"web_search": true,
+}
+
+const anthropicReservedPrefix = "nexus_"
+
+// AnthropicToolName returns the name to use in the Anthropic agent schema
+// for a given Nexus tool. Reserved names get the prefix; everything else
+// passes through unchanged.
+func AnthropicToolName(nexusName string) string {
+	if reservedAgentToolNames[nexusName] {
+		return anthropicReservedPrefix + nexusName
+	}
+	return nexusName
+}
+
+// NexusToolName reverses AnthropicToolName: given the name from an
+// agent.custom_tool_use event, returns the original Nexus tool name to
+// dispatch to s.executeTool().
+func NexusToolName(anthropicName string) string {
+	if strings.HasPrefix(anthropicName, anthropicReservedPrefix) {
+		stripped := strings.TrimPrefix(anthropicName, anthropicReservedPrefix)
+		if reservedAgentToolNames[stripped] {
+			return stripped
+		}
+	}
+	return anthropicName
+}
 
 // ConvertTools maps Nexus's v1/v2 tool catalog (brain.ToolDef) into the
 // Anthropic Managed Agents custom-tool param shape. The agent will emit
@@ -43,7 +90,7 @@ func convertOne(d brain.ToolDef) *anthropic.BetaManagedAgentsCustomToolParams {
 	}
 
 	return &anthropic.BetaManagedAgentsCustomToolParams{
-		Name:        d.Function.Name,
+		Name:        AnthropicToolName(d.Function.Name),
 		Description: truncate(d.Function.Description, 1024),
 		Type:        anthropic.BetaManagedAgentsCustomToolParamsTypeCustom,
 		InputSchema: anthropic.BetaManagedAgentsCustomToolInputSchemaParam{
