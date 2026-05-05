@@ -68,13 +68,23 @@ var CustomSkills = []CustomSkill{
 // priorities, missing acceptance criteria).
 const taskConventionsSkill = `---
 name: task-conventions
-description: How to use the create_task tool. Apply whenever a chat message signals an action item — explicit ("create a task for X", "track this"), implicit ("we should X", "someone needs to X"), or commitment ("I'll handle X"). Always confirm before creating. Skip for pure questions, brainstorming without resolution, and pure-info requests.
+description: Discipline for calling create_task — required reading before ANY create_task call. Covers the always-ask-first protocol, default field values, title format, and assignee/priority rules. Apply for SINGLE-STEP action items only; for multi-step requests prefer writing-plans (which handles decomposition AND task creation).
 ---
 
 # Task Conventions
 
-When a conversation produces an action item, propose a task and wait for
-confirmation before calling ` + "`create_task`" + `. Never create silently.
+**Hard rule: NEVER call ` + "`create_task`" + ` without an explicit "yes" / "go" /
+"create it" / "save it" from the user in the same conversation.** Implicit
+phrasing like "we should X", "we need to X", "someone should X" is NOT
+confirmation — those phrases are the trigger for the *proposal* step,
+not the create step. Only the user's explicit OK after seeing your
+proposed task structure is confirmation.
+
+This is the most-violated rule in practice; treat it as inviolable.
+
+If the request needs decomposition into multiple steps, **stop and use
+the writing-plans skill instead** — it handles plan + tasks together.
+Single-step asks only here.
 
 ## When to fire
 
@@ -495,7 +505,7 @@ func joinComma(parts []string) string {
 // before-completion this is the "agent that coordinates work" trio.
 const writingPlansSkill = `---
 name: writing-plans
-description: Turn a vague multi-step request into a structured plan saved to a /projects/ markdown file, with one task per step. Apply when a request needs more than one action ("ship the v3 announcement", "migrate the API", "set up the new workspace") AND no existing plan covers it. Skip for single-step requests, pure questions, or decisions (use decision-log).
+description: REQUIRED for any multi-step request — anything that needs sequencing, has a deadline, or crosses concerns (research + draft + review + ship). Examples that ALWAYS trigger this skill: "ship the X by Friday", "migrate the API", "set up onboarding", "roll out new pricing", "launch a feature". Decomposes the request into a plan saved to a /projects/ markdown file AND creates one task per step (replacing standalone create_task usage). Skip ONLY for single-step asks like "create a task to update the README".
 ---
 
 # Writing Plans
