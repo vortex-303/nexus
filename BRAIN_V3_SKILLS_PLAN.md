@@ -40,9 +40,32 @@ These cover the file-format basics. Phase B is about **Brain's behavior**, not f
 | **B-2** | 3 custom P0 (`meeting-summary`, `weekly-digest`, `task-conventions`) | ~1 week |
 | **B-3** | 4 custom P1 (`onboarding-playbook`, `bug-triage`, `knowledge-curation`, `handoff-note`) | ~1 week |
 | **B-4** | Fork 3 from `obra/superpowers` (`writing-plans`, `executing-plans`, `verification-before-completion`) | ~3 days incl. audit |
-| **B-5** | LATAM polish (`es-pt-tone`, `bilingual-summary`, `latam-business-norms`) | ~2 days |
+| **B-5** | Spanish-LATAM polish (`es-tone`, `bilingual-en-es`, `latam-business-norms`) | ~2 days |
 
 **Total Phase B: ~3 weeks for ~14 production skills.** Always-loaded metadata cost ≈ 1.4k tokens — negligible.
+
+---
+
+## Token-cost gating: workspace-owner opt-in
+
+A skill *being attached* to the agent costs nothing — only the metadata description sits in context. But a skill that **fires automatically on a schedule** (weekly digests, scheduled briefs, periodic knowledge-curation passes, skill-distiller proposals) burns tokens whether the workspace asked for it or not.
+
+We already have the right infrastructure: `brain_settings.automations_enabled` (default `false`). v2's async reflector already gates on it. v3 reuses it.
+
+**The rule: any skill or behavior that fires automatically (no human trigger) is gated by `automations_enabled=true`. Manual invocation always works.**
+
+| Skill / behavior | Manual trigger | Auto trigger |
+|---|---|---|
+| `internal-comms` (draft an announcement) | always works (you ask for it) | n/a — never auto |
+| `meeting-summary` | always works (you ask for it) | n/a — never auto |
+| `decision-log` (in-turn write during a chat) | always works (in-turn behavior, free) | n/a — not "scheduled" |
+| `weekly-digest` (Friday 9am post) | always works (any-time `@Brain weekly digest`) | gated — only fires if automations_enabled |
+| `knowledge-curation` (periodic dedupe pass) | always works (`@Brain clean up memory`) | gated — only fires on schedule if enabled |
+| `onboarding-playbook` (LLM-guided walkthrough) | always works (new member's first @Brain) | gated for proactive nudges |
+| Per-member profile updates | always works (in-turn writes) | n/a — not "scheduled" |
+| `skill-distiller` (Phase C, proposes new skills) | always works (`@Brain propose new skills`) | gated — only fires on schedule if enabled |
+
+**Default workspace state:** automations off. Workspace owner toggles **Brain Settings → Automations → Enable automated actions** to opt in. UI already exists. v3 skills that need scheduling check the setting before firing.
 
 ---
 
@@ -230,10 +253,30 @@ Document this convention in `skill-creator`'s template so every future skill fol
 
 ### P1 — incremental but real wins (Phase B-3)
 
-- `onboarding-playbook` — New member → walkthrough, key docs, intro tasks, who-owns-what.
+- `onboarding-playbook` — see "Onboarding reconciliation" section below; merges with existing static welcome.
 - `bug-triage` — Bug report → reproduce checklist, severity, owner, linked task.
-- `knowledge-curation` — Periodic dedupe/merge/retire on memory_store; flags stale notes.
+- `knowledge-curation` — Periodic dedupe/merge/retire on memory_store; flags stale notes. Auto-fire gated on `automations_enabled`.
 - `handoff-note` — End-of-shift summary for an async teammate or the next agent run.
+
+#### Onboarding reconciliation
+
+Nexus already has a passive onboarding: `handleBrainWelcome` (in `internal/server/brain.go`) sends a hardcoded welcome DM when triggered. It's static — no LLM, no per-user adaptation, just one canned message. v1/v2 don't go further than that.
+
+The v3 `onboarding-playbook` skill is the LLM-powered second step that takes over after the static greeting. The merger:
+
+1. **Static welcome (kept as-is, instant, no token cost)** — When a member joins or first lands in the Brain DM, `sendBrainMessage` posts the hardcoded greeting (current behavior). Zero LLM calls. Reliable, fast.
+2. **First reply triggers the playbook** — When the member replies to the DM (or first @-mentions Brain anywhere), v3 routes to `handleBrainV3` → loads the `onboarding-playbook` skill on demand → guided introduction.
+3. **The playbook reads memory_store** — Pulls `/people/<existing-members>/profile.md` summaries, `/projects/*` to know active initiatives, `/pinned.md` for workspace constraints. Tells the new member who works on what, what's currently being shipped, and what conventions they should know.
+4. **It writes too** — Drafts a starter `/people/<new-member>/profile.md` from the conversation. Future turns build on it.
+5. **Optional proactive nudges (gated)** — On day 3, day 7, etc., propose useful actions ("you haven't introduced yourself yet", "here are 3 docs people referenced this week"). These fire only with `automations_enabled=true`.
+
+What a new member experiences:
+- Day 0, second they join: instant canned welcome (current Nexus behavior, unchanged)
+- Day 0, when they reply: guided LLM walkthrough tailored to the workspace they just joined
+- Day 0+, when they ask anything: v3 already has their profile started, response style adapts
+- Day 3+, IF owner enabled automations: optional proactive check-ins
+
+This makes the existing static welcome the cheap-and-fast "hello" and the new skill the rich-but-token-spending "let me actually help you ramp up" — only when the human is engaged enough to reply.
 
 ### P2 (later)
 
@@ -245,11 +288,13 @@ Document this convention in `skill-creator`'s template so every future skill fol
 
 - `incident-postmortem` — Blameless postmortem template.
 
-### LATAM polish
+### Spanish-LATAM polish (Phase B-5)
 
-- `es-pt-tone` — Spanish (rioplatense + neutral LATAM) and Portuguese (BR) tone/register.
-- `bilingual-summary` — Auto-detect input language; respond in same.
-- `latam-business-norms` — Holiday calendars, working-hours, formal/informal address per country.
+PT/Brazil dropped from scope — Nexus v3 targets Spanish-speaking LATAM only.
+
+- `es-tone` — Spanish register guide. Covers rioplatense (Argentina/Uruguay) and neutral LATAM Spanish; tone choices (formal vs. informal `tú`/`vos`/`usted`), pronoun consistency, common-LATAM idioms vs. Spain-Spanish words to avoid.
+- `bilingual-en-es` — Auto-detect EN vs. ES on input; respond in same. When the conversation mixes both (common in tech teams), provide inline ES↔EN gloss for ambiguous terms. Pairs with the babel project's glossary work.
+- `latam-business-norms` — Spanish-LATAM only: Argentina/Mexico/Colombia/Chile/Peru holiday calendars, working-hours norms, formal/informal address per country, common business terms (CUIT/RFC/RUT etc.). No BR content.
 
 ### Vertical packs (deferred to Atlas v2 alignment)
 
@@ -265,7 +310,7 @@ Document this convention in `skill-creator`'s template so every future skill fol
 | **B-2** | Chat threads can be turned into structured meeting notes with one ask. Friday digests appear automatically. New tasks all follow the same conventions. |
 | **B-3** | New members get a guided onboarding from Brain. Bugs reported in chat become triaged tasks. Memory stays organized over time without manual cleanup. |
 | **B-4** | Multi-step requests produce real plans that Brain executes step-by-step, with verification before claiming "done". Trust in Brain's reports goes up sharply. |
-| **B-5** | Brain answers in your language with appropriate register (formal/informal Spanish, Brazilian Portuguese), respects local norms. |
+| **B-5** | Brain answers in Spanish or English (auto-detected) with LATAM-appropriate register (`tú`/`vos`/`usted`, country-specific norms). |
 | **C** | Brain proposes new skills based on patterns it's seen — the catalog grows organically per workspace. |
 
 ---
