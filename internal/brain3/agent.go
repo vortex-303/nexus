@@ -76,7 +76,7 @@ func EnsureProvisioned(ctx context.Context, settings SettingsStore, slug string,
 		if err != nil {
 			return info, err
 		}
-		info, err = applyToolsDriftIfNeeded(ctx, client, settings, slug, tools, info)
+		info, err = applyToolsDriftIfNeeded(ctx, client, settings, slug, systemPrompt, tools, info)
 		if err != nil {
 			return info, err
 		}
@@ -259,10 +259,12 @@ func applyModelDriftIfNeeded(ctx context.Context, client *anthropic.Client, sett
 
 // applyToolsDriftIfNeeded compares the current Nexus tool catalog hash against
 // the one captured at agent-create time. If they differ, calls
-// Beta.Agents.Update with the freshly-converted tool list and bumps the agent
-// version. This is what makes adding a new Nexus tool self-healing —
-// otherwise the agent would never see it (tools are captured at create time).
-func applyToolsDriftIfNeeded(ctx context.Context, client *anthropic.Client, settings SettingsStore, slug string, tools []brain.ToolDef, info AgentInfo) (AgentInfo, error) {
+// Beta.Agents.Update with the freshly-converted tool list AND the resolved
+// system prompt and bumps the agent version. We send System alongside Tools
+// because the AgentToolsetRevision marker is also bumped for system-prompt
+// content changes (e.g. mount-path fixes inside the addendum) — sending both
+// keeps a single drift point that propagates whichever changed.
+func applyToolsDriftIfNeeded(ctx context.Context, client *anthropic.Client, settings SettingsStore, slug, basePrompt string, tools []brain.ToolDef, info AgentInfo) (AgentInfo, error) {
 	desired := ToolCatalogHash(tools)
 	provisioned := settings.Get(slug, "mga_provisioned_tools_hash")
 	if desired == provisioned || info.AgentID == "" {
@@ -273,11 +275,11 @@ func applyToolsDriftIfNeeded(ctx context.Context, client *anthropic.Client, sett
 	defer cancel()
 
 	// BuildAgentUpdateTools includes both Nexus customs and the
-	// agent_toolset (file tools), so flipping the toolset rev or adding/
-	// removing Nexus tools both flow through this single update path.
+	// agent_toolset (file tools).
 	resp, err := client.Beta.Agents.Update(updateCtx, info.AgentID, anthropic.BetaAgentUpdateParams{
 		Version: info.AgentVersion,
 		Tools:   BuildAgentUpdateTools(tools),
+		System:  param.NewOpt(ResolveSystemPrompt(settings, slug, basePrompt)),
 	})
 	if err != nil {
 		return info, fmt.Errorf("update agent tools: %w", err)

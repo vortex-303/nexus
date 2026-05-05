@@ -18,11 +18,17 @@ import (
 // revision is folded into ToolCatalogHash so any change auto-triggers
 // applyToolsDriftIfNeeded on existing agents — no manual reset needed.
 //
+// We also bump it for unrelated agent-config changes (system prompt content,
+// skill list) when we want existing agents to auto-pick-up the change. The
+// "drift" path's Update call carries Tools but not System or Skills, so we
+// extend it on bumps that need those — see applyToolsDriftIfNeeded.
+//
 // Revisions:
-//   r1 — file tools enabled (read/write/edit/glob/grep). bash/web_fetch/
-//        web_search remain disabled (we have nexus_web_search + fetch_url
-//        as custom tools; bash is unnecessary attack surface).
-const AgentToolsetRevision = "r1"
+//   r1 — file tools enabled (read/write/edit/glob/grep).
+//   r2 — system prompt mount-path fix (was hardcoded to /mnt/memory/brain;
+//        now uses the actual /mnt/memory/<store-name> derived from the
+//        memory_store name).
+const AgentToolsetRevision = "r2"
 
 // FileToolNames are the agent_toolset tool names we keep enabled.
 // Everything else in the toolset is disabled by default_config.

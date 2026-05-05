@@ -12,9 +12,22 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 )
 
-// MemoryMountPath is where the Anthropic memory_store is FUSE-mounted inside
-// the session container. The agent reads/writes here using its file tools.
-const MemoryMountPath = "/mnt/memory/brain"
+// MemoryStoreName returns the Anthropic memory_store name we provision per
+// workspace. Anthropic auto-derives the mount path from this — the FUSE
+// mount inside the session container ends up at /mnt/memory/<store-name>.
+// We can't override the mount path on the resource attachment (no mount_path
+// field on BetaManagedAgentsMemoryStoreResourceParam), so naming + mount
+// path are coupled.
+func MemoryStoreName(slug string) string {
+	return "nexus-brain-" + slug
+}
+
+// MemoryMountPath returns the actual mount point inside the session container
+// for the given workspace's memory_store. Used to teach the agent (in the
+// system prompt addendum) where to read/write its memory files.
+func MemoryMountPath(slug string) string {
+	return "/mnt/memory/" + MemoryStoreName(slug)
+}
 
 // PinnedPath is the always-include constraint file inside the store.
 const PinnedPath = "/pinned.md"
@@ -61,7 +74,7 @@ func ensureMemoryStore(ctx context.Context, client *anthropic.Client, settings S
 	defer cancel()
 
 	store, err := client.Beta.MemoryStores.New(ctx, anthropic.BetaMemoryStoreNewParams{
-		Name:        "nexus-brain-" + slug,
+		Name:        MemoryStoreName(slug),
 		Description: param.NewOpt("Brain v3 persistent memory for Nexus workspace " + slug),
 	})
 	if err != nil {
