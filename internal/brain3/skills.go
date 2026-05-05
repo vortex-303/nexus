@@ -186,12 +186,19 @@ func uploadCustomSkill(ctx context.Context, client *anthropic.Client, sk CustomS
 	uploadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	// Anthropic requires a top-level folder containing SKILL.md (and any
+	// helper assets). Even for a single-file skill, the multipart filename
+	// must include the folder prefix — sending just "SKILL.md" produces:
+	//   400 invalid_request_error: SKILL.md file must be exactly in the
+	//   top-level folder.
+	// Using the skill's Name as the folder makes it readable in the
+	// Anthropic console too.
 	resp, err := client.Beta.Skills.New(uploadCtx, anthropic.BetaSkillNewParams{
 		DisplayTitle: param.NewOpt(sk.DisplayTitle),
 		Files: []io.Reader{
 			namedReader{
 				Reader: bytes.NewReader([]byte(sk.SkillMD)),
-				name:   "SKILL.md",
+				name:   sk.Name + "/SKILL.md",
 			},
 		},
 	}, option.WithHeader("anthropic-beta", "skills-2025-10-02"))
