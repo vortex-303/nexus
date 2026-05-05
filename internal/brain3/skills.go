@@ -495,7 +495,7 @@ func joinComma(parts []string) string {
 // before-completion this is the "agent that coordinates work" trio.
 const writingPlansSkill = `---
 name: writing-plans
-description: Turn a vague multi-step request into a structured plan saved to /projects/<slug>.md, with one task per step. Apply when a request needs more than one action ("ship the v3 announcement", "migrate the API", "set up the new workspace") AND no existing plan covers it. Skip for single-step requests, pure questions, or decisions (use decision-log).
+description: Turn a vague multi-step request into a structured plan saved to a /projects/ markdown file, with one task per step. Apply when a request needs more than one action ("ship the v3 announcement", "migrate the API", "set up the new workspace") AND no existing plan covers it. Skip for single-step requests, pure questions, or decisions (use decision-log).
 ---
 
 # Writing Plans
@@ -608,7 +608,7 @@ referenced in the "Decisions referenced" section.
 // the plan file as work progresses.
 const executingPlansSkill = `---
 name: executing-plans
-description: Work through an existing plan saved at /projects/<slug>.md step by step. Apply when the user references a plan ("work on the X plan", "what's next on X") or asks for progress on an active project. Reads the plan, proposes the next un-blocked step, executes after confirmation, updates the plan file with progress.
+description: Work through an existing plan saved as a /projects/ markdown file step by step. Apply when the user references a plan ("work on the X plan", "what's next on X") or asks for progress on an active project. Reads the plan, proposes the next un-blocked step, executes after confirmation, updates the plan file with progress.
 ---
 
 # Executing Plans
