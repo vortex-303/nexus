@@ -76,6 +76,10 @@ func EnsureProvisioned(ctx context.Context, settings SettingsStore, slug string,
 		if err != nil {
 			return info, err
 		}
+		info, err = applyToolsDriftIfNeeded(ctx, client, settings, slug, tools, info)
+		if err != nil {
+			return info, err
+		}
 		return applyTemplateDriftIfNeeded(ctx, client, settings, slug, systemPrompt, info)
 	}
 
@@ -120,6 +124,9 @@ func EnsureProvisioned(ctx context.Context, settings SettingsStore, slug string,
 		}
 		if err := settings.Set(slug, "mga_provisioned_template", resolveSystemPromptTemplate(settings, slug)); err != nil {
 			return AgentInfo{}, fmt.Errorf("persist provisioned template: %w", err)
+		}
+		if err := settings.Set(slug, "mga_provisioned_tools_hash", ToolCatalogHash(tools)); err != nil {
+			return AgentInfo{}, fmt.Errorf("persist provisioned tools hash: %w", err)
 		}
 		return AgentInfo{AgentID: agent.ID, AgentVersion: agent.Version, EnvironmentID: envID, MemoryStoreID: memID}, nil
 	}
@@ -243,6 +250,50 @@ func applyModelDriftIfNeeded(ctx context.Context, client *anthropic.Client, sett
 	}
 	if err := settings.Set(slug, "mga_provisioned_model", desired); err != nil {
 		return info, fmt.Errorf("persist provisioned model: %w", err)
+	}
+	return info, nil
+}
+
+// applyToolsDriftIfNeeded compares the current Nexus tool catalog hash against
+// the one captured at agent-create time. If they differ, calls
+// Beta.Agents.Update with the freshly-converted tool list and bumps the agent
+// version. This is what makes adding a new Nexus tool self-healing —
+// otherwise the agent would never see it (tools are captured at create time).
+func applyToolsDriftIfNeeded(ctx context.Context, client *anthropic.Client, settings SettingsStore, slug string, tools []brain.ToolDef, info AgentInfo) (AgentInfo, error) {
+	desired := ToolCatalogHash(tools)
+	provisioned := settings.Get(slug, "mga_provisioned_tools_hash")
+	if desired == provisioned || info.AgentID == "" {
+		return info, nil
+	}
+
+	updateCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Re-convert the current Nexus tool catalog into Anthropic's update-shape
+	// custom-tool params. The update endpoint uses BetaAgentUpdateParamsToolUnion
+	// (not the create variant), so we map by hand.
+	updated := make([]anthropic.BetaAgentUpdateParamsToolUnion, 0, len(tools))
+	for _, d := range tools {
+		c := convertOne(d)
+		if c == nil {
+			continue
+		}
+		updated = append(updated, anthropic.BetaAgentUpdateParamsToolUnion{OfCustom: c})
+	}
+
+	resp, err := client.Beta.Agents.Update(updateCtx, info.AgentID, anthropic.BetaAgentUpdateParams{
+		Version: info.AgentVersion,
+		Tools:   updated,
+	})
+	if err != nil {
+		return info, fmt.Errorf("update agent tools: %w", err)
+	}
+	info.AgentVersion = resp.Version
+	if err := settings.Set(slug, "mga_agent_version", fmt.Sprintf("%d", resp.Version)); err != nil {
+		return info, fmt.Errorf("persist agent version: %w", err)
+	}
+	if err := settings.Set(slug, "mga_provisioned_tools_hash", desired); err != nil {
+		return info, fmt.Errorf("persist provisioned tools hash: %w", err)
 	}
 	return info, nil
 }

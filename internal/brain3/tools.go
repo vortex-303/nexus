@@ -1,13 +1,37 @@
 package brain3
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"sort"
 	"strings"
 
 	"github.com/nexus-chat/nexus/internal/brain"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 )
+
+// ToolCatalogHash returns a stable digest of the (name, description) pairs
+// of the tools we'd send to Anthropic at agent-create time. Used to detect
+// when the underlying Nexus tool catalog has changed so we can re-version
+// the agent.
+//
+// We hash names + descriptions only (not full schemas) because schemas
+// rarely change without an accompanying name/description tweak, and full-
+// schema hashing would over-trigger updates on cosmetic changes.
+func ToolCatalogHash(defs []brain.ToolDef) string {
+	pairs := make([]string, 0, len(defs))
+	for _, d := range defs {
+		if d.Function.Name == "" {
+			continue
+		}
+		pairs = append(pairs, AnthropicToolName(d.Function.Name)+"\x00"+d.Function.Description)
+	}
+	sort.Strings(pairs) // order-independent
+	h := sha256.Sum256([]byte(strings.Join(pairs, "\n")))
+	return hex.EncodeToString(h[:8]) // 16-char hex digest, plenty for change detection
+}
 
 // reservedAgentToolNames are tool names Anthropic reserves for the built-in
 // agent_toolset_20260401, regardless of whether that toolset is enabled on

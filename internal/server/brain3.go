@@ -3,14 +3,18 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"time"
 
+	"github.com/nexus-chat/nexus/internal/auth"
 	"github.com/nexus-chat/nexus/internal/brain"
 	"github.com/nexus-chat/nexus/internal/brain3"
 	"github.com/nexus-chat/nexus/internal/hub"
 	"github.com/nexus-chat/nexus/internal/id"
 	"github.com/nexus-chat/nexus/internal/logger"
 	"github.com/nexus-chat/nexus/internal/metrics"
+
+	anthropic "github.com/anthropics/anthropic-sdk-go"
 )
 
 // brain3Settings adapts the Server's existing getBrainSetting helper plus a
@@ -289,4 +293,87 @@ func (s *Server) broadcastBrainChunk(slug, channelID, parentID, msgID, delta str
 		MessageID: msgID,
 		Delta:     delta,
 	}), "")
+}
+
+// handleResetV3Agent archives the current Anthropic agent and clears the
+// persisted IDs so the next @Brain message provisions a fresh one with the
+// current settings (model, template, tool catalog, skills).
+//
+// Environment + memory_store are intentionally NOT cleared — those are stable
+// resources we want to reuse. Only the agent and its sessions reset.
+//
+// Sessions are also cleared because they reference the now-archived agent;
+// existing sessions would 404 on next message. Clearing forces fresh
+// per-(channel, parent_id) sessions on the next round.
+//
+// POST /api/workspaces/{slug}/brain/v3/reset-agent (admin only)
+func (s *Server) handleResetV3Agent(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	claims := auth.GetClaims(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "workspace error")
+		return
+	}
+
+	apiKey := s.getBrainSetting(slug, "anthropic_api_key")
+	agentID := s.getBrainSetting(slug, "mga_agent_id")
+
+	// Best-effort archive on Anthropic side — log but don't fail the reset
+	// if it errors (e.g. agent already archived, key rotated).
+	archived := false
+	if apiKey != "" && agentID != "" {
+		if client, err := brain3.NewClient(apiKey); err == nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			defer cancel()
+			if _, err := client.Beta.Agents.Archive(ctx, agentID, anthropic.BetaAgentArchiveParams{}); err != nil {
+				logger.WithCategory(logger.CatBrain).Warn().
+					Str("workspace", slug).
+					Str("agent_id", agentID).
+					Err(err).
+					Msg("v3: archive agent failed (best-effort, continuing reset)")
+			} else {
+				archived = true
+			}
+		}
+	}
+
+	// Clear the persisted agent IDs so EnsureProvisioned rebuilds.
+	keysToClear := []string{
+		"mga_agent_id",
+		"mga_agent_version",
+		"mga_provisioned_model",
+		"mga_provisioned_template",
+		"mga_provisioned_tools_hash", // populated once tool-drift detection lands
+	}
+	for _, k := range keysToClear {
+		if _, err := wdb.DB.Exec("DELETE FROM brain_settings WHERE key = ?", k); err != nil {
+			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Str("key", k).Err(err).Msg("v3: failed to clear brain setting")
+		}
+	}
+
+	// Clear sessions so they don't try to reference the archived agent.
+	var clearedSessions int64
+	if res, err := wdb.DB.Exec("DELETE FROM brain_managed_sessions"); err == nil {
+		clearedSessions, _ = res.RowsAffected()
+	}
+
+	logger.WithCategory(logger.CatBrain).Info().
+		Str("workspace", slug).
+		Str("agent_id", agentID).
+		Bool("archived", archived).
+		Int64("cleared_sessions", clearedSessions).
+		Msg("v3: agent reset")
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":               true,
+		"archived":         archived,
+		"prior_agent_id":   agentID,
+		"cleared_sessions": clearedSessions,
+	})
 }

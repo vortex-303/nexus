@@ -512,6 +512,10 @@ export async function getReflectionHistory(slug: string) {
 	return request('GET', `/api/workspaces/${slug}/brain/reflections`);
 }
 
+export async function resetV3Agent(slug: string): Promise<{ok: boolean; archived: boolean; prior_agent_id: string; cleared_sessions: number}> {
+	return request('POST', `/api/workspaces/${slug}/brain/v3/reset-agent`, {});
+}
+
 // Living Briefs
 export async function listBriefs(slug: string) {
 	return request('GET', `/api/workspaces/${slug}/briefs`);

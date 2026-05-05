@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, joinChannel, leaveChannel, browseChannels, inviteToChannel, listChannelMembers, pinMessage, unpinMessage, listPinnedMessages, getMemoryPinnedMessageIds, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings, listNotifications, markNotificationRead, markAllNotificationsRead, getNotificationCount } from '$lib/api';
+	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, joinChannel, leaveChannel, browseChannels, inviteToChannel, listChannelMembers, pinMessage, unpinMessage, listPinnedMessages, getMemoryPinnedMessageIds, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, resetV3Agent, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings, listNotifications, markNotificationRead, markAllNotificationsRead, getNotificationCount } from '$lib/api';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { connect, disconnect, onMessage, sendMessage, sendTyping, sendReaction, removeReaction, clearChannel, markChannelRead, connectionStatus, generateClientId } from '$lib/ws';
 	import { channels, members, messages, activeChannel, typingUsers, onlineUsers } from '$lib/stores/workspace';
@@ -402,6 +402,7 @@
 	let brainAnthropicKey = $state(''); // Brain v3 (Claude Managed Agents) — write-only, masked by backend
 	let brainAnthropicModel = $state('claude-sonnet-4-6'); // v3 agent model — sonnet by default
 	let brainSystemPromptTemplate = $state('v3-team-brain'); // v3 system prompt template
+	let resettingV3Agent = $state(false);
 	let northStar = $state('');
 	let northStarWhy = $state('');
 	let northStarSuccess = $state('');
@@ -2406,6 +2407,21 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			alert(e.message);
 		}
 		brainSaving = false;
+	}
+
+	async function resetV3AgentClick() {
+		if (!confirm('Reset the v3 agent? This archives the current agent on Anthropic\'s side and clears all sessions. Your memory_store data is kept. The next @Brain message will provision a fresh agent (~2–4s).')) {
+			return;
+		}
+		resettingV3Agent = true;
+		try {
+			const res = await resetV3Agent(slug);
+			await loadBrainSettings();
+			alert(`Reset complete.\nArchived: ${res.archived ? 'yes' : 'no (best-effort)'}\nCleared sessions: ${res.cleared_sessions}\nNext @Brain message will provision a fresh agent.`);
+		} catch (e: any) {
+			alert('Reset failed: ' + e.message);
+		}
+		resettingV3Agent = false;
 	}
 
 	async function handleBrainSettingChange(key: string, value: string) {
@@ -6747,6 +6763,17 @@ autonomy: reactive
 											<span>Memory store: <strong>{brainSettings.mga_memory_store_id || '—'}</strong></span>
 										</div>
 										<span class="brain-hint">First @Brain message provisions all three (~2–4s, one-time). Memory store is FUSE-mounted in the session container at /mnt/memory/brain/.</span>
+										{#if brainSettings.mga_agent_id}
+											<button
+												class="btn btn-secondary btn-sm"
+												style="margin-top: 8px; align-self: flex-start;"
+												disabled={resettingV3Agent}
+												onclick={resetV3AgentClick}
+											>
+												{resettingV3Agent ? 'Resetting…' : 'Reset Agent'}
+											</button>
+											<span class="brain-hint">Archives the current agent + clears all sessions. Environment and memory_store are kept (your /mnt/memory/brain/ data survives). Next @Brain message provisions a fresh agent with current settings (model, template, tools, skills). Use this after changing things that don't auto-update — like SOUL.md, INSTRUCTIONS.md, or the tool catalog.</span>
+										{/if}
 									</div>
 								{/if}
 							</div>
