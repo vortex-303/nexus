@@ -218,6 +218,17 @@ func dispatchCustomTool(ev anthropic.BetaManagedAgentsStreamSessionEventsUnion, 
 		return "Error: tool execution is not wired in this v3 pipeline."
 	}
 
+	// Defense-in-depth: refuse v1/v2-only memory tools even if an older
+	// session's pinned agent version still has them in its catalog. The
+	// agent_toolset's `write` tool is the v3 path. Returning a redirect
+	// message gets Claude to retry with the right tool inside the same turn.
+	if v1v2OnlyToolNames[ev.Name] {
+		return "This tool is unavailable in Brain v3. Use the `write` file tool " +
+			"to save to the workspace memory mount instead. For decisions, " +
+			"write to a path like /mnt/memory/<store-name>/decisions/" +
+			"<YYYY-MM-DD>-<slug>.md following the decision-log skill template."
+	}
+
 	// Anthropic's `input` field is `any`; v1/v2's executor expects a JSON
 	// string of arguments. Marshal back to JSON for handler compatibility.
 	var argsJSON string
