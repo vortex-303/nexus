@@ -92,14 +92,16 @@ func BuildAgentUpdateTools(defs []brain.ToolDef) []anthropic.BetaAgentUpdatePara
 }
 
 // ToolCatalogHash returns a stable digest of the (name, description) pairs
-// of the Nexus tool catalog plus the AgentToolsetRevision. Used to detect
-// when either changes so we can re-version the agent automatically.
+// of the Nexus tool catalog plus the AgentToolsetRevision plus the custom-
+// skills catalog. Used to detect when any of those change so we can
+// re-version the agent automatically.
 //
-// We hash names + descriptions only (not full schemas) because schemas
+// We hash tool names + descriptions only (not full schemas) because schemas
 // rarely change without an accompanying name/description tweak, and full-
 // schema hashing would over-trigger updates on cosmetic changes. The
 // AgentToolsetRevision string is appended so flipping built-in tools on/off
-// also fires drift.
+// also fires drift. Custom-skill names are appended so adding a new skill
+// to CustomSkills triggers a drift update on existing agents.
 func ToolCatalogHash(defs []brain.ToolDef) string {
 	pairs := make([]string, 0, len(defs))
 	for _, d := range defs {
@@ -109,7 +111,9 @@ func ToolCatalogHash(defs []brain.ToolDef) string {
 		pairs = append(pairs, AnthropicToolName(d.Function.Name)+"\x00"+d.Function.Description)
 	}
 	sort.Strings(pairs) // order-independent
-	digestInput := strings.Join(pairs, "\n") + "\n!toolset:" + AgentToolsetRevision
+	digestInput := strings.Join(pairs, "\n") +
+		"\n!toolset:" + AgentToolsetRevision +
+		"\n!skills:" + strings.Join(CustomSkillNamesSorted(), ",")
 	h := sha256.Sum256([]byte(digestInput))
 	return hex.EncodeToString(h[:8]) // 16-char hex digest, plenty for change detection
 }

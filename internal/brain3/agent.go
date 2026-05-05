@@ -188,12 +188,31 @@ func createAgent(ctx context.Context, client *anthropic.Client, settings Setting
 
 	// Pre-built Anthropic skills. Set Type explicitly because the SDK helper
 	// doesn't (same pattern as the user.message Type discriminator bug).
-	skills := make([]anthropic.BetaManagedAgentsSkillParamsUnion, 0, len(DefaultAnthropicSkills))
+	skills := make([]anthropic.BetaManagedAgentsSkillParamsUnion, 0, len(DefaultAnthropicSkills)+len(CustomSkills))
 	for _, id := range DefaultAnthropicSkills {
 		skills = append(skills, anthropic.BetaManagedAgentsSkillParamsUnion{
 			OfAnthropic: &anthropic.BetaManagedAgentsAnthropicSkillParams{
 				SkillID: id,
 				Type:    anthropic.BetaManagedAgentsAnthropicSkillParamsTypeAnthropic,
+			},
+		})
+	}
+	// Custom skills uploaded to this workspace's Anthropic org. Idempotent —
+	// EnsureCustomSkills only uploads skills not already cached in
+	// brain_settings.
+	customIDs, err := EnsureCustomSkills(ctx, client, settings, slug)
+	if err != nil {
+		return nil, fmt.Errorf("ensure custom skills: %w", err)
+	}
+	for _, name := range CustomSkillNamesSorted() {
+		id, ok := customIDs[name]
+		if !ok || id == "" {
+			continue
+		}
+		skills = append(skills, anthropic.BetaManagedAgentsSkillParamsUnion{
+			OfCustom: &anthropic.BetaManagedAgentsCustomSkillParams{
+				SkillID: id,
+				Type:    anthropic.BetaManagedAgentsCustomSkillParamsTypeCustom,
 			},
 		})
 	}
@@ -274,12 +293,43 @@ func applyToolsDriftIfNeeded(ctx context.Context, client *anthropic.Client, sett
 	updateCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	// Make sure custom skills are uploaded before referencing them.
+	customIDs, err := EnsureCustomSkills(updateCtx, client, settings, slug)
+	if err != nil {
+		return info, fmt.Errorf("ensure custom skills: %w", err)
+	}
+
+	// Compose the full Skills list (Anthropic pre-built + custom). Update is
+	// a full replacement, so we need to send everything we want attached.
+	skills := make([]anthropic.BetaManagedAgentsSkillParamsUnion, 0, len(DefaultAnthropicSkills)+len(customIDs))
+	for _, id := range DefaultAnthropicSkills {
+		skills = append(skills, anthropic.BetaManagedAgentsSkillParamsUnion{
+			OfAnthropic: &anthropic.BetaManagedAgentsAnthropicSkillParams{
+				SkillID: id,
+				Type:    anthropic.BetaManagedAgentsAnthropicSkillParamsTypeAnthropic,
+			},
+		})
+	}
+	for _, name := range CustomSkillNamesSorted() {
+		id, ok := customIDs[name]
+		if !ok || id == "" {
+			continue
+		}
+		skills = append(skills, anthropic.BetaManagedAgentsSkillParamsUnion{
+			OfCustom: &anthropic.BetaManagedAgentsCustomSkillParams{
+				SkillID: id,
+				Type:    anthropic.BetaManagedAgentsCustomSkillParamsTypeCustom,
+			},
+		})
+	}
+
 	// BuildAgentUpdateTools includes both Nexus customs and the
 	// agent_toolset (file tools).
 	resp, err := client.Beta.Agents.Update(updateCtx, info.AgentID, anthropic.BetaAgentUpdateParams{
 		Version: info.AgentVersion,
 		Tools:   BuildAgentUpdateTools(tools),
 		System:  param.NewOpt(ResolveSystemPrompt(settings, slug, basePrompt)),
+		Skills:  skills,
 	})
 	if err != nil {
 		return info, fmt.Errorf("update agent tools: %w", err)
