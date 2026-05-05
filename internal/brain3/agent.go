@@ -65,14 +65,18 @@ func EnsureProvisioned(ctx context.Context, settings SettingsStore, slug string,
 	versionStr := settings.Get(slug, "mga_agent_version")
 	memID := settings.Get(slug, "mga_memory_store_id")
 
-	// Fast path: all IDs persisted. Still check for model drift — if the user
-	// changed the model in settings, we need to bump the agent's version so
-	// new sessions pick it up.
+	// Fast path: all IDs persisted. Still check for drift — if the user
+	// changed model or system-prompt template in settings, we bump the
+	// agent's version so new sessions pick the change up.
 	if envID != "" && agentID != "" && memID != "" {
 		var v int64
 		_, _ = fmt.Sscanf(versionStr, "%d", &v)
 		info := AgentInfo{AgentID: agentID, AgentVersion: v, EnvironmentID: envID, MemoryStoreID: memID}
-		return applyModelDriftIfNeeded(ctx, client, settings, slug, info)
+		info, err := applyModelDriftIfNeeded(ctx, client, settings, slug, info)
+		if err != nil {
+			return info, err
+		}
+		return applyTemplateDriftIfNeeded(ctx, client, settings, slug, systemPrompt, info)
 	}
 
 	// Slow path: provision whichever pieces are missing. Order matters —
@@ -109,10 +113,13 @@ func EnsureProvisioned(ctx context.Context, settings SettingsStore, slug string,
 		if err := settings.Set(slug, "mga_agent_version", fmt.Sprintf("%d", agent.Version)); err != nil {
 			return AgentInfo{}, fmt.Errorf("persist agent version: %w", err)
 		}
-		// Record the model the agent was created with so applyModelDriftIfNeeded
-		// can detect future changes.
+		// Record the model + template the agent was created with so the
+		// drift detectors can fire when settings change later.
 		if err := settings.Set(slug, "mga_provisioned_model", resolveModel(settings, slug)); err != nil {
 			return AgentInfo{}, fmt.Errorf("persist provisioned model: %w", err)
+		}
+		if err := settings.Set(slug, "mga_provisioned_template", resolveSystemPromptTemplate(settings, slug)); err != nil {
+			return AgentInfo{}, fmt.Errorf("persist provisioned template: %w", err)
 		}
 		return AgentInfo{AgentID: agent.ID, AgentVersion: agent.Version, EnvironmentID: envID, MemoryStoreID: memID}, nil
 	}
@@ -193,14 +200,11 @@ func createAgent(ctx context.Context, client *anthropic.Client, settings Setting
 		Tools:       ConvertTools(tools),
 		Skills:      skills,
 	}
-	// Append the v3 memory addendum so Claude knows the layout, the in-turn
-	// write discipline, and the <context> pre-injection convention. Captured
-	// at agent-create time; updates require a version bump.
-	if systemPrompt != "" {
-		params.System = param.NewOpt(AppendMemoryAddendum(systemPrompt))
-	} else {
-		params.System = param.NewOpt(AppendMemoryAddendum(""))
-	}
+	// Compose the system prompt via the chosen template (workspace voice +
+	// optional v3 Operating Guide + memory addendum). Captured at agent-create
+	// time; template changes are picked up on subsequent turns by
+	// applyTemplateDriftIfNeeded.
+	params.System = param.NewOpt(ResolveSystemPrompt(settings, slug, systemPrompt))
 
 	return client.Beta.Agents.New(ctx, params)
 }
@@ -239,6 +243,44 @@ func applyModelDriftIfNeeded(ctx context.Context, client *anthropic.Client, sett
 	}
 	if err := settings.Set(slug, "mga_provisioned_model", desired); err != nil {
 		return info, fmt.Errorf("persist provisioned model: %w", err)
+	}
+	return info, nil
+}
+
+// applyTemplateDriftIfNeeded compares the user's chosen system-prompt template
+// (mga_system_prompt_template) to the one active when the agent was last
+// provisioned (mga_provisioned_template). If they differ, calls
+// Beta.Agents.Update with the freshly-composed system prompt and bumps the
+// agent version. Same cost profile as applyModelDriftIfNeeded.
+//
+// Note: this only detects *template* changes (workspace ↔ v3-team-brain).
+// Edits to SOUL.md / INSTRUCTIONS.md are NOT auto-detected — those require
+// an explicit "Reset agent" action (clear mga_agent_id), since hashing the
+// composed prompt on every turn is more cost than it's worth.
+func applyTemplateDriftIfNeeded(ctx context.Context, client *anthropic.Client, settings SettingsStore, slug, basePrompt string, info AgentInfo) (AgentInfo, error) {
+	desired := resolveSystemPromptTemplate(settings, slug)
+	provisioned := settings.Get(slug, "mga_provisioned_template")
+	if desired == provisioned || info.AgentID == "" {
+		return info, nil
+	}
+
+	updateCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	composed := ResolveSystemPrompt(settings, slug, basePrompt)
+	updated, err := client.Beta.Agents.Update(updateCtx, info.AgentID, anthropic.BetaAgentUpdateParams{
+		Version: info.AgentVersion,
+		System:  param.NewOpt(composed),
+	})
+	if err != nil {
+		return info, fmt.Errorf("update agent system prompt: %w", err)
+	}
+	info.AgentVersion = updated.Version
+	if err := settings.Set(slug, "mga_agent_version", fmt.Sprintf("%d", updated.Version)); err != nil {
+		return info, fmt.Errorf("persist agent version: %w", err)
+	}
+	if err := settings.Set(slug, "mga_provisioned_template", desired); err != nil {
+		return info, fmt.Errorf("persist provisioned template: %w", err)
 	}
 	return info, nil
 }

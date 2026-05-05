@@ -401,6 +401,7 @@
 	let brainOpenAIKey = $state('');
 	let brainAnthropicKey = $state(''); // Brain v3 (Claude Managed Agents) — write-only, masked by backend
 	let brainAnthropicModel = $state('claude-sonnet-4-6'); // v3 agent model — sonnet by default
+	let brainSystemPromptTemplate = $state('v3-team-brain'); // v3 system prompt template
 	let northStar = $state('');
 	let northStarWhy = $state('');
 	let northStarSuccess = $state('');
@@ -2241,6 +2242,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			brainOpenAIKey = '';
 			brainAnthropicKey = '';
 			brainAnthropicModel = brainSettings.mga_model || 'claude-sonnet-4-6';
+			brainSystemPromptTemplate = brainSettings.mga_system_prompt_template || 'v3-team-brain';
 			brainStandardChatEnabled = brainSettings.standard_chat_enabled !== 'false';
 			brainLLMEnabled = brainSettings.llm_enabled !== 'false';
 			brainWebLLMEnabled = brainSettings.webllm_enabled === 'true';
@@ -2392,6 +2394,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			if (brainBraveKey) updates.brave_api_key = brainBraveKey;
 			if (brainAnthropicKey) updates.anthropic_api_key = brainAnthropicKey;
 			updates.mga_model = brainAnthropicModel;
+			updates.mga_system_prompt_template = brainSystemPromptTemplate;
 			await updateBrainSettings(slug, updates);
 			await loadBrainSettings();
 			brainApiKey = '';
@@ -6718,6 +6721,20 @@ autonomy: reactive
 											⚠ Agent currently running <strong>{brainSettings.mga_provisioned_model}</strong>. Saving will bump the agent version on the next @Brain message; new sessions use the new model.
 										{:else}
 											Captured at agent-create time. Switching swaps the model on the next @Brain message via an automatic version bump.
+										{/if}
+									</span>
+								</div>
+								<div class="brain-field">
+									<label>System prompt template</label>
+									<select class="brain-input" bind:value={brainSystemPromptTemplate}>
+										<option value="v3-team-brain">v3 Team Brain — workspace voice + v3 Operating Guide (recommended)</option>
+										<option value="workspace">Workspace — only your SOUL.md / INSTRUCTIONS.md (v1/v2-compatible)</option>
+									</select>
+									<span class="brain-hint">
+										{#if brainSettings.mga_provisioned_template && brainSettings.mga_provisioned_template !== brainSystemPromptTemplate}
+											⚠ Agent currently running <strong>{brainSettings.mga_provisioned_template}</strong>. Saving bumps the agent version on the next @Brain message.
+										{:else}
+											v3 Team Brain layers a runtime guide (sessions, skills, tool selection, memory discipline) on top of your workspace files. Your SOUL.md / INSTRUCTIONS.md are still used either way — this controls whether v3-specific runtime mechanics are added.
 										{/if}
 									</span>
 								</div>
