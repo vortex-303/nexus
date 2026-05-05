@@ -10,16 +10,90 @@ import (
 	"github.com/nexus-chat/nexus/internal/brain"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 )
 
+// AgentToolsetRevision is bumped whenever the agent_toolset config we send
+// to Anthropic changes (which built-in tools are enabled/disabled). The
+// revision is folded into ToolCatalogHash so any change auto-triggers
+// applyToolsDriftIfNeeded on existing agents — no manual reset needed.
+//
+// Revisions:
+//   r1 — file tools enabled (read/write/edit/glob/grep). bash/web_fetch/
+//        web_search remain disabled (we have nexus_web_search + fetch_url
+//        as custom tools; bash is unnecessary attack surface).
+const AgentToolsetRevision = "r1"
+
+// FileToolNames are the agent_toolset tool names we keep enabled.
+// Everything else in the toolset is disabled by default_config.
+var fileToolNames = []anthropic.BetaManagedAgentsAgentToolConfigParamsName{
+	anthropic.BetaManagedAgentsAgentToolConfigParamsNameRead,
+	anthropic.BetaManagedAgentsAgentToolConfigParamsNameWrite,
+	anthropic.BetaManagedAgentsAgentToolConfigParamsNameEdit,
+	anthropic.BetaManagedAgentsAgentToolConfigParamsNameGlob,
+	anthropic.BetaManagedAgentsAgentToolConfigParamsNameGrep,
+}
+
+// fileToolsToolsetParams returns the agent_toolset config that enables only
+// the file tools. Used at agent-create and on update.
+func fileToolsToolsetParams() *anthropic.BetaManagedAgentsAgentToolset20260401Params {
+	configs := make([]anthropic.BetaManagedAgentsAgentToolConfigParams, 0, len(fileToolNames))
+	for _, name := range fileToolNames {
+		configs = append(configs, anthropic.BetaManagedAgentsAgentToolConfigParams{
+			Name:    name,
+			Enabled: param.NewOpt(true),
+		})
+	}
+	return &anthropic.BetaManagedAgentsAgentToolset20260401Params{
+		Type: anthropic.BetaManagedAgentsAgentToolset20260401ParamsTypeAgentToolset20260401,
+		DefaultConfig: anthropic.BetaManagedAgentsAgentToolsetDefaultConfigParams{
+			Enabled: param.NewOpt(false),
+		},
+		Configs: configs,
+	}
+}
+
+// BuildAgentTools assembles the full create-time tool list: Nexus customs +
+// the agent_toolset with file tools enabled. The toolset gives Claude the
+// read/write/edit/glob/grep needed to interact with the memory_store mount
+// at /mnt/memory/brain/.
+func BuildAgentTools(defs []brain.ToolDef) []anthropic.BetaAgentNewParamsToolUnion {
+	customs := ConvertTools(defs)
+	out := make([]anthropic.BetaAgentNewParamsToolUnion, 0, len(customs)+1)
+	out = append(out, anthropic.BetaAgentNewParamsToolUnion{
+		OfAgentToolset20260401: fileToolsToolsetParams(),
+	})
+	out = append(out, customs...)
+	return out
+}
+
+// BuildAgentUpdateTools is the same shape as BuildAgentTools but for the
+// update endpoint, which uses BetaAgentUpdateParamsToolUnion instead of
+// BetaAgentNewParamsToolUnion. Used by applyToolsDriftIfNeeded.
+func BuildAgentUpdateTools(defs []brain.ToolDef) []anthropic.BetaAgentUpdateParamsToolUnion {
+	out := make([]anthropic.BetaAgentUpdateParamsToolUnion, 0, len(defs)+1)
+	out = append(out, anthropic.BetaAgentUpdateParamsToolUnion{
+		OfAgentToolset20260401: fileToolsToolsetParams(),
+	})
+	for _, d := range defs {
+		c := convertOne(d)
+		if c == nil {
+			continue
+		}
+		out = append(out, anthropic.BetaAgentUpdateParamsToolUnion{OfCustom: c})
+	}
+	return out
+}
+
 // ToolCatalogHash returns a stable digest of the (name, description) pairs
-// of the tools we'd send to Anthropic at agent-create time. Used to detect
-// when the underlying Nexus tool catalog has changed so we can re-version
-// the agent.
+// of the Nexus tool catalog plus the AgentToolsetRevision. Used to detect
+// when either changes so we can re-version the agent automatically.
 //
 // We hash names + descriptions only (not full schemas) because schemas
 // rarely change without an accompanying name/description tweak, and full-
-// schema hashing would over-trigger updates on cosmetic changes.
+// schema hashing would over-trigger updates on cosmetic changes. The
+// AgentToolsetRevision string is appended so flipping built-in tools on/off
+// also fires drift.
 func ToolCatalogHash(defs []brain.ToolDef) string {
 	pairs := make([]string, 0, len(defs))
 	for _, d := range defs {
@@ -29,7 +103,8 @@ func ToolCatalogHash(defs []brain.ToolDef) string {
 		pairs = append(pairs, AnthropicToolName(d.Function.Name)+"\x00"+d.Function.Description)
 	}
 	sort.Strings(pairs) // order-independent
-	h := sha256.Sum256([]byte(strings.Join(pairs, "\n")))
+	digestInput := strings.Join(pairs, "\n") + "\n!toolset:" + AgentToolsetRevision
+	h := sha256.Sum256([]byte(digestInput))
 	return hex.EncodeToString(h[:8]) // 16-char hex digest, plenty for change detection
 }
 

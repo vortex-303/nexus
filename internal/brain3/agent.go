@@ -204,8 +204,11 @@ func createAgent(ctx context.Context, client *anthropic.Client, settings Setting
 			ID: model,
 		},
 		Description: param.NewOpt("Brain v3 (Claude Managed Agent) for Nexus workspace " + slug),
-		Tools:       ConvertTools(tools),
-		Skills:      skills,
+		// Custom Nexus tools + agent_toolset with file tools enabled. The
+		// file tools (read/write/edit/glob/grep) are what give Claude the
+		// ability to write to the memory_store mount at /mnt/memory/brain/.
+		Tools:  BuildAgentTools(tools),
+		Skills: skills,
 	}
 	// Compose the system prompt via the chosen template (workspace voice +
 	// optional v3 Operating Guide + memory addendum). Captured at agent-create
@@ -269,21 +272,12 @@ func applyToolsDriftIfNeeded(ctx context.Context, client *anthropic.Client, sett
 	updateCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	// Re-convert the current Nexus tool catalog into Anthropic's update-shape
-	// custom-tool params. The update endpoint uses BetaAgentUpdateParamsToolUnion
-	// (not the create variant), so we map by hand.
-	updated := make([]anthropic.BetaAgentUpdateParamsToolUnion, 0, len(tools))
-	for _, d := range tools {
-		c := convertOne(d)
-		if c == nil {
-			continue
-		}
-		updated = append(updated, anthropic.BetaAgentUpdateParamsToolUnion{OfCustom: c})
-	}
-
+	// BuildAgentUpdateTools includes both Nexus customs and the
+	// agent_toolset (file tools), so flipping the toolset rev or adding/
+	// removing Nexus tools both flow through this single update path.
 	resp, err := client.Beta.Agents.Update(updateCtx, info.AgentID, anthropic.BetaAgentUpdateParams{
 		Version: info.AgentVersion,
-		Tools:   updated,
+		Tools:   BuildAgentUpdateTools(tools),
 	})
 	if err != nil {
 		return info, fmt.Errorf("update agent tools: %w", err)
