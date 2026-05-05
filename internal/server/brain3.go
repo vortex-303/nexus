@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/nexus-chat/nexus/internal/auth"
@@ -188,6 +189,14 @@ func (s *Server) handleBrainV3(slug, channelID, parentID, senderName, content st
 		}
 
 		s.trackMessageAndMaybeExtract(slug, channelID, msgID, result.Response, brain.BrainName)
+
+		// Phase 1.3: dual-write each /decisions/*.md to brain_memories so the
+		// existing memory panel UI shows v3's contributions. Tagged
+		// source='v3' + type='decision' so v1/v2 queries can filter as needed.
+		// Best-effort — turn already succeeded, don't block on this.
+		if len(result.DecisionWrites) > 0 {
+			s.persistV3DecisionsToBrainMemories(slug, channelID, msgID, senderName, result.DecisionWrites)
+		}
 
 		metrics.MessagesTotal.WithLabelValues(slug).Inc()
 
@@ -376,4 +385,84 @@ func (s *Server) handleResetV3Agent(w http.ResponseWriter, r *http.Request) {
 		"prior_agent_id":   agentID,
 		"cleared_sessions": clearedSessions,
 	})
+}
+
+// persistV3DecisionsToBrainMemories dual-writes v3's /decisions/*.md entries
+// into the existing brain_memories table so the workspace's memory panel UI
+// surfaces them. v1/v2 queries can filter on `source='v3'` to include or
+// exclude these as desired — the column is purely additive.
+//
+// Best-effort: errors are logged, never propagated. The decision file in
+// memory_store remains the source of truth; brain_memories is a derived
+// projection for UI rendering.
+func (s *Server) persistV3DecisionsToBrainMemories(slug, channelID, msgID, senderName string, writes []brain3.DecisionWrite) {
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return
+	}
+
+	for _, dw := range writes {
+		title := extractDecisionTitle(dw.Content, dw.Path)
+		metaJSON := buildDecisionMetadata(dw.Path)
+
+		memID := id.New()
+		_, err := wdb.DB.Exec(`
+			INSERT INTO brain_memories
+				(id, type, content, source_channel, source_message_id, source,
+				 importance, confidence, summary, participants, metadata)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`,
+			memID,
+			"decision",
+			dw.Content,
+			channelID,
+			msgID,
+			"v3",
+			0.8,           // importance — decisions are intentionally pinned high
+			1.0,           // confidence — Claude wrote this with status:decided
+			title,
+			senderName,
+			metaJSON,
+		)
+		if err != nil {
+			logger.WithCategory(logger.CatBrain).Warn().
+				Str("workspace", slug).
+				Str("path", dw.Path).
+				Err(err).
+				Msg("v3: failed to dual-write decision to brain_memories")
+		}
+	}
+}
+
+// extractDecisionTitle pulls the first H1 heading from the decision-log
+// markdown for use as the brain_memories.summary field. Falls back to a
+// slugified path if the markdown didn't follow the skill's template.
+func extractDecisionTitle(content, path string) string {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "# ") {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
+		}
+	}
+	// Fallback: derive from filename.
+	base := path
+	if idx := strings.LastIndex(base, "/"); idx >= 0 {
+		base = base[idx+1:]
+	}
+	base = strings.TrimSuffix(base, ".md")
+	return base
+}
+
+// buildDecisionMetadata returns a small JSON blob recording the source path
+// in memory_store, so debugging tools can correlate the brain_memories row
+// to the canonical file.
+func buildDecisionMetadata(path string) string {
+	b, err := json.Marshal(map[string]string{
+		"memory_store_path": path,
+		"origin":            "brain_v3_decision_log",
+	})
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }

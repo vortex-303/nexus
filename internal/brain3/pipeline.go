@@ -70,9 +70,10 @@ type PipelineConfig struct {
 
 // Result is the output of a Brain v3 turn.
 type Result struct {
-	Response  string
-	Metrics   Metrics
-	ToolsUsed []string
+	Response       string
+	Metrics        Metrics
+	ToolsUsed      []string
+	DecisionWrites []DecisionWrite // /decisions/*.md writes the agent made this turn
 }
 
 // Run is the main entry point for the v3 pipeline. End-to-end flow:
@@ -169,7 +170,7 @@ func Run(ctx context.Context, cfg PipelineConfig) Result {
 
 	m.Success = err == nil && turn.ResponseText != ""
 	m.TotalLatency = time.Since(start)
-	return Result{Response: response, Metrics: m, ToolsUsed: turn.ToolsUsed}
+	return Result{Response: response, Metrics: m, ToolsUsed: turn.ToolsUsed, DecisionWrites: turn.DecisionWrites}
 }
 
 // buildUserMessage prepends the <context> block (pinned + sender profile)

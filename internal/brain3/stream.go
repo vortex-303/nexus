@@ -16,13 +16,22 @@ import (
 
 // turnResult holds the assembled output of a single send-and-stream cycle.
 type turnResult struct {
-	ResponseText string
-	ToolsUsed    []string
-	ToolCalls    int
-	LLMCalls     int
-	InputTokens  int
-	OutputTokens int
-	Terminated   bool
+	ResponseText   string
+	ToolsUsed      []string
+	ToolCalls      int
+	LLMCalls       int
+	InputTokens    int
+	OutputTokens   int
+	Terminated     bool
+	DecisionWrites []DecisionWrite // /decisions/*.md writes detected during the turn
+}
+
+// DecisionWrite captures a `write` call against a path under /decisions/.
+// The server handler uses this to dual-write a brain_memories row so the
+// existing memory-panel UI lights up for v3 turns.
+type DecisionWrite struct {
+	Path    string // absolute path inside the memory_store mount
+	Content string // SKILL.md-rendered decision body (markdown)
 }
 
 // runTurn sends a user message to an existing session and consumes the
@@ -133,6 +142,13 @@ func consumeStream(
 			toolsUsedSet[ev.Name] = struct{}{}
 			out.ToolCalls++
 			cfg.Trace.AddToolCall(ev.Name, "", "(server-executed)", "", 0)
+			// Detect decision-log writes for the brain_memories writeback
+			// (Phase 1.3). Only `write` events to a /decisions/ path qualify.
+			if ev.Name == "write" {
+				if dw := parseDecisionWrite(ev.Input); dw != nil {
+					out.DecisionWrites = append(out.DecisionWrites, *dw)
+				}
+			}
 
 		case "span.model_request_start":
 			modelRequestStarts[ev.ID] = time.Now()
@@ -295,4 +311,48 @@ func setToSlice(m map[string]struct{}) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// parseDecisionWrite extracts {path, content} from a `write` tool's input
+// when the path lies under /decisions/. Returns nil when the input doesn't
+// describe a decision-log write — keeps the writeback dual-write narrow so
+// we don't accidentally mirror unrelated file writes (e.g. /people/, /projects/)
+// into brain_memories.
+//
+// Defensive about field naming: different SDK versions / built-in tool
+// definitions use varying arg keys for path (`file_path`, `path`, `file`)
+// and content (`content`, `file_text`, `text`). We try the common ones.
+func parseDecisionWrite(input any) *DecisionWrite {
+	if input == nil {
+		return nil
+	}
+	b, err := json.Marshal(input)
+	if err != nil {
+		return nil
+	}
+	var args map[string]any
+	if err := json.Unmarshal(b, &args); err != nil {
+		return nil
+	}
+
+	var path string
+	for _, key := range []string{"file_path", "path", "file"} {
+		if v, ok := args[key].(string); ok && v != "" {
+			path = v
+			break
+		}
+	}
+	if path == "" || !strings.Contains(path, "/decisions/") {
+		return nil
+	}
+
+	var content string
+	for _, key := range []string{"content", "file_text", "text"} {
+		if v, ok := args[key].(string); ok {
+			content = v
+			break
+		}
+	}
+
+	return &DecisionWrite{Path: path, Content: content}
 }
