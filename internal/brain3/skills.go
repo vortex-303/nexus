@@ -39,7 +39,149 @@ var CustomSkills = []CustomSkill{
 		DisplayTitle: "Nexus Decision Log",
 		SkillMD:      decisionLogSkill,
 	},
+	{
+		Name:         "task-conventions",
+		DisplayTitle: "Nexus Task Conventions",
+		SkillMD:      taskConventionsSkill,
+	},
 }
+
+// taskConventionsSkill encodes the workspace's rules for using the
+// `create_task` tool consistently — when to fire, what defaults to use,
+// title format, and the always-ask-first confirmation pattern. Without
+// this, multi-agent task creation drifts (different titles, statuses,
+// priorities, missing acceptance criteria).
+const taskConventionsSkill = `---
+name: task-conventions
+description: How to use the create_task tool. Apply whenever a chat message signals an action item — explicit ("create a task for X", "track this"), implicit ("we should X", "someone needs to X"), or commitment ("I'll handle X"). Always confirm before creating. Skip for pure questions, brainstorming without resolution, and pure-info requests.
+---
+
+# Task Conventions
+
+When a conversation produces an action item, propose a task and wait for
+confirmation before calling ` + "`create_task`" + `. Never create silently.
+
+## When to fire
+
+Apply this skill when a chat message has any of these patterns:
+
+- **Explicit:** "create a task for X", "track this", "TODO: X", "add to
+  the backlog"
+- **Implicit:** "we should X", "someone needs to X by Friday",
+  "we need to ship Y"
+- **Commitment:** "I'll handle X" (the speaker is committing to it)
+- **Decision-with-action:** a decision in chat with a clear next step
+  ("we'll go with the new pricing — Nico, can you draft the announcement?")
+
+Skip for:
+
+- Pure information requests ("what's our current pricing?")
+- Brainstorming with no resolution
+- Decisions already captured by the decision-log skill (those have their
+  own Implications section)
+- Reminder requests ("remind me to X tomorrow") — different mechanism
+- Reactions, banter, off-topic chat
+
+## Always confirm first
+
+Before calling ` + "`create_task`" + `, **propose the task inline in your reply**
+using this shape:
+
+` + "```" + `
+I'd create this task — confirm to proceed:
+
+**Title:** <verb-first, concrete>
+**Status:** todo
+**Priority:** medium  ← unless the user signaled otherwise
+**Assignee:** <name>  ← only if explicit
+**Acceptance criteria:** <when scope is non-trivial; ask user if unclear>
+` + "```" + `
+
+Then wait for the user to say "yes", "go", "create it", or to suggest
+edits. If they edit, repropose with their changes. Only call ` + "`create_task`" + `
+once the user has affirmed.
+
+If the user says "create it" or similar in the SAME message that signaled
+the action item ("create a task to migrate the DB"), that counts as
+confirmation — go ahead without a separate confirm step.
+
+## Field defaults
+
+These are the workspace's enforced defaults. Override only when the user
+explicitly says so.
+
+| Field | Default | Override rule |
+|---|---|---|
+| ` + "`status`" + ` | ` + "`todo`" + ` | Use ` + "`backlog`" + ` only if the user uses that word, or if the workspace's pinned.md overrides this. |
+| ` + "`priority`" + ` | ` + "`medium`" + ` | ` + "`urgent`" + ` requires the user to use the word "urgent" or "blocker"; ` + "`high`" + ` requires "high priority", "important", or a hard external deadline. |
+| ` + "`assignee_name`" + ` | unset | Set ONLY when the user names a person ("Alice owns this", "I'll do it"). Never guess from context, recent chat history, or who's in the channel. |
+| ` + "`expected_output`" + ` | see below | Always populate for non-trivial scope. |
+| ` + "`description`" + ` | unset | Use when the title alone doesn't convey what the work is. Keep tight — no walls of text. |
+
+### Workspace overrides via pinned.md
+
+The workspace's ` + "`/pinned.md`" + ` may set different defaults (e.g. "this team
+uses backlog as default, not todo"). If pinned.md contradicts the table
+above, **pinned.md wins** — it represents the workspace's explicit
+preference. Read pinned.md before creating tasks if you haven't yet this
+session.
+
+## Title conventions
+
+- **Verb-first, concrete object.** "Migrate the API to Postgres", not
+  "Postgres migration" or "API stuff".
+- **Trim filler.** Drop "we should", "I want to", "can someone".
+- **≤ 80 characters.** Move detail to the description if it doesn't fit.
+- **Imperative for forward work** ("Migrate DB"), past tense for
+  retrospective records ("Migrated DB" — rare; usually a decision-log
+  entry, not a task).
+
+Examples:
+
+- ❌ "We should fix the login flow because users are confused"
+  ✅ "Fix login flow — clarify confused-user states"
+
+- ❌ "deployment"
+  ✅ "Set up Fly.io deployment for the staging environment"
+
+- ❌ "URGENT!!! the homepage is broken!!!"
+  ✅ "Fix broken homepage" (priority: urgent)
+
+## Acceptance criteria — when to populate
+
+Populate ` + "`expected_output`" + ` whenever the task has multiple steps OR an
+ambiguous "done" state. Skip for trivially simple tasks where the title
+fully describes completion.
+
+**Trivial — skip ` + "`expected_output`" + `:**
+
+- "Rename foo.go to bar.go"
+- "Delete the test channel"
+
+**Non-trivial — populate ` + "`expected_output`" + `:**
+
+- "Migrate the API to Postgres" → criteria: "All endpoints serve from
+  Postgres in staging; load test passes at 100rps; rollback runbook
+  documented"
+- "Draft the v3 launch announcement" → criteria: "Reviewed by Nico,
+  posted to #general, links to the docs PR"
+
+When you're not sure what "done" means, **ask the user** in the same
+confirmation step rather than guessing. The skill's job is to elicit
+clarity, not to invent it.
+
+## Skipping safely
+
+When the chat looks task-shaped but doesn't quite warrant a task,
+acknowledge briefly without creating one. Examples:
+
+- "Brain, what's our deploy command?" — pure info, no task
+- "We should think about a redesign" — too vague; ask for scope first
+- "Let me know if you have ideas about X" — invitation to brainstorm,
+  not an action item
+
+In all skip cases, just answer normally. Don't propose a task and reject it.
+`
 
 // decisionLogSkill captures decisions made in chat as structured records in
 // the workspace memory_store. It's the single highest-leverage skill for a
