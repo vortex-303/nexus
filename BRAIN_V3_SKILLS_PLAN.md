@@ -260,23 +260,45 @@ Document this convention in `skill-creator`'s template so every future skill fol
 
 #### Onboarding reconciliation
 
-Nexus already has a passive onboarding: `handleBrainWelcome` (in `internal/server/brain.go`) sends a hardcoded welcome DM when triggered. It's static — no LLM, no per-user adaptation, just one canned message. v1/v2 don't go further than that.
+**Constraint: onboarding must work for workspaces that haven't set up an Anthropic API key yet.** A new member joining a fresh workspace is the chicken-and-egg case — making the welcome experience depend on LLM access means it breaks the moment it's most needed. So **default onboarding is fully token-free**; the LLM walkthrough is an explicit opt-in.
 
-The v3 `onboarding-playbook` skill is the LLM-powered second step that takes over after the static greeting. The merger:
+Nexus already has the foundation: `handleBrainWelcome` (in `internal/server/brain.go`) sends a hardcoded welcome DM. It's static — no LLM, no per-user adaptation, one canned message. v1/v2 don't go further. The new design extends this without adding a token-cost path on the default journey.
 
-1. **Static welcome (kept as-is, instant, no token cost)** — When a member joins or first lands in the Brain DM, `sendBrainMessage` posts the hardcoded greeting (current behavior). Zero LLM calls. Reliable, fast.
-2. **First reply triggers the playbook** — When the member replies to the DM (or first @-mentions Brain anywhere), v3 routes to `handleBrainV3` → loads the `onboarding-playbook` skill on demand → guided introduction.
-3. **The playbook reads memory_store** — Pulls `/people/<existing-members>/profile.md` summaries, `/projects/*` to know active initiatives, `/pinned.md` for workspace constraints. Tells the new member who works on what, what's currently being shipped, and what conventions they should know.
-4. **It writes too** — Drafts a starter `/people/<new-member>/profile.md` from the conversation. Future turns build on it.
-5. **Optional proactive nudges (gated)** — On day 3, day 7, etc., propose useful actions ("you haven't introduced yourself yet", "here are 3 docs people referenced this week"). These fire only with `automations_enabled=true`.
+##### Three layers, increasing in cost — only the cheapest is default
 
-What a new member experiences:
-- Day 0, second they join: instant canned welcome (current Nexus behavior, unchanged)
-- Day 0, when they reply: guided LLM walkthrough tailored to the workspace they just joined
-- Day 0+, when they ask anything: v3 already has their profile started, response style adapts
-- Day 3+, IF owner enabled automations: optional proactive check-ins
+**Layer 1 — Static templated welcome (default, $0, no API key needed).**
+Improve the current canned DM with template substitution from workspace data we already have in the DB:
+- Workspace name, member count, channel list (top 5 by recent activity)
+- Pinned messages count and a hint to check the pinned panel
+- Top docs / knowledge items by reference count
+- Who-to-ask-for-what — derived from workspace member roles (we already store these)
+- A list of `@Brain` capabilities the user can try
 
-This makes the existing static welcome the cheap-and-fast "hello" and the new skill the rich-but-token-spending "let me actually help you ramp up" — only when the human is engaged enough to reply.
+All produced by simple string templates over SQL queries. **No LLM call.** Posted instantly when the member joins. Works even if the workspace has no Anthropic key, no v3 enabled, no anything — it's a pure-template flow on top of structured workspace data.
+
+**Layer 2 — On-demand LLM walkthrough (manual opt-in, costs tokens per ask).**
+Available only if the workspace has `anthropic_api_key` configured AND `brain_version=v3`. Triggered by an explicit ask from the member: `@Brain walk me through this workspace`, `@Brain who works on what`, `@Brain what should I read first`. v3 loads the `onboarding-playbook` skill, reads memory_store (`/people/`, `/projects/`, `/pinned.md`), produces a tailored walkthrough.
+
+The workspace pays for *that ask*, but only because the member explicitly opted in by asking. No invisible cost.
+
+**Layer 3 — Proactive nudges (gated, scheduled).**
+Day-3 / day-7 check-ins ("here are 3 docs people referenced this week", "you haven't introduced yourself yet") only fire if `automations_enabled=true`. Same gate as the other scheduled skills.
+
+##### What a new member experiences
+
+| Workspace state | What they see |
+|---|---|
+| Fresh workspace, no Anthropic key | Layer 1 only: instant, well-templated welcome with workspace-specific info. Zero LLM cost. |
+| Workspace has key, v3 enabled, automations OFF | Layer 1 on join. Layer 2 if they ask Brain anything. No proactive nudges. |
+| Workspace has key, v3 enabled, automations ON | Layer 1 on join. Layer 2 if they ask. Layer 3 proactive nudges on day 3+. |
+
+##### Where the work lives
+
+- Layer 1: extend `handleBrainWelcome` to pull workspace data into a richer templated message. Pure Go + SQL, no v3 dependency. ~150 LoC.
+- Layer 2: the `onboarding-playbook` skill. Authored once, attached to v3 agents. Triggered by explicit member request, never auto.
+- Layer 3: Layer 2 skill + a scheduler hook that posts a follow-up day-N message, gated on `automations_enabled`.
+
+This way the *core* onboarding (Layer 1) is free, fast, reliable, and doesn't care what brain version or API key the workspace has. The richer experience (Layers 2 + 3) is opt-in by either the member (Layer 2) or the owner (Layer 3).
 
 ### P2 (later)
 
@@ -308,7 +330,7 @@ PT/Brazil dropped from scope — Nexus v3 targets Spanish-speaking LATAM only.
 |---|---|
 | **B-1** | "Draft an announcement" / "summarize this doc" produces consistent, well-structured output. Decisions made in chat get logged to memory automatically. |
 | **B-2** | Chat threads can be turned into structured meeting notes with one ask. Friday digests appear automatically. New tasks all follow the same conventions. |
-| **B-3** | New members get a guided onboarding from Brain. Bugs reported in chat become triaged tasks. Memory stays organized over time without manual cleanup. |
+| **B-3** | New members get an instant templated welcome with workspace-specific info (free, no LLM). If they ask `@Brain walk me through`, the workspace pays for a tailored LLM walkthrough. Bugs reported in chat become triaged tasks. Memory stays organized over time without manual cleanup. |
 | **B-4** | Multi-step requests produce real plans that Brain executes step-by-step, with verification before claiming "done". Trust in Brain's reports goes up sharply. |
 | **B-5** | Brain answers in Spanish or English (auto-detected) with LATAM-appropriate register (`tú`/`vos`/`usted`, country-specific norms). |
 | **C** | Brain proposes new skills based on patterns it's seen — the catalog grows organically per workspace. |
