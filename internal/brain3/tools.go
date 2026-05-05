@@ -82,6 +82,9 @@ func BuildAgentUpdateTools(defs []brain.ToolDef) []anthropic.BetaAgentUpdatePara
 		OfAgentToolset20260401: fileToolsToolsetParams(),
 	})
 	for _, d := range defs {
+		if v1v2OnlyToolNames[d.Function.Name] {
+			continue // v3 uses memory_store, not brain_memories
+		}
 		c := convertOne(d)
 		if c == nil {
 			continue
@@ -105,7 +108,7 @@ func BuildAgentUpdateTools(defs []brain.ToolDef) []anthropic.BetaAgentUpdatePara
 func ToolCatalogHash(defs []brain.ToolDef) string {
 	pairs := make([]string, 0, len(defs))
 	for _, d := range defs {
-		if d.Function.Name == "" {
+		if d.Function.Name == "" || v1v2OnlyToolNames[d.Function.Name] {
 			continue
 		}
 		pairs = append(pairs, AnthropicToolName(d.Function.Name)+"\x00"+d.Function.Description)
@@ -113,7 +116,7 @@ func ToolCatalogHash(defs []brain.ToolDef) string {
 	sort.Strings(pairs) // order-independent
 	digestInput := strings.Join(pairs, "\n") +
 		"\n!toolset:" + AgentToolsetRevision +
-		"\n!skills:" + strings.Join(CustomSkillNamesSorted(), ",")
+		"\n!skills:" + CustomSkillsCatalogDigest()
 	h := sha256.Sum256([]byte(digestInput))
 	return hex.EncodeToString(h[:8]) // 16-char hex digest, plenty for change detection
 }
@@ -137,6 +140,20 @@ var reservedAgentToolNames = map[string]bool{
 	"grep":       true,
 	"web_fetch":  true,
 	"web_search": true,
+}
+
+// v1v2OnlyToolNames are Nexus tools that were designed against the v1/v2
+// brain_memories table and don't belong in the v3 catalog. v3 has its own
+// memory layer (Anthropic memory_store, mounted in the session container)
+// and exposing these tools would let Claude write to the wrong place — e.g.
+// the trace from v3's first decision-log test showed Claude picking
+// `save_memory` (v1/v2's brain_memories writer) instead of `write` (file
+// tool against memory_store) because the name better matched user intent.
+//
+// Filter these from the catalog at conversion time.
+var v1v2OnlyToolNames = map[string]bool{
+	"save_memory":   true,
+	"recall_memory": true,
 }
 
 const anthropicReservedPrefix = "nexus_"
@@ -176,6 +193,9 @@ func NexusToolName(anthropicName string) string {
 func ConvertTools(defs []brain.ToolDef) []anthropic.BetaAgentNewParamsToolUnion {
 	out := make([]anthropic.BetaAgentNewParamsToolUnion, 0, len(defs))
 	for _, d := range defs {
+		if v1v2OnlyToolNames[d.Function.Name] {
+			continue // v3 uses memory_store, not brain_memories
+		}
 		params := convertOne(d)
 		if params == nil {
 			continue

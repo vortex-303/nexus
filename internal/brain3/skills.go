@@ -3,6 +3,8 @@ package brain3
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"sort"
@@ -70,11 +72,23 @@ Skip for:
 - Decisions a single person made for themselves (e.g. "I'll handle that"
   is a commitment, not a decision worth its own file)
 
-## What to write
+## How to write — exact tool to use
 
-Create a file at ` + "`/decisions/<YYYY-MM-DD>-<slug>.md`" + ` inside the workspace
-memory mount. The filename's date prefix sorts decisions chronologically.
-The slug is 3–6 lowercase words separated by hyphens summarizing the topic.
+**Use the ` + "`write`" + ` file tool** (from your file-ops toolset) with an absolute
+path under your workspace's memory mount. **Do NOT use any other tool**
+named ` + "`save_memory`" + `, ` + "`store_memory`" + `, ` + "`remember`" + `, etc. — those don't exist
+in this agent's tool set, and inventing a tool name will silently fail.
+
+Your workspace's memory mount path is in your system prompt under
+"Persistent Memory" (it looks like ` + "`/mnt/memory/<store-name>/`" + `). The
+decision file path is:
+
+    <mount>/decisions/<YYYY-MM-DD>-<slug>.md
+
+Example: ` + "`/mnt/memory/nexus-brain-myworkspace/decisions/2026-05-05-pricing-tier.md`" + `
+
+The filename's date prefix sorts decisions chronologically. The slug is
+3–6 lowercase words separated by hyphens summarizing the topic.
 
 Use this template:
 
@@ -154,28 +168,93 @@ type namedReader struct {
 
 func (n namedReader) Filename() string { return n.name }
 
-// EnsureCustomSkills uploads any custom skills that aren't already recorded
-// in brain_settings, and returns the full list of {name → skill_id} for the
-// workspace. Idempotent: skills already uploaded (cached id present) are
-// skipped without an API call.
+// contentHash is a stable digest of the SKILL.md content. Used to detect
+// when an authored skill's content has changed since last upload; on
+// mismatch, EnsureCustomSkills uploads a new version (skill_id stays, version
+// number increments) so deploys auto-propagate edits.
+func (sk CustomSkill) contentHash() string {
+	h := sha256.Sum256([]byte(sk.SkillMD))
+	return hex.EncodeToString(h[:8]) // 16 hex chars; plenty for change detection
+}
+
+// EnsureCustomSkills makes sure every skill in the catalog is uploaded to
+// the workspace's Anthropic org and matches our current SKILL.md content.
+// Returns {name → skill_id} for use when attaching skills to the agent.
+//
+// Three states per skill:
+//   1. No cached id → Skills.New, store id + content hash
+//   2. Cached id, hash matches → skip (no API call)
+//   3. Cached id, hash differs → Skills.Versions.New, update cached hash
+//
+// Latest version is implicitly used by the agent (we don't pin a version
+// when attaching), so a new version uploaded here is picked up by the next
+// agent.Update without further work.
 func EnsureCustomSkills(ctx context.Context, client *anthropic.Client, settings SettingsStore, slug string) (map[string]string, error) {
 	out := make(map[string]string, len(CustomSkills))
 	for _, sk := range CustomSkills {
-		key := skillSettingKey(sk.Name)
-		if id := settings.Get(slug, key); id != "" {
+		idKey := skillSettingKey(sk.Name)
+		hashKey := skillHashSettingKey(sk.Name)
+		desiredHash := sk.contentHash()
+
+		cachedID := settings.Get(slug, idKey)
+		cachedHash := settings.Get(slug, hashKey)
+
+		// State 1 — no cached id, full create.
+		if cachedID == "" {
+			id, err := uploadCustomSkill(ctx, client, sk)
+			if err != nil {
+				return out, fmt.Errorf("upload skill %q: %w", sk.Name, err)
+			}
+			if err := settings.Set(slug, idKey, id); err != nil {
+				return out, fmt.Errorf("persist skill id for %q: %w", sk.Name, err)
+			}
+			if err := settings.Set(slug, hashKey, desiredHash); err != nil {
+				return out, fmt.Errorf("persist skill hash for %q: %w", sk.Name, err)
+			}
 			out[sk.Name] = id
 			continue
 		}
-		id, err := uploadCustomSkill(ctx, client, sk)
-		if err != nil {
-			return out, fmt.Errorf("upload skill %q: %w", sk.Name, err)
+
+		// State 2 — cached id, hash matches. Reuse.
+		if cachedHash == desiredHash {
+			out[sk.Name] = cachedID
+			continue
 		}
-		if err := settings.Set(slug, key, id); err != nil {
-			return out, fmt.Errorf("persist skill id for %q: %w", sk.Name, err)
+
+		// State 3 — cached id, content changed. Upload a new version.
+		if err := uploadCustomSkillVersion(ctx, client, cachedID, sk); err != nil {
+			return out, fmt.Errorf("upload new version of %q: %w", sk.Name, err)
 		}
-		out[sk.Name] = id
+		if err := settings.Set(slug, hashKey, desiredHash); err != nil {
+			return out, fmt.Errorf("persist updated hash for %q: %w", sk.Name, err)
+		}
+		out[sk.Name] = cachedID
 	}
 	return out, nil
+}
+
+// skillHashSettingKey returns the brain_settings key for the cached
+// content hash of a custom skill. Format: mga_skill_<name>_hash.
+func skillHashSettingKey(skillName string) string {
+	return "mga_skill_" + skillName + "_hash"
+}
+
+// uploadCustomSkillVersion uploads a new version of an existing skill,
+// keeping its skill_id intact. Used when SKILL.md content changes between
+// deploys.
+func uploadCustomSkillVersion(ctx context.Context, client *anthropic.Client, skillID string, sk CustomSkill) error {
+	uploadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	_, err := client.Beta.Skills.Versions.New(uploadCtx, skillID, anthropic.BetaSkillVersionNewParams{
+		Files: []io.Reader{
+			namedReader{
+				Reader: bytes.NewReader([]byte(sk.SkillMD)),
+				name:   sk.Name + "/SKILL.md",
+			},
+		},
+	}, option.WithHeader("anthropic-beta", "skills-2025-10-02"))
+	return err
 }
 
 // uploadCustomSkill creates a skill in the workspace's Anthropic org with a
@@ -224,5 +303,31 @@ func CustomSkillNamesSorted() []string {
 		out = append(out, sk.Name)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// CustomSkillsCatalogDigest folds each skill's name + content hash into a
+// single digest. Used inside ToolCatalogHash so content edits to a skill's
+// SKILL.md (not just adding/removing skills) also fire tools-drift —
+// guaranteeing that EnsureCustomSkills runs and uploads the new version
+// before the agent.Update goes out.
+func CustomSkillsCatalogDigest() string {
+	pairs := make([]string, 0, len(CustomSkills))
+	for _, sk := range CustomSkills {
+		pairs = append(pairs, sk.Name+":"+sk.contentHash())
+	}
+	sort.Strings(pairs)
+	return fmt.Sprintf("[%s]", joinComma(pairs))
+}
+
+// joinComma is a tiny helper to avoid a strings import dance in this file.
+func joinComma(parts []string) string {
+	out := ""
+	for i, p := range parts {
+		if i > 0 {
+			out += ","
+		}
+		out += p
+	}
 	return out
 }
