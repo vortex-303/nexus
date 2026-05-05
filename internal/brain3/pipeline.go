@@ -115,6 +115,17 @@ func Run(ctx context.Context, cfg PipelineConfig) Result {
 		return Result{Response: "Brain v3: workspace DB is unavailable.", Metrics: m}
 	}
 
+	// One-shot: seed /people/<slug>.md for existing workspace members so the
+	// agent doesn't start blind. Idempotent on the per-file level (won't
+	// overwrite existing profiles), and gated by a workspace-level flag so
+	// we don't repeat the (cheap but pointless) check every turn.
+	if cfg.Settings.Get(cfg.Slug, "mga_members_seeded") != "true" && info.MemoryStoreID != "" {
+		if err := SeedMemberProfiles(ctx, client, cfg.DB, info.MemoryStoreID); err == nil {
+			_ = cfg.Settings.Set(cfg.Slug, "mga_members_seeded", "true")
+		}
+		// Best-effort; if seeding errors we'll retry next turn.
+	}
+
 	sessStart := time.Now()
 	sessionID, err := EnsureSession(ctx, client, cfg.DB, info, cfg.ChannelID, cfg.ParentID)
 	m.SessionMs = time.Since(sessStart).Milliseconds()
