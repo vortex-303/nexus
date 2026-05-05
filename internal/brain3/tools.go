@@ -28,7 +28,13 @@ import (
 //   r2 — system prompt mount-path fix (was hardcoded to /mnt/memory/brain;
 //        now uses the actual /mnt/memory/<store-name> derived from the
 //        memory_store name).
-const AgentToolsetRevision = "r2"
+//   r3 — Operating Guide gains 'Task creation discipline' section: rules
+//        that previously lived only in skill bodies (which load via
+//        progressive disclosure and don't reliably fire) are now in the
+//        always-loaded system prompt — multi-step → writing-plans,
+//        explicit confirmation required for create_task, no auto-assign,
+//        no precedent-overrides-rule.
+const AgentToolsetRevision = "r3"
 
 // FileToolNames are the agent_toolset tool names we keep enabled.
 // Everything else in the toolset is disabled by default_config.
