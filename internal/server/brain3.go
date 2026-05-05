@@ -16,6 +16,7 @@ import (
 	"github.com/nexus-chat/nexus/internal/metrics"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 )
 
 // brain3Settings adapts the Server's existing getBrainSetting helper plus a
@@ -158,6 +159,22 @@ func (s *Server) handleBrainV3(slug, channelID, parentID, senderName, content st
 
 		actionID := id.New()
 		brain.LogAction(wdb.DB, actionID, "brain_v3", channelID, content, result.Response, brain3.DefaultModel, result.ToolsUsed)
+
+		// Compute cost from input/output tokens × per-model rate. v3 hits
+		// Anthropic directly so the rate isn't in workspace_models — we
+		// keep the table in brain3.modelRates instead. Result feeds both
+		// the trace and the existing llm_usage dashboard.
+		modelName := s.getBrainSetting(slug, "mga_provisioned_model", brain3.DefaultModel)
+		costUSD := brain3.EstimateCost(modelName, result.Metrics.InputTokens, result.Metrics.OutputTokens)
+		result.Metrics.CostUSD = costUSD
+
+		// Track in the existing per-workspace llm_usage table so v3 turns
+		// appear in GET /api/workspaces/{slug}/usage alongside v1/v2 traffic.
+		s.trackUsage(slug, &brain.CompletionUsage{
+			PromptTokens:     result.Metrics.InputTokens,
+			CompletionTokens: result.Metrics.OutputTokens,
+			Cost:             costUSD,
+		}, modelName, "brain_v3", channelID, senderName)
 
 		// Persist the trace to the existing observatory tables so v3 turns
 		// show up alongside v2 with brain_version='v3'.
@@ -385,6 +402,79 @@ func (s *Server) handleResetV3Agent(w http.ResponseWriter, r *http.Request) {
 		"prior_agent_id":   agentID,
 		"cleared_sessions": clearedSessions,
 	})
+}
+
+// handleListV3Memory returns the workspace's memory_store contents (paths +
+// content + size + last update) so the frontend can render the unified
+// memory viewer alongside the existing brain_memories panel.
+//
+// GET /api/workspaces/{slug}/brain/v3/memory  (admin only)
+//
+// Response shape:
+//
+//	{ "memory_store_id": "memstore_...",
+//	  "mount_path": "/mnt/memory/nexus-brain-<slug>",
+//	  "memories": [{path, content, size_bytes, updated_at}, ...] }
+//
+// Best-effort — if Anthropic API is unreachable or the workspace doesn't
+// have v3 set up, returns 200 with empty memories[]. Never 5xx for
+// "no Anthropic key" — that's a configuration state, not a server error.
+func (s *Server) handleListV3Memory(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	claims := auth.GetClaims(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	apiKey := s.getBrainSetting(slug, "anthropic_api_key")
+	storeID := s.getBrainSetting(slug, "mga_memory_store_id")
+	mountPath := ""
+	if storeID != "" {
+		mountPath = brain3.MemoryMountPath(slug)
+	}
+
+	resp := map[string]any{
+		"memory_store_id": storeID,
+		"mount_path":      mountPath,
+		"memories":        []any{},
+	}
+
+	if apiKey == "" || storeID == "" {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	client, err := brain3.NewClient(apiKey)
+	if err != nil {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	page, err := client.Beta.MemoryStores.Memories.List(ctx, storeID, anthropic.BetaMemoryStoreMemoryListParams{
+		View:  anthropic.BetaManagedAgentsMemoryViewFull,
+		Limit: param.NewOpt[int64](200),
+	})
+	if err != nil {
+		logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("v3 memory list failed")
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	memories := make([]map[string]any, 0, len(page.Data))
+	for _, item := range page.Data {
+		memories = append(memories, map[string]any{
+			"path":       item.Path,
+			"content":    item.Content,
+			"size_bytes": item.ContentSizeBytes,
+			"updated_at": item.UpdatedAt.Format(time.RFC3339),
+		})
+	}
+	resp["memories"] = memories
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // persistV3DecisionsToBrainMemories dual-writes v3's /decisions/*.md entries

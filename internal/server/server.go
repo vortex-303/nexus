@@ -297,6 +297,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/workspaces/{slug}/brain/memories/extract", authed(http.HandlerFunc(s.requireAdmin(s.handleExtractNow))))
 	s.mux.Handle("POST /api/workspaces/{slug}/brain/reflect", authed(http.HandlerFunc(s.requireAdmin(s.handleReflectNow))))
 	s.mux.Handle("POST /api/workspaces/{slug}/brain/v3/reset-agent", authed(http.HandlerFunc(s.requireAdmin(s.handleResetV3Agent))))
+	s.mux.Handle("GET /api/workspaces/{slug}/brain/v3/memory", authed(http.HandlerFunc(s.requireAdmin(s.handleListV3Memory))))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/reflections", authed(http.HandlerFunc(s.requireAdmin(s.handleReflectionHistory))))
 	s.mux.Handle("GET /api/workspaces/{slug}/usage", authed(http.HandlerFunc(s.requireAdmin(s.handleGetUsage))))
 

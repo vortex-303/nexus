@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, joinChannel, leaveChannel, browseChannels, inviteToChannel, listChannelMembers, pinMessage, unpinMessage, listPinnedMessages, getMemoryPinnedMessageIds, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, resetV3Agent, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings, listNotifications, markNotificationRead, markAllNotificationsRead, getNotificationCount } from '$lib/api';
+	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, joinChannel, leaveChannel, browseChannels, inviteToChannel, listChannelMembers, pinMessage, unpinMessage, listPinnedMessages, getMemoryPinnedMessageIds, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, resetV3Agent, getV3Memory, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings, listNotifications, markNotificationRead, markAllNotificationsRead, getNotificationCount } from '$lib/api';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { connect, disconnect, onMessage, sendMessage, sendTyping, sendReaction, removeReaction, clearChannel, markChannelRead, connectionStatus, generateClientId } from '$lib/ws';
 	import { channels, members, messages, activeChannel, typingUsers, onlineUsers } from '$lib/stores/workspace';
@@ -403,6 +403,23 @@
 	let brainAnthropicModel = $state('claude-sonnet-4-6'); // v3 agent model — sonnet by default
 	let brainSystemPromptTemplate = $state('v3-team-brain'); // v3 system prompt template
 	let resettingV3Agent = $state(false);
+	// v3 memory_store contents (shown in the Memory tab when brain_version=v3)
+	let v3Memory = $state<{path: string; content: string; size_bytes: number; updated_at: string}[]>([]);
+	let v3MemoryLoading = $state(false);
+	let v3MemoryMountPath = $state('');
+	let v3MemoryExpanded = $state<Record<string, boolean>>({});
+	async function loadV3Memory() {
+		if (brainVersion !== 'v3') return;
+		v3MemoryLoading = true;
+		try {
+			const res = await getV3Memory(slug);
+			v3Memory = res.memories || [];
+			v3MemoryMountPath = res.mount_path || '';
+		} catch (e) {
+			v3Memory = [];
+		}
+		v3MemoryLoading = false;
+	}
 	// v3 skills attached to the agent: 4 Anthropic pre-built + any custom
 	// skills uploaded to this workspace (each tracked as mga_skill_<name>_id
 	// in brain_settings).
@@ -6180,7 +6197,7 @@ autonomy: reactive
 				{#if isAdmin}
 					<button class="brain-nav-item" class:active={brainTab === 'north_star'} onclick={() => brainTab = 'north_star'}>North Star</button>
 					<button class="brain-nav-item" class:active={brainTab === 'definitions'} onclick={() => brainTab = 'definitions'}>Personality</button>
-					<button class="brain-nav-item" class:active={brainTab === 'memory'} onclick={() => { brainTab = 'memory'; loadMemories(); }}>Memory</button>
+					<button class="brain-nav-item" class:active={brainTab === 'memory'} onclick={() => { brainTab = 'memory'; loadMemories(); loadV3Memory(); }}>Memory</button>
 					<button class="brain-nav-item" class:active={brainTab === 'activity'} onclick={() => { brainTab = 'activity'; loadActions(); }}>Activity</button>
 					<button class="brain-nav-item" class:active={brainTab === 'skills'} onclick={() => { brainTab = 'skills'; loadSkills(); }}>Skills</button>
 					<button class="brain-nav-item" class:active={brainTab === 'knowledge'} onclick={() => { brainTab = 'knowledge'; loadKnowledge(); }}>Knowledge</button>
@@ -7174,6 +7191,52 @@ autonomy: reactive
 			</div>
 
 			{:else if brainTab === 'memory'}
+			{#if brainVersion === 'v3'}
+			<div class="brain-section" style="margin-bottom: 16px;">
+				<h3 class="brain-section-title">Memory Store <span style="font-size: 0.7rem; color: var(--text-secondary); font-weight: normal;">· v3 · {v3MemoryMountPath}</span></h3>
+				{#if v3MemoryLoading}
+					<p class="brain-hint">Loading memory_store…</p>
+				{:else if v3Memory.length === 0}
+					<p class="brain-hint">Empty. Memory store fills in as Brain v3 writes decisions, profiles, and notes during conversations.</p>
+				{:else}
+					{@const groupedV3 = (() => {
+						const groups: Record<string, typeof v3Memory> = {};
+						for (const m of v3Memory) {
+							const parts = m.path.split('/').filter(Boolean);
+							const top = parts.length > 1 ? parts[0] : 'root';
+							if (!groups[top]) groups[top] = [];
+							groups[top].push(m);
+						}
+						return groups;
+					})()}
+					<div style="display: flex; flex-direction: column; gap: 12px;">
+						{#each Object.keys(groupedV3).sort() as group}
+							<div>
+								<div style="font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px;">{group} · {groupedV3[group].length}</div>
+								<div style="display: flex; flex-direction: column; gap: 4px;">
+									{#each groupedV3[group] as item}
+										<div style="border: 1px solid var(--border, rgba(255,255,255,0.08)); border-radius: 6px; overflow: hidden;">
+											<button
+												style="width: 100%; padding: 8px 10px; background: transparent; border: none; color: inherit; cursor: pointer; text-align: left; display: flex; justify-content: space-between; align-items: center; gap: 12px;"
+												onclick={() => v3MemoryExpanded[item.path] = !v3MemoryExpanded[item.path]}
+											>
+												<span style="font-family: var(--font-mono, monospace); font-size: 0.78rem; color: var(--text);">{item.path}</span>
+												<span style="font-size: 0.7rem; color: var(--text-secondary);">{item.size_bytes}b · {new Date(item.updated_at).toLocaleString()}</span>
+											</button>
+											{#if v3MemoryExpanded[item.path]}
+												<pre style="margin: 0; padding: 10px 12px; background: var(--bg-input, rgba(0,0,0,0.2)); font-size: 0.75rem; line-height: 1.5; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; color: var(--text-secondary); border-top: 1px solid var(--border, rgba(255,255,255,0.06));">{item.content}</pre>
+											{/if}
+										</div>
+									{/each}
+								</div>
+							</div>
+						{/each}
+					</div>
+					<button class="btn btn-ghost btn-sm" style="margin-top: 12px;" onclick={loadV3Memory}>Refresh</button>
+				{/if}
+				<span class="brain-hint" style="margin-top: 8px; display: block;">Files are FUSE-mounted at <code>{v3MemoryMountPath || '/mnt/memory/…'}</code> inside the agent's session container. Brain reads/writes them with its file tools. Decisions also dual-write to the brain_memories list below (with source=v3) so they surface in the existing memory feed.</span>
+			</div>
+			{/if}
 			<div class="brain-section">
 				{#if currentMemories.length > 0}
 				<div class="memory-month-stats">

@@ -516,6 +516,21 @@ export async function resetV3Agent(slug: string): Promise<{ok: boolean; archived
 	return request('POST', `/api/workspaces/${slug}/brain/v3/reset-agent`, {});
 }
 
+export interface V3Memory {
+	path: string;
+	content: string;
+	size_bytes: number;
+	updated_at: string;
+}
+export interface V3MemoryResponse {
+	memory_store_id: string;
+	mount_path: string;
+	memories: V3Memory[];
+}
+export async function getV3Memory(slug: string): Promise<V3MemoryResponse> {
+	return request('GET', `/api/workspaces/${slug}/brain/v3/memory`);
+}
+
 // Living Briefs
 export async function listBriefs(slug: string) {
 	return request('GET', `/api/workspaces/${slug}/briefs`);
