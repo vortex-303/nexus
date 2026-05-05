@@ -403,6 +403,24 @@
 	let brainAnthropicModel = $state('claude-sonnet-4-6'); // v3 agent model — sonnet by default
 	let brainSystemPromptTemplate = $state('v3-team-brain'); // v3 system prompt template
 	let resettingV3Agent = $state(false);
+	// v3 skills attached to the agent: 4 Anthropic pre-built + any custom
+	// skills uploaded to this workspace (each tracked as mga_skill_<name>_id
+	// in brain_settings).
+	let v3SkillsAttached = $derived.by(() => {
+		const out: { name: string; kind: 'anthropic' | 'custom' }[] = [
+			{ name: 'docx',  kind: 'anthropic' },
+			{ name: 'xlsx',  kind: 'anthropic' },
+			{ name: 'pdf',   kind: 'anthropic' },
+			{ name: 'pptx',  kind: 'anthropic' },
+		];
+		for (const k of Object.keys(brainSettings || {})) {
+			const m = k.match(/^mga_skill_(.+)_id$/);
+			if (m && brainSettings[k]) {
+				out.push({ name: m[1], kind: 'custom' });
+			}
+		}
+		return out;
+	});
 	let northStar = $state('');
 	let northStarWhy = $state('');
 	let northStarSuccess = $state('');
@@ -6762,7 +6780,17 @@ autonomy: reactive
 											<span>Environment: <strong>{brainSettings.mga_environment_id || '—'}</strong></span>
 											<span>Memory store: <strong>{brainSettings.mga_memory_store_id || '—'}</strong></span>
 										</div>
-										<span class="brain-hint">First @Brain message provisions all three (~2–4s, one-time). Memory store is FUSE-mounted in the session container at /mnt/memory/brain/.</span>
+										<span class="brain-hint">First @Brain message provisions all three (~2–4s, one-time). Memory store is FUSE-mounted in the session container at /mnt/memory/nexus-brain-{slug}/.</span>
+
+										<label style="margin-top: 12px;">Skills attached</label>
+										<div class="brain-key-status" style="display: flex; flex-wrap: wrap; gap: 6px; font-family: var(--font-mono, monospace); font-size: 0.75rem;">
+											{#each v3SkillsAttached as sk}
+												<span title={sk.kind === 'anthropic' ? 'Anthropic pre-built' : 'Custom (uploaded by Nexus)'} style="padding: 2px 8px; border-radius: 10px; background: {sk.kind === 'anthropic' ? 'rgba(255,255,255,0.06)' : 'rgba(217,119,87,0.15)'}; border: 1px solid {sk.kind === 'anthropic' ? 'rgba(255,255,255,0.08)' : 'rgba(217,119,87,0.3)'};">
+													<strong>{sk.name}</strong><span style="color: var(--text-secondary); margin-left: 4px;">{sk.kind === 'anthropic' ? '· built-in' : '· custom'}</span>
+												</span>
+											{/each}
+										</div>
+										<span class="brain-hint">Pre-built skills (built-in) are Anthropic-published; custom skills are uploaded by Nexus to your Anthropic org. Each loads on-demand when a task warrants it — they don't sit in context unless used.</span>
 										{#if brainSettings.mga_agent_id}
 											<button
 												class="btn btn-secondary btn-sm"
