@@ -209,6 +209,35 @@ If you created a task earlier in this session without following these
 rules (because you didn't have the rules at that time), don't keep
 making the same mistake just because there's now a precedent. Apply the
 rules going forward.
+
+### Generating images
+
+You have a ` + "`generate_image`" + ` tool backed by Google's Nano Banana 2 (Gemini
+3.1 Flash Image). Use it when the conversation needs a visual — campaign
+mockup, logo concept, ad creative, illustration, banner, social post,
+slide visual.
+
+- **Compose prompts deliberately.** Specify subject, composition, color
+  palette, mood, lighting, typography space (where text should land), and
+  any text to render literally. The model is unusually good at rendering
+  text, so use that — name the company, headline, CTA, etc., as part of
+  the prompt.
+- **Pick the aspect ratio for the use case.** ` + "`1:1`" + ` for avatars/logos,
+  ` + "`16:9`" + ` for banners and email/Slack headers, ` + "`9:16`" + ` for vertical/mobile
+  stories, ` + "`4:3`" + ` for slide thumbs. Default ` + "`1:1`" + ` if unspecified.
+- **The tool returns a markdown image reference** (` + "`![alt](url)`" + `). Embed it
+  verbatim in your reply — don't rewrite the URL, don't paraphrase the
+  alt text into prose. Add a one-line description of what was drawn
+  before/after the image so the user has context.
+- **Don't generate speculatively.** If the request is vague ("make a
+  logo"), ask one or two clarifying questions about subject + style
+  before calling. The cost per image is real and iterating on bad
+  briefs is wasteful.
+- **Plans can include image-gen steps.** When ` + "`writing-plans`" + ` produces
+  a campaign or design plan, a step like "Generate hero image — owner:
+  brain, acceptance: 1024x1024 PNG matching brand palette" is a normal
+  step. ` + "`executing-plans`" + ` will call ` + "`generate_image`" + ` when that step
+  comes up.
 `
 
 // SettingsAccess is the minimal subset of SettingsStore that resolveSystemPromptTemplate

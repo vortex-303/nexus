@@ -392,7 +392,7 @@
 	let brainSettings = $state<any>({});
 	let brainApiKey = $state('');
 	let brainModel = $state(_cachedBrain?.model || 'nexus/free-auto');
-	let brainImageModel = $state(_cachedBrain?.image_model || 'gemini-2.5-flash-image');
+	let brainImageModel = $state(_cachedBrain?.image_model || 'gemini-3.1-flash-image-preview');
 	let brainGeminiKey = $state('');
 	let brainXAIKey = $state('');
 	let brainXAIModel = $state(_cachedBrain?.xai_model || '');
@@ -2267,7 +2267,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 		try {
 			brainSettings = await getBrainSettings(slug);
 			brainModel = brainSettings.model || 'nexus/free-auto';
-			brainImageModel = brainSettings.image_model || 'gemini-2.5-flash-image';
+			brainImageModel = brainSettings.image_model || 'gemini-3.1-flash-image-preview';
 			brainGeminiKey = '';
 			brainBraveKey = '';
 			brainXAIKey = '';
@@ -5315,9 +5315,9 @@ autonomy: reactive
 										<span>Image Model (empty = workspace default)</span>
 										<select bind:value={agentForm.image_model}>
 											<option value="">Workspace default</option>
-											<option value="gemini-3.1-flash-image-preview">Gemini 3.1 Flash Image</option>
-											<option value="gemini-3-pro-image-preview">Gemini 3 Pro Image</option>
-											<option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image</option>
+											<option value="gemini-3.1-flash-image-preview">Nano Banana 2 (Gemini 3.1 Flash Image) — recommended</option>
+											<option value="gemini-3-pro-image-preview">Nano Banana Pro (Gemini 3 Pro Image)</option>
+											<option value="gemini-2.5-flash-image">Nano Banana (Gemini 2.5 Flash Image, legacy)</option>
 										</select>
 									</label>
 								{/if}
@@ -5384,9 +5384,9 @@ autonomy: reactive
 										<span>Image Model (empty = workspace default)</span>
 										<select bind:value={agentForm.image_model}>
 											<option value="">Workspace default</option>
-											<option value="gemini-3.1-flash-image-preview">Gemini 3.1 Flash Image</option>
-											<option value="gemini-3-pro-image-preview">Gemini 3 Pro Image</option>
-											<option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image</option>
+											<option value="gemini-3.1-flash-image-preview">Nano Banana 2 (Gemini 3.1 Flash Image) — recommended</option>
+											<option value="gemini-3-pro-image-preview">Nano Banana Pro (Gemini 3 Pro Image)</option>
+											<option value="gemini-2.5-flash-image">Nano Banana (Gemini 2.5 Flash Image, legacy)</option>
 										</select>
 									</label>
 								{/if}
@@ -6856,9 +6856,9 @@ autonomy: reactive
 								<div class="brain-field">
 									<label>Image Model</label>
 									<select class="brain-input" bind:value={brainImageModel}>
-										<option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image</option>
-										<option value="gemini-3-pro-image-preview">Gemini 3 Pro Image</option>
-										<option value="gemini-3.1-flash-image-preview">Gemini 3.1 Flash Image</option>
+										<option value="gemini-2.5-flash-image">Nano Banana (Gemini 2.5 Flash Image, legacy)</option>
+										<option value="gemini-3-pro-image-preview">Nano Banana Pro (Gemini 3 Pro Image)</option>
+										<option value="gemini-3.1-flash-image-preview">Nano Banana 2 (Gemini 3.1 Flash Image) — recommended</option>
 										<option value="imagen-4.0-generate-001">Imagen 4.0</option>
 									</select>
 								</div>

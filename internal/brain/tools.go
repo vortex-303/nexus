@@ -257,12 +257,13 @@ var Tools = []ToolDef{
 		Type: "function",
 		Function: ToolFuncDef{
 			Name:           "generate_image",
-			Description:    "Generate an image from a text prompt. Use when the user asks you to create, generate, draw, or design an image, illustration, logo, ad visual, or any graphic.",
+			Description:    "Generate a single image from a detailed text prompt. Use when the conversation needs a visual — campaign mockup, logo concept, ad creative, illustration, banner, social post, slide visual. Compose prompts that specify subject, composition, color palette, mood, lighting, typography space (where text should land), and any text to render literally. Returns a markdown image reference (![alt](url)) to embed verbatim in your reply.",
 			ResultAsAnswer: true,
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
-					"prompt": {"type": "string", "description": "Detailed image description. Be specific about subject, style, composition, colors, lighting, and mood."}
+					"prompt": {"type": "string", "description": "Detailed image description. Specify subject, composition, color palette, mood, lighting, typography space, any text to render. Don't include aspect ratio here — use the aspect_ratio field."},
+					"aspect_ratio": {"type": "string", "enum": ["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"], "description": "Image proportions. 1:1 for avatars/logos. 16:9 for banners/Slack/email headers. 9:16 for vertical/mobile/Stories. 4:3 for slide thumbs. Default 1:1 if omitted."}
 				},
 				"required": ["prompt"]
 			}`),

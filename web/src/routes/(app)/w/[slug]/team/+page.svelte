@@ -761,9 +761,9 @@ autonomy: reactive
 								<span>Image Model (empty = workspace default)</span>
 								<select bind:value={agentForm.image_model}>
 									<option value="">Workspace default</option>
-									<option value="gemini-3.1-flash-image-preview">Gemini 3.1 Flash Image</option>
-									<option value="gemini-3-pro-image-preview">Gemini 3 Pro Image</option>
-									<option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image</option>
+									<option value="gemini-3.1-flash-image-preview">Nano Banana 2 (Gemini 3.1 Flash Image) — recommended</option>
+									<option value="gemini-3-pro-image-preview">Nano Banana Pro (Gemini 3 Pro Image)</option>
+									<option value="gemini-2.5-flash-image">Nano Banana (Gemini 2.5 Flash Image, legacy)</option>
 								</select>
 							</label>
 						{/if}
@@ -830,9 +830,9 @@ autonomy: reactive
 								<span>Image Model (empty = workspace default)</span>
 								<select bind:value={agentForm.image_model}>
 									<option value="">Workspace default</option>
-									<option value="gemini-3.1-flash-image-preview">Gemini 3.1 Flash Image</option>
-									<option value="gemini-3-pro-image-preview">Gemini 3 Pro Image</option>
-									<option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image</option>
+									<option value="gemini-3.1-flash-image-preview">Nano Banana 2 (Gemini 3.1 Flash Image) — recommended</option>
+									<option value="gemini-3-pro-image-preview">Nano Banana Pro (Gemini 3 Pro Image)</option>
+									<option value="gemini-2.5-flash-image">Nano Banana (Gemini 2.5 Flash Image, legacy)</option>
 								</select>
 							</label>
 						{/if}

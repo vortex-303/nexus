@@ -34,7 +34,11 @@ import (
 //        always-loaded system prompt — multi-step → writing-plans,
 //        explicit confirmation required for create_task, no auto-assign,
 //        no precedent-overrides-rule.
-const AgentToolsetRevision = "r3"
+//   r4 — Operating Guide gains 'Generating images' section. Workspace
+//        default image model bumped to gemini-3.1-flash-image-preview
+//        (Nano Banana 2). generate_image tool description sharpened for
+//        Claude's compositional style; aspect_ratio enum added.
+const AgentToolsetRevision = "r4"
 
 // FileToolNames are the agent_toolset tool names we keep enabled.
 // Everything else in the toolset is disabled by default_config.

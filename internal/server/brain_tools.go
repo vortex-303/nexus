@@ -1139,7 +1139,8 @@ Rules:
 // toolGenerateImageForAgent enriches the prompt using the agent's identity before calling Gemini.
 func (s *Server) toolGenerateImageForAgent(slug, channelID string, agent *Agent, argsJSON string) string {
 	var args struct {
-		Prompt string `json:"prompt"`
+		Prompt      string `json:"prompt"`
+		AspectRatio string `json:"aspect_ratio"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "Error parsing arguments: " + err.Error()
@@ -1213,7 +1214,7 @@ func (s *Server) toolGenerateImageForAgent(slug, channelID string, agent *Agent,
 	}
 	logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("model", imageModel).Msg("using Gemini model")
 
-	text, imageData, mimeType, err := brain.GenerateImageGemini(geminiKey, imageModel, enrichedPrompt)
+	text, imageData, mimeType, err := brain.GenerateImageGemini(geminiKey, imageModel, enrichedPrompt, args.AspectRatio)
 	if err != nil {
 		logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("image generation error")
 		return "Error generating image: " + err.Error()
@@ -1237,7 +1238,8 @@ func (s *Server) toolGenerateImageForAgent(slug, channelID string, agent *Agent,
 // Returns markdown image reference or error string (used by Brain, not agents).
 func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
 	var args struct {
-		Prompt string `json:"prompt"`
+		Prompt      string `json:"prompt"`
+		AspectRatio string `json:"aspect_ratio"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "Error parsing arguments: " + err.Error()
@@ -1252,9 +1254,9 @@ func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
 	}
 
 	imageModel := s.getImageModel(slug)
-	logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("model", imageModel).Msg("using Gemini model")
+	logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("model", imageModel).Str("aspect", args.AspectRatio).Msg("using Gemini model")
 
-	text, imageData, mimeType, err := brain.GenerateImageGemini(geminiKey, imageModel, args.Prompt)
+	text, imageData, mimeType, err := brain.GenerateImageGemini(geminiKey, imageModel, args.Prompt, args.AspectRatio)
 	if err != nil {
 		logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("image generation error")
 		return "Error generating image: " + err.Error()

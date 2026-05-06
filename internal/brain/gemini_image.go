@@ -9,7 +9,13 @@ import (
 )
 
 const geminiBaseURL = "https://generativelanguage.googleapis.com/v1beta/models"
-const DefaultGeminiImageModel = "gemini-2.5-flash-image"
+// DefaultGeminiImageModel is the workspace default for image generation.
+// Gemini 3.1 Flash Image — codename "Nano Banana 2" — is Google's
+// price/performance pick: ~$0.045–$0.151 per image (512px–4K), 4K output,
+// 14 aspect ratios, real-world knowledge from web search, can render text
+// on the image. Replaced "gemini-2.5-flash-image" (Nano Banana 1) as the
+// default in 2026; legacy still selectable via the dropdown.
+const DefaultGeminiImageModel = "gemini-3.1-flash-image-preview"
 
 // GeminiImageRequest is the request to Gemini generateContent API.
 type GeminiImageRequest struct {
@@ -41,7 +47,15 @@ type GeminiInlineData struct {
 }
 
 type GeminiGenerationConfig struct {
-	ResponseModalities []string `json:"responseModalities"`
+	ResponseModalities []string           `json:"responseModalities"`
+	ImageConfig        *GeminiImageConfig `json:"imageConfig,omitempty"`
+}
+
+// GeminiImageConfig configures image-generation outputs. AspectRatio takes
+// values like "1:1", "16:9", "9:16" — Nano Banana 2 supports 14 ratios; we
+// expose the common 7 in our tool schema.
+type GeminiImageConfig struct {
+	AspectRatio string `json:"aspectRatio,omitempty"`
 }
 
 // GeminiImageResponse is the response from Gemini generateContent API.
@@ -58,21 +72,27 @@ type GeminiImageResponse struct {
 }
 
 // GenerateImageGemini calls the Gemini API to generate an image from a text prompt.
-// Returns text description, base64 PNG data, mime type, and error.
-func GenerateImageGemini(apiKey, model, prompt string) (text string, imageData string, mimeType string, err error) {
+// aspectRatio is optional ("" → model default). Returns text description, base64
+// image data, mime type, and error.
+func GenerateImageGemini(apiKey, model, prompt, aspectRatio string) (text string, imageData string, mimeType string, err error) {
 	if model == "" {
 		model = DefaultGeminiImageModel
 	}
 
 	url := fmt.Sprintf("%s/%s:generateContent?key=%s", geminiBaseURL, model, apiKey)
 
+	cfg := GeminiGenerationConfig{
+		ResponseModalities: []string{"TEXT", "IMAGE"},
+	}
+	if aspectRatio != "" {
+		cfg.ImageConfig = &GeminiImageConfig{AspectRatio: aspectRatio}
+	}
+
 	reqBody := GeminiImageRequest{
 		Contents: []GeminiContent{{
 			Parts: []GeminiPart{{Text: prompt}},
 		}},
-		GenerationConfig: GeminiGenerationConfig{
-			ResponseModalities: []string{"TEXT", "IMAGE"},
-		},
+		GenerationConfig: cfg,
 	}
 
 	body, err := json.Marshal(reqBody)

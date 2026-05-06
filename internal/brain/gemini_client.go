@@ -50,12 +50,13 @@ var GeminiTextModels = []struct {
 }
 
 // GeminiImageModels are the models available for image generation via Google AI API.
+// Order = display order in the UI dropdown. Nano Banana 2 first as the recommended default.
 var GeminiImageModels = []struct {
 	ID          string
 	DisplayName string
 }{
-	{"gemini-2.5-flash-image", "Gemini 2.5 Flash Image"},
-	{"gemini-3.1-flash-image-preview", "Gemini 3.1 Flash Image"},
-	{"gemini-3-pro-image-preview", "Gemini 3 Pro Image"},
+	{"gemini-3.1-flash-image-preview", "Nano Banana 2 (Gemini 3.1 Flash Image) — recommended"},
+	{"gemini-3-pro-image-preview", "Nano Banana Pro (Gemini 3 Pro Image)"},
+	{"gemini-2.5-flash-image", "Nano Banana (Gemini 2.5 Flash Image, legacy)"},
 	{"imagen-4.0-generate-001", "Imagen 4.0"},
 }
