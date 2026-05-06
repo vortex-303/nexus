@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, joinChannel, leaveChannel, browseChannels, inviteToChannel, listChannelMembers, pinMessage, unpinMessage, listPinnedMessages, getMemoryPinnedMessageIds, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, resetV3Agent, getV3Memory, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings, listNotifications, markNotificationRead, markAllNotificationsRead, getNotificationCount } from '$lib/api';
+	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, testModel, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, joinChannel, leaveChannel, browseChannels, inviteToChannel, listChannelMembers, pinMessage, unpinMessage, listPinnedMessages, getMemoryPinnedMessageIds, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, resetV3Agent, getV3Memory, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings, listNotifications, markNotificationRead, markAllNotificationsRead, getNotificationCount } from '$lib/api';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { connect, disconnect, onMessage, sendMessage, sendTyping, sendReaction, removeReaction, clearChannel, markChannelRead, connectionStatus, generateClientId } from '$lib/ws';
 	import { channels, members, messages, activeChannel, typingUsers, onlineUsers } from '$lib/stores/workspace';
@@ -2999,7 +2999,33 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 		if (modelFilter === 'free') list = list.filter((m: any) => m.is_free);
 		if (modelFilter === 'vision') list = list.filter((m: any) => m.supports_vision);
 		if (modelFilter === 'tools') list = list.filter((m: any) => m.supports_tools);
+		if (modelFilter === 'moe') list = list.filter((m: any) => m.is_moe);
+		if (modelFilter === 'new') list = list.filter((m: any) => m.is_new);
 		return list.slice(0, 100); // Limit display
+	}
+
+	// Per-model test runs: keyed by model id, holds latest result/state.
+	let modelTestResults = $state<Record<string, { running: boolean; ok?: boolean; text?: string; error?: string; latencyMs?: number; promptTokens?: number; completionTokens?: number }>>({});
+
+	async function runModelTest(modelId: string) {
+		modelTestResults = { ...modelTestResults, [modelId]: { running: true } };
+		try {
+			const r = await testModel(slug, modelId);
+			modelTestResults = {
+				...modelTestResults,
+				[modelId]: {
+					running: false,
+					ok: r.ok,
+					text: r.text,
+					error: r.error,
+					latencyMs: r.latency_ms,
+					promptTokens: r.prompt_tokens,
+					completionTokens: r.completion_tokens,
+				},
+			};
+		} catch (e: any) {
+			modelTestResults = { ...modelTestResults, [modelId]: { running: false, ok: false, error: e.message || String(e) } };
+		}
 	}
 
 	async function saveBrainFile() {
@@ -4832,12 +4858,14 @@ autonomy: reactive
 			<button class="modal-close" onclick={() => showModelBrowser = false}>&times;</button>
 		</div>
 		<div class="model-browser-controls">
-			<input type="text" class="brain-input" bind:value={modelSearchQuery} placeholder="Search models..." style="flex:1" />
+			<input type="text" class="brain-input" bind:value={modelSearchQuery} placeholder="Search 100+ models — try 'deepseek v4', 'gemma 4', 'qwen', 'free'..." style="flex:1" />
 			<div class="model-filters">
 				<button class="btn btn-ghost btn-xs" class:active={modelFilter === ''} onclick={() => modelFilter = ''}>All</button>
 				<button class="btn btn-ghost btn-xs" class:active={modelFilter === 'free'} onclick={() => modelFilter = 'free'}>Free</button>
-				<button class="btn btn-ghost btn-xs" class:active={modelFilter === 'vision'} onclick={() => modelFilter = 'vision'}>Vision</button>
+				<button class="btn btn-ghost btn-xs" class:active={modelFilter === 'new'} onclick={() => modelFilter = 'new'}>New</button>
+				<button class="btn btn-ghost btn-xs" class:active={modelFilter === 'moe'} onclick={() => modelFilter = 'moe'}>MoE</button>
 				<button class="btn btn-ghost btn-xs" class:active={modelFilter === 'tools'} onclick={() => modelFilter = 'tools'}>Tools</button>
+				<button class="btn btn-ghost btn-xs" class:active={modelFilter === 'vision'} onclick={() => modelFilter = 'vision'}>Vision</button>
 			</div>
 		</div>
 		{#if modelBrowserLoading}
@@ -4856,7 +4884,13 @@ autonomy: reactive
 								{#if model.is_free}
 									<span class="model-badge free">Free</span>
 								{:else if model.pricing?.prompt}
-									<span class="model-pricing">${(parseFloat(model.pricing.prompt) * 1_000_000).toFixed(2)}/M</span>
+									<span class="model-pricing">${(parseFloat(model.pricing.prompt) * 1_000_000).toFixed(2)}/M in · ${(parseFloat(model.pricing.completion || '0') * 1_000_000).toFixed(2)}/M out</span>
+								{/if}
+								{#if model.is_new}
+									<span class="model-badge new">New</span>
+								{/if}
+								{#if model.is_moe}
+									<span class="model-badge moe">MoE</span>
 								{/if}
 								{#if model.supports_vision}
 									<span class="model-badge vision">Vision</span>
@@ -4865,27 +4899,49 @@ autonomy: reactive
 									<span class="model-badge tools">Tools</span>
 								{/if}
 							</span>
+							{#if modelTestResults[model.id]}
+								{@const r = modelTestResults[model.id]}
+								<div class="model-test-result" class:test-error={r.ok === false}>
+									{#if r.running}
+										<span class="brain-hint">Testing…</span>
+									{:else if r.ok}
+										<div style="display: flex; gap: 8px; font-size: 0.7rem; color: var(--text-secondary); margin-bottom: 4px;">
+											<span>{r.latencyMs}ms</span>
+											{#if r.promptTokens != null}<span>{r.promptTokens} in</span>{/if}
+											{#if r.completionTokens != null}<span>{r.completionTokens} out</span>{/if}
+										</div>
+										<div style="font-size: 0.78rem; line-height: 1.4; max-height: 80px; overflow: auto; white-space: pre-wrap;">{r.text}</div>
+									{:else}
+										<span class="brain-hint" style="color: var(--danger);">Test failed: {r.error}</span>
+									{/if}
+								</div>
+							{/if}
 						</div>
-						{#if addedModels.some(m => m.id === model.id) || pinnedModels.some(m => m.id === model.id)}
-							<span style="font-size: 0.75rem; color: var(--text-dim);">Added</span>
-						{:else}
-							<button class="btn btn-ghost btn-xs" onclick={async () => {
-								addedModels = [...addedModels, { id: model.id, display_name: model.name || model.id }];
-								try {
-									await addWorkspaceModel(slug, {
-										id: model.id,
-										display_name: model.name || model.id,
-										provider: model.provider || '',
-										context_length: model.context_length || 0,
-										supports_tools: model.supports_tools || false,
-										pricing_prompt: model.pricing?.prompt || '0',
-										pricing_completion: model.pricing?.completion || '0',
-									});
-								} catch {}
-							}}>
-								Add
+						<div style="display: flex; gap: 6px; align-items: center;">
+							<button class="btn btn-ghost btn-xs" disabled={modelTestResults[model.id]?.running} onclick={() => runModelTest(model.id)} title="Run a quick completion test against this model">
+								{modelTestResults[model.id]?.running ? '…' : 'Test'}
 							</button>
-						{/if}
+							{#if addedModels.some(m => m.id === model.id) || pinnedModels.some(m => m.id === model.id)}
+								<span style="font-size: 0.75rem; color: var(--text-dim);">Added</span>
+							{:else}
+								<button class="btn btn-ghost btn-xs" onclick={async () => {
+									addedModels = [...addedModels, { id: model.id, display_name: model.name || model.id }];
+									try {
+										await addWorkspaceModel(slug, {
+											id: model.id,
+											display_name: model.name || model.id,
+											provider: model.provider || '',
+											context_length: model.context_length || 0,
+											supports_tools: model.supports_tools || false,
+											pricing_prompt: model.pricing?.prompt || '0',
+											pricing_completion: model.pricing?.completion || '0',
+										});
+									} catch {}
+								}}>
+									Add
+								</button>
+							{/if}
+						</div>
 					</div>
 				{/each}
 			</div>
@@ -6450,6 +6506,12 @@ autonomy: reactive
 				</div>
 				{#if brainEngine === 'openrouter'}
 					<div class="engine-detail">
+						<div style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem; flex-wrap: wrap; margin-bottom: 8px;">
+							<button type="button" class="btn btn-secondary btn-sm" onclick={openModelBrowser}>
+								Browse 100+ models →
+							</button>
+							<span class="brain-hint">Discover and test DeepSeek V4, Gemma 4 MoE, free models, and more — live from OpenRouter.</span>
+						</div>
 						<div style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem; flex-wrap: wrap;">
 							<label style="color: var(--text-secondary); white-space: nowrap;">Max tool depth:</label>
 							<select class="brain-input" style="padding: 4px 8px; font-size: 0.8rem;" bind:value={brainToolMaxDepth}>
@@ -11218,6 +11280,20 @@ autonomy: reactive
 	.model-badge.tools {
 		background: rgba(245,158,11,0.15);
 		color: #fbbf24;
+	}
+	.model-badge.moe {
+		background: rgba(217,119,87,0.15);
+		color: #d97757;
+	}
+	.model-test-result {
+		margin-top: 6px;
+		padding: 6px 8px;
+		background: var(--bg-base);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-sm);
+	}
+	.model-test-result.test-error {
+		border-color: rgba(239, 68, 68, 0.3);
 	}
 	.model-pricing {
 		color: var(--text-dim);

@@ -899,6 +899,10 @@ export async function checkModelAvailability(slug: string) {
 	return request('GET', `/api/workspaces/${slug}/models/check`);
 }
 
+export async function testModel(slug: string, modelId: string, prompt?: string) {
+	return request('POST', `/api/workspaces/${slug}/models/test`, { model_id: modelId, prompt: prompt || '' });
+}
+
 export async function getWorkspaceFreeModels(slug: string) {
 	return request('GET', `/api/workspaces/${slug}/models/free`);
 }

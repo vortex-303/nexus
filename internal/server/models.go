@@ -24,6 +24,40 @@ type Model struct {
 	SupportsVision bool         `json:"supports_vision"`
 	IsNew          bool         `json:"is_new"`
 	IsFree         bool         `json:"is_free"`
+	IsMoE          bool         `json:"is_moe"`
+}
+
+// moeModelPatterns matches known Mixture-of-Experts model IDs/names.
+// OpenRouter's /models response doesn't expose architecture flags, so we
+// detect MoE from naming conventions in widespread use:
+//
+//   - DeepSeek V4 Pro / V4 Flash — recent MoE flagship
+//   - Mixtral 8x* — Mistral's MoE family
+//   - Qwen3 *a22b / *a4b — "active params" suffix is the MoE signal
+//   - DBRX — Databricks's MoE
+//   - Gemma 4 *moe / *a4b — Google's MoE variants
+//   - Generic "moe" / "mixture-of-experts" in id or name
+//
+// Pattern matching happens lowercased on both id and name, so any of
+// these substrings in either field flips the flag.
+var moeModelPatterns = []string{
+	"moe", "mixtral", "mixture-of-experts",
+	"deepseek-v4", "deepseek-coder-v4",
+	"qwen3-235b-a22b", "a22b", "a4b", "a3b", "a35b",
+	"dbrx",
+	"jamba",
+	"grok-2", // Grok 2 is MoE
+}
+
+func detectMoE(id, name string) bool {
+	idLow := strings.ToLower(id)
+	nameLow := strings.ToLower(name)
+	for _, pat := range moeModelPatterns {
+		if strings.Contains(idLow, pat) || strings.Contains(nameLow, pat) {
+			return true
+		}
+	}
+	return false
 }
 
 type modelPricing struct {
@@ -40,8 +74,11 @@ var (
 
 // handleBrowseModels proxies OpenRouter /api/v1/models with 1-hour cache.
 func (s *Server) handleBrowseModels(w http.ResponseWriter, r *http.Request) {
+	// Cache 5 min so newly-launched models on OpenRouter surface quickly
+	// for users discovering through the browser. Cheap upstream call (~50ms),
+	// no auth required on /models endpoint.
 	modelCacheMu.Lock()
-	if modelCache != nil && time.Since(modelCacheTime) < time.Hour {
+	if modelCache != nil && time.Since(modelCacheTime) < 5*time.Minute {
 		cached := modelCache
 		modelCacheMu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{"models": cached})
@@ -113,6 +150,7 @@ func (s *Server) handleBrowseModels(w http.ResponseWriter, r *http.Request) {
 			SupportsVision: supportsVision,
 			IsNew:          isNew,
 			IsFree:         isFree,
+			IsMoE:          detectMoE(m.ID, m.Name),
 		})
 	}
 
@@ -340,6 +378,66 @@ func (s *Server) handleRemoveWorkspaceModel(w http.ResponseWriter, r *http.Reque
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// handleTestModel runs a one-shot completion against an OpenRouter model
+// using the workspace's API key, and returns the result + latency + cost
+// + token counts. Powers the "Test" button in the model browser, so users
+// can sanity-check a model before pinning it.
+func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	claims := auth.GetClaims(r)
+	if claims == nil || claims.Role != "admin" {
+		writeError(w, http.StatusForbidden, "admin only")
+		return
+	}
+
+	var req struct {
+		ModelID string `json:"model_id"`
+		Prompt  string `json:"prompt"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	if req.ModelID == "" {
+		writeError(w, http.StatusBadRequest, "model_id required")
+		return
+	}
+	if req.Prompt == "" {
+		req.Prompt = "Reply with a single sentence describing what you are. End with the model name."
+	}
+
+	apiKey := s.getBrainSetting(slug, "api_key")
+	if apiKey == "" {
+		writeError(w, http.StatusBadRequest, "OpenRouter API key not configured for this workspace")
+		return
+	}
+
+	client := brain.NewClient(apiKey, req.ModelID)
+	start := time.Now()
+	text, usage, err := client.Complete("", []brain.Message{{Role: "user", Content: req.Prompt}})
+	elapsed := time.Since(start)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":         false,
+			"error":      err.Error(),
+			"latency_ms": elapsed.Milliseconds(),
+		})
+		return
+	}
+
+	resp := map[string]any{
+		"ok":         true,
+		"text":       text,
+		"latency_ms": elapsed.Milliseconds(),
+	}
+	if usage != nil {
+		resp["prompt_tokens"] = usage.PromptTokens
+		resp["completion_tokens"] = usage.CompletionTokens
+		resp["total_tokens"] = usage.TotalTokens
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleCheckModelAvailability checks if the configured model is available.

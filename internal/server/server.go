@@ -391,6 +391,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/workspaces/{slug}/models", authed(http.HandlerFunc(s.handleAddWorkspaceModel)))
 	s.mux.Handle("DELETE /api/workspaces/{slug}/models/{modelID}", authed(http.HandlerFunc(s.requireAdmin(s.handleRemoveWorkspaceModel))))
 	s.mux.Handle("GET /api/workspaces/{slug}/models/check", authed(http.HandlerFunc(s.handleCheckModelAvailability)))
+	s.mux.Handle("POST /api/workspaces/{slug}/models/test", authed(http.HandlerFunc(s.handleTestModel)))
 	s.mux.Handle("GET /api/workspaces/{slug}/models/free", authed(http.HandlerFunc(s.handleGetWorkspaceFreeModels)))
 	s.mux.Handle("PUT /api/workspaces/{slug}/models/free", authed(http.HandlerFunc(s.requireAdmin(s.handleSetWorkspaceFreeModels))))
 
