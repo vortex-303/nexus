@@ -66,6 +66,14 @@ type PipelineConfig struct {
 	// on the SSE stream. Optional — if nil, streaming is disabled and the
 	// caller gets only the final aggregated text in Result.Response.
 	OnTextDelta func(delta string)
+	// OnToolStart fires when Brain begins executing a tool. The toolName is
+	// the Nexus-side name (already de-prefixed for reserved names). The
+	// server uses this to broadcast a "tool_executing" agent state so users
+	// see "Brain is searching the web..." / "...generating image..." etc.
+	OnToolStart func(toolName string)
+	// OnToolEnd fires when a tool finishes (success or error). The server
+	// uses this to flip the indicator back to "thinking" between tool calls.
+	OnToolEnd func(toolName string)
 }
 
 // Result is the output of a Brain v3 turn.

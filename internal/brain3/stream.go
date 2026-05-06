@@ -122,9 +122,17 @@ func consumeStream(
 			toolsUsedSet[nexusName] = struct{}{}
 			out.ToolCalls++
 
+			if cfg.OnToolStart != nil {
+				cfg.OnToolStart(nexusName)
+			}
+
 			toolStart := time.Now()
 			result := dispatchCustomTool(ev, cfg)
 			elapsed := time.Since(toolStart)
+
+			if cfg.OnToolEnd != nil {
+				cfg.OnToolEnd(nexusName)
+			}
 
 			argsSummary := ""
 			if ev.Input != nil {
@@ -142,6 +150,9 @@ func consumeStream(
 			// Built-in or MCP tool — Anthropic-side execution. Only counted.
 			toolsUsedSet[ev.Name] = struct{}{}
 			out.ToolCalls++
+			if cfg.OnToolStart != nil {
+				cfg.OnToolStart(ev.Name)
+			}
 			cfg.Trace.AddToolCall(ev.Name, "", "(server-executed)", "", 0)
 			// Detect decision-log writes for the brain_memories writeback
 			// (Phase 1.3). Only `write` events to a /decisions/ path qualify.
@@ -149,6 +160,13 @@ func consumeStream(
 				if dw := parseDecisionWrite(ev.Input); dw != nil {
 					out.DecisionWrites = append(out.DecisionWrites, *dw)
 				}
+			}
+			if cfg.OnToolEnd != nil {
+				// Server-executed tools complete on Anthropic's side; we get
+				// no end event. Fire OnToolEnd immediately so the indicator
+				// flips back to thinking — visible duration on UI matches the
+				// noticeable delay before the next text delta or tool call.
+				cfg.OnToolEnd(ev.Name)
 			}
 
 		case "span.model_request_start":

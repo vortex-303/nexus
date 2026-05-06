@@ -139,6 +139,17 @@ func (s *Server) handleBrainV3(slug, channelID, parentID, senderName, content st
 			DB:           wdb.DB,
 			ExecuteTool:  s.executeTool,
 			Trace:        trace,
+			// Surface tool calls in the chat UI as Brain runs them — flips
+			// the agent-state indicator to "tool_executing" with the tool's
+			// name (e.g. "Brain is generating an image..."), then back to
+			// "thinking" for the next reasoning step. Same channel v1/v2
+			// already use, so the existing UI lights up.
+			OnToolStart: func(toolName string) {
+				s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", v3HumanToolLabel(toolName), parentID)
+			},
+			OnToolEnd: func(toolName string) {
+				s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "thinking", "", parentID)
+			},
 		})
 
 		if result.Response == "" {
@@ -545,4 +556,52 @@ func buildDecisionMetadata(path string) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+// v3HumanToolLabels maps Nexus tool names to noun phrases that read
+// naturally in the chat indicator's "{agentName} is using {label}..."
+// pattern. Anything not in the map falls through unchanged (so an MCP
+// tool like "linear__create_issue" displays as itself — accurate, just
+// less polished).
+var v3HumanToolLabels = map[string]string{
+	"generate_image":        "the image generator",
+	"nexus_web_search":      "web search",
+	"web_search":            "web search",
+	"search_x":              "X search",
+	"fetch_url":             "the URL fetcher",
+	"list_social_pulses":    "the social pulse history",
+	"get_social_pulse":      "social pulse data",
+	"create_task":           "task creation",
+	"list_tasks":            "the task list",
+	"update_task":           "the task editor",
+	"delete_task":           "task deletion",
+	"create_document":       "the document creator",
+	"search_messages":       "message search",
+	"search_workspace":      "workspace search",
+	"search_knowledge":      "the knowledge base",
+	"trace_knowledge":       "the knowledge tracer",
+	"create_calendar_event": "the calendar",
+	"list_calendar_events":  "the calendar",
+	"update_calendar_event": "the calendar",
+	"delete_calendar_event": "the calendar",
+	"send_email":            "email",
+	"send_telegram":         "Telegram",
+	"delegate_to_agent":     "another agent",
+	"ask_agent":             "another agent",
+	// File tools the Anthropic agent_toolset exposes (against memory_store).
+	"read":  "memory read",
+	"write": "memory write",
+	"edit":  "memory edit",
+	"glob":  "memory search",
+	"grep":  "memory search",
+}
+
+// v3HumanToolLabel returns a chat-friendly label for a tool name. Used by
+// the v3 OnToolStart broadcast so the indicator reads "Brain is using web
+// search..." instead of "Brain is using nexus_web_search...".
+func v3HumanToolLabel(toolName string) string {
+	if label, ok := v3HumanToolLabels[toolName]; ok {
+		return label
+	}
+	return toolName
 }
