@@ -38,7 +38,13 @@ import (
 //        default image model bumped to gemini-3.1-flash-image-preview
 //        (Nano Banana 2). generate_image tool description sharpened for
 //        Claude's compositional style; aspect_ratio enum added.
-const AgentToolsetRevision = "r4"
+//   r5 — Personas section added to Operating Guide (Brain becomes
+//        polymorphic). New custom skills creative-director + researcher
+//        give Brain structured output contracts for visual/creative work
+//        and external-information research. [skill:<Workflow>] tag and
+//        <image-prompt> block conventions are now enforced via the
+//        always-loaded system prompt.
+const AgentToolsetRevision = "r5"
 
 // FileToolNames are the agent_toolset tool names we keep enabled.
 // Everything else in the toolset is disabled by default_config.
