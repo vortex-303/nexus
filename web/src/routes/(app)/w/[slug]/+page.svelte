@@ -475,6 +475,16 @@
 	let brainOllamaModel = $state(_cachedBrain?.ollama_model || '');
 	let brainOllamaURL = $state(_cachedBrain?.ollama_url || 'http://localhost:11434');
 	let brainVersion = $state(_cachedBrain?.brain_version || 'v1');
+	// brainEngine is the user-facing engine selector: "openrouter" | "claude".
+	// Source of truth for which engine card is highlighted. Server returns
+	// engine_resolved (derived from engine setting, fallback to brain_version
+	// migration) so legacy workspaces land on the right card on first load.
+	let brainEngine = $state<'openrouter' | 'claude'>(_cachedBrain?.engine_resolved || 'openrouter');
+	// Cloud-only product right now. Local AI components (Ollama, WebLLM,
+	// Local LLM, the legacy "Engine Mode" radio block) are hidden behind
+	// this flag — flip to true to bring them back when local-AI returns
+	// as a Pro/enterprise tier.
+	const SHOW_LOCAL_AI = false;
 	let brainToolMaxDepth = $state(_cachedBrain?.tool_max_depth || '5');
 	let brainAutomationsEnabled = $state(_cachedBrain?.automations_enabled === 'true');
 	let bridgeConnected = $state(false);
@@ -2288,6 +2298,11 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			brainOllamaModel = brainSettings.ollama_model || '';
 			brainOllamaURL = brainSettings.ollama_url || 'http://localhost:11434';
 			brainVersion = brainSettings.brain_version || 'v1';
+			// engine_resolved is computed server-side from the engine setting
+			// (or migrated from brain_version when engine is unset). Two
+			// values: "openrouter" | "claude". Defaults to openrouter for
+			// new workspaces.
+			brainEngine = brainSettings.engine_resolved || 'openrouter';
 			brainToolMaxDepth = brainSettings.tool_max_depth || '5';
 			brainAutomationsEnabled = brainSettings.automations_enabled === 'true';
 			bridgeConnected = brainSettings.bridge_connected === 'true';
@@ -2402,6 +2417,12 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 				ollama_enabled: String(brainOllamaEnabled),
 				ollama_model: brainOllamaModel,
 				ollama_url: brainOllamaURL,
+				// engine drives backend routing (server writes brain_version
+				// and forces ollama_enabled=false as side-effects). brain_version
+				// kept in updates for now so legacy paths still work during
+				// the migration; once all workspaces are on engine, we can drop
+				// it from the wire.
+				engine: brainEngine,
 				brain_version: brainVersion,
 				tool_max_depth: brainToolMaxDepth,
 				automations_enabled: String(brainAutomationsEnabled),
@@ -6279,6 +6300,7 @@ autonomy: reactive
 
 			{#if brainTab === 'settings'}
 			{#if isAdmin}
+			{#if SHOW_LOCAL_AI}
 			{#if brainVersion === 'v3'}
 			<div class="brain-section">
 				<h3 class="brain-section-title">Engine Mode</h3>
@@ -6371,6 +6393,7 @@ autonomy: reactive
 				</div>
 			</div>
 			{/if}
+			{/if}
 			<div class="brain-section">
 				<h3 class="brain-section-title">Automations</h3>
 				<label class="brain-toggle-row">
@@ -6381,47 +6404,69 @@ autonomy: reactive
 					</div>
 				</label>
 			</div>
-			<div class="brain-section">
-				<h3 class="brain-section-title">Brain Pipeline</h3>
-				<label class="brain-toggle-row">
-					<input type="radio" name="brain-version" checked={brainVersion === 'v1'} onchange={() => brainVersion = 'v1'} />
-					<div>
-						<strong>v1 Classic</strong>
-						<span class="brain-hint" style="display: block; margin-top: 2px;">2-round sequential tool calling</span>
+			<div class="brain-section engine-section">
+				<h3 class="brain-section-title">Choose your engine</h3>
+				<p class="brain-section-desc">Brain runs on the engine you select. Pick the one that matches your priorities — model flexibility and cost, or capability and managed infrastructure.</p>
+				<div class="engine-grid">
+					<button
+						type="button"
+						class="engine-card"
+						class:selected={brainEngine === 'openrouter'}
+						onclick={() => { brainEngine = 'openrouter'; brainVersion = 'v2'; }}
+					>
+						<div class="engine-card-header">
+							<span class="engine-card-name">OpenRouter</span>
+							<span class="engine-card-tag">Agnostic</span>
+						</div>
+						<div class="engine-card-tagline">100+ models, latest first, lowest cost.</div>
+						<ul class="engine-card-bullets">
+							<li>Live model browser — DeepSeek V4, Gemma 4 MoE, Llama 3.3, and more</li>
+							<li>Free-tier models for unlimited internal use</li>
+							<li>Per-channel model overrides</li>
+							<li>Pay-as-you-go from $0.14/M input tokens</li>
+						</ul>
+						<div class="engine-card-best">Best for: cost, flexibility, model variety.</div>
+					</button>
+					<button
+						type="button"
+						class="engine-card"
+						class:selected={brainEngine === 'claude'}
+						onclick={() => { brainEngine = 'claude'; brainVersion = 'v3'; }}
+					>
+						<div class="engine-card-header">
+							<span class="engine-card-name">Claude</span>
+							<span class="engine-card-tag claude">Managed Agents</span>
+						</div>
+						<div class="engine-card-tagline">Anthropic-managed agent runtime, not just an API.</div>
+						<ul class="engine-card-bullets">
+							<li>Persistent per-thread sessions + workspace memory_store</li>
+							<li>Native skills (docx/pdf/xlsx/pptx + custom)</li>
+							<li>Polymorphic personas (Creative Director, Researcher)</li>
+							<li>Sonnet 4.6 default, Opus 4.7 for max capability</li>
+							<li>From $1/M input tokens (Sonnet)</li>
+						</ul>
+						<div class="engine-card-best">Best for: capability, agentic workflows, structured deliverables.</div>
+					</button>
+				</div>
+				{#if brainEngine === 'openrouter'}
+					<div class="engine-detail">
+						<div style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem; flex-wrap: wrap;">
+							<label style="color: var(--text-secondary); white-space: nowrap;">Max tool depth:</label>
+							<select class="brain-input" style="padding: 4px 8px; font-size: 0.8rem;" bind:value={brainToolMaxDepth}>
+								<option value="3">3</option>
+								<option value="5">5 (default)</option>
+								<option value="7">7</option>
+								<option value="10">10</option>
+							</select>
+							<span class="brain-hint">Self-correction iterations on tool failures. Higher = more retries.</span>
+						</div>
 					</div>
-				</label>
-				<label class="brain-toggle-row">
-					<input type="radio" name="brain-version" checked={brainVersion === 'v2'} onchange={() => brainVersion = 'v2'} />
-					<div>
-						<strong>v2 Pipeline <span style="color: var(--accent); font-size: 0.7rem;">BETA</span></strong>
-						<span class="brain-hint" style="display: block; margin-top: 2px;">Plan, parallel tools, self-correction, feedback learning</span>
-					</div>
-				</label>
-				{#if brainVersion === 'v2'}
-					<div style="margin-top: 8px; display: flex; align-items: center; gap: 8px; font-size: 0.8rem;">
-						<label style="color: var(--text-secondary); white-space: nowrap;">Max tool depth:</label>
-						<select class="brain-input" style="padding: 4px 8px; font-size: 0.8rem;" bind:value={brainToolMaxDepth}>
-							<option value="3">3</option>
-							<option value="5">5 (default)</option>
-							<option value="7">7</option>
-							<option value="10">10</option>
-						</select>
-					</div>
-					<span class="brain-hint" style="margin-top: 4px;">Self-correction iterations. Higher = more retries. Local models can use 10 (free).</span>
-				{/if}
-				<label class="brain-toggle-row">
-					<input type="radio" name="brain-version" checked={brainVersion === 'v3'} onchange={() => brainVersion = 'v3'} />
-					<div>
-						<strong>v3 Claude Managed Agent <span style="color: var(--accent); font-size: 0.7rem;">BETA</span></strong>
-						<span class="brain-hint" style="display: block; margin-top: 2px;">Anthropic-hosted agent runtime, persistent per-thread sessions, native memory_store. Requires an Anthropic API key.</span>
-					</div>
-				</label>
-				{#if brainVersion === 'v3'}
-					<div style="margin-top: 8px; padding: 8px 10px; font-size: 0.8rem; color: var(--text-secondary);">
+				{:else if brainEngine === 'claude'}
+					<div class="engine-detail">
 						{#if brainSettings.anthropic_api_key_set === 'true'}
-							✓ Anthropic key configured. Sessions are per channel-thread; memories live in the Anthropic memory_store, completely siloed from v1/v2.
+							<div style="font-size: 0.8rem; color: var(--text-secondary);">✓ Anthropic API key configured. Sessions are per (channel, thread); workspace memory lives in an Anthropic-managed memory_store.</div>
 						{:else}
-							⚠ Requires an Anthropic API key — configure it in the <strong>Anthropic / Claude</strong> provider card below before saving.
+							<div style="font-size: 0.8rem; color: var(--accent);">⚠ Requires an Anthropic API key — configure it in the <strong>Anthropic / Claude</strong> provider card below before saving.</div>
 						{/if}
 					</div>
 				{/if}
@@ -6447,7 +6492,7 @@ autonomy: reactive
 			</div>
 			{/if}
 
-			{#if isAdmin}
+			{#if isAdmin && SHOW_LOCAL_AI}
 			<div class="brain-section">
 				<h3 class="brain-section-title">Ollama (Local AI)</h3>
 				{#if brainOllamaEnabled}
@@ -6508,6 +6553,7 @@ autonomy: reactive
 			</div>
 			{/if}
 
+			{#if SHOW_LOCAL_AI}
 			<div class="brain-section">
 				<h3 class="brain-section-title">Local Model (WebLLM)</h3>
 				{#if typeof navigator !== 'undefined' && !(navigator as any).gpu}
@@ -7189,6 +7235,7 @@ autonomy: reactive
 					</button>
 				</div>
 			</div>
+			{/if}
 
 			{:else if brainTab === 'memory'}
 			{#if brainVersion === 'v3'}
@@ -10023,6 +10070,93 @@ autonomy: reactive
 	.engine-status.engine-warning {
 		border-color: var(--danger, #ef4444);
 		color: var(--danger, #ef4444);
+	}
+	.brain-section-desc {
+		font-size: 0.85rem;
+		color: var(--text-secondary);
+		margin: 0 0 var(--space-md) 0;
+	}
+	.engine-grid {
+		display: grid;
+		grid-template-columns: repeat(2, 1fr);
+		gap: var(--space-md);
+		margin-bottom: var(--space-sm);
+	}
+	@media (max-width: 720px) {
+		.engine-grid { grid-template-columns: 1fr; }
+	}
+	.engine-card {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-sm);
+		padding: var(--space-md);
+		background: var(--bg-raised);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-lg);
+		text-align: left;
+		cursor: pointer;
+		transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+		font-family: inherit;
+		color: inherit;
+	}
+	.engine-card:hover {
+		border-color: var(--border);
+	}
+	.engine-card.selected {
+		border-color: var(--accent);
+		box-shadow: 0 0 0 1px var(--accent) inset;
+	}
+	.engine-card-header {
+		display: flex;
+		align-items: center;
+		gap: var(--space-sm);
+		justify-content: space-between;
+	}
+	.engine-card-name {
+		font-size: 1.1rem;
+		font-weight: 600;
+	}
+	.engine-card-tag {
+		font-size: 0.7rem;
+		font-weight: 500;
+		padding: 2px 8px;
+		border-radius: 10px;
+		background: var(--bg-base);
+		border: 1px solid var(--border-subtle);
+		color: var(--text-secondary);
+		white-space: nowrap;
+	}
+	.engine-card-tag.claude {
+		background: rgba(217, 119, 87, 0.12);
+		border-color: rgba(217, 119, 87, 0.3);
+		color: #d97757;
+	}
+	.engine-card-tagline {
+		font-size: 0.85rem;
+		color: var(--text-secondary);
+	}
+	.engine-card-bullets {
+		margin: 0;
+		padding-left: 1rem;
+		font-size: 0.8rem;
+		color: var(--text-primary);
+		line-height: 1.5;
+	}
+	.engine-card-bullets li {
+		margin: 2px 0;
+	}
+	.engine-card-best {
+		font-size: 0.78rem;
+		color: var(--text-secondary);
+		font-style: italic;
+		margin-top: auto;
+	}
+	.engine-detail {
+		padding: var(--space-sm) var(--space-md);
+		background: var(--bg-base);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		margin-top: var(--space-sm);
 	}
 	.webllm-installed-list {
 		display: flex;

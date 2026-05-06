@@ -360,11 +360,23 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 	if !p.WebLLM {
 		if brain.ContainsMention(p.Content) || isBrainDM {
 			brainTriggered = true
-			switch s.getBrainSetting(conn.WorkspaceSlug, "brain_version") {
-			case "v3":
+			// Route on the user-facing engine. Two engines today:
+			// OpenRouter (the agentic v2 pipeline) and Claude (managed
+			// agents v3). Legacy v1 routing kept as a fallback while
+			// migrating workspaces that still have brain_version='v1'
+			// stored without the new engine setting.
+			switch s.resolveEngine(conn.WorkspaceSlug) {
+			case "claude":
 				s.handleBrainV3(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
-			case "v2":
-				s.handleBrainV2(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
+			case "openrouter":
+				if s.getBrainSetting(conn.WorkspaceSlug, "brain_version") == "v1" {
+					// Soft-migration path: a legacy v1 workspace can stay on
+					// v1 routing until they hit Settings and explicitly
+					// select OpenRouter (which writes brain_version='v2').
+					s.handleBrainMentionWithTools(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
+				} else {
+					s.handleBrainV2(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
+				}
 			default:
 				s.handleBrainMentionWithTools(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
 			}

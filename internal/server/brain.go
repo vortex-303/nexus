@@ -18,14 +18,34 @@ import (
 	"github.com/nexus-chat/nexus/internal/logger"
 )
 
-// shouldHideLegacyAgents returns true when the workspace is on Brain v3
-// AND the show_legacy_agents setting is not opted-in. In that mode, the
-// legacy built-in agents (Creative Director, Caly) are filtered out of
-// agent lists and member lists — Brain v3 absorbs their roles via its
-// persona skills. The data is preserved (filter is applied at query
-// time); switching brain_version back to v1/v2 restores them.
+// resolveEngine returns the user-facing engine for the workspace:
+// "openrouter" or "claude". When the engine setting is unset (legacy
+// workspaces), it's derived from brain_version: v3 -> claude, anything
+// else -> openrouter. Used for routing decisions and for the legacy-
+// agent visibility filter.
+func (s *Server) resolveEngine(slug string) string {
+	switch s.getBrainSetting(slug, "engine") {
+	case "claude":
+		return "claude"
+	case "openrouter":
+		return "openrouter"
+	}
+	// Migration: derive from brain_version.
+	if s.getBrainSetting(slug, "brain_version") == "v3" {
+		return "claude"
+	}
+	return "openrouter"
+}
+
+// shouldHideLegacyAgents returns true when the workspace is on the
+// Claude engine AND show_legacy_agents is not opted-in. In that mode,
+// the legacy built-in agents (Creative Director, Caly) are filtered out
+// of agent lists and member lists — Claude managed-agents Brain absorbs
+// their roles via its persona skills. Data is preserved at all layers;
+// switching engine back to OpenRouter (or setting show_legacy_agents=
+// true) restores them.
 func (s *Server) shouldHideLegacyAgents(slug string) bool {
-	if s.getBrainSetting(slug, "brain_version") != "v3" {
+	if s.resolveEngine(slug) != "claude" {
 		return false
 	}
 	return s.getBrainSetting(slug, "show_legacy_agents") != "true"
@@ -810,6 +830,11 @@ func (s *Server) handleGetBrainSettings(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// Surface the resolved engine — what's *actually* in effect, even when
+	// the user hasn't picked one yet (legacy workspaces). UI uses this to
+	// highlight the right engine card on first load.
+	settings["engine_resolved"] = s.resolveEngine(slug)
+
 	// Include memory stats as extra keys in the flat response
 	counts, _ := brain.CountMemories(wdb.DB)
 	totalMemories := 0
@@ -875,6 +900,13 @@ func (s *Server) handleUpdateBrainSettings(w http.ResponseWriter, r *http.Reques
 		"webllm_enabled": true, "webllm_model": true, "webllm_system_prompt": true,
 		"ollama_enabled": true, "ollama_model": true, "ollama_url": true,
 		"brain_version": true, "tool_max_depth": true, "automations_enabled": true,
+		// engine is the user-facing pipeline selector: openrouter | claude | local.
+		// Derived from brain_version + ollama_enabled when unset; persisted directly
+		// when the user picks an engine card in Brain Settings.
+		"engine": true,
+		// show_legacy_agents toggles the v3 visibility filter for @Creative Director
+		// and @Caly built-in agents (Brain absorbs their roles via personas).
+		"show_legacy_agents": true,
 		// Brain v3 (Claude Managed Agents) — see internal/brain3/
 		"anthropic_api_key": true, "mga_agent_id": true, "mga_agent_version": true,
 		"mga_environment_id": true, "mga_memory_store_id": true, "mga_default_effort": true,
@@ -967,6 +999,29 @@ func (s *Server) handleUpdateBrainSettings(w http.ResponseWriter, r *http.Reques
 					active = 0
 				}
 				_, _ = wdb.DB.Exec("UPDATE agents SET is_active = ? WHERE id = ? AND is_system = 1", active, ba.ID)
+			}
+		}
+
+		// Engine side-effects: when the user picks an engine card, also write
+		// the implied brain_version and force ollama_enabled=false (cloud-only
+		// product right now). This keeps internal routing primitives in sync
+		// without exposing them in the UI.
+		if k == "engine" {
+			var derivedBrainVersion string
+			switch v {
+			case "claude":
+				derivedBrainVersion = "v3"
+			case "openrouter":
+				derivedBrainVersion = "v2"
+			}
+			if derivedBrainVersion != "" {
+				_, _ = wdb.DB.Exec(
+					"INSERT INTO brain_settings (key, value) VALUES ('brain_version', ?) ON CONFLICT(key) DO UPDATE SET value = ?",
+					derivedBrainVersion, derivedBrainVersion,
+				)
+				_, _ = wdb.DB.Exec(
+					"INSERT INTO brain_settings (key, value) VALUES ('ollama_enabled', 'false') ON CONFLICT(key) DO UPDATE SET value = 'false'",
+				)
 			}
 		}
 
