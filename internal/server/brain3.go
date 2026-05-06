@@ -116,11 +116,16 @@ func (s *Server) handleBrainV3(slug, channelID, parentID, senderName, content st
 		// for v3 with brain_version='v3' as the discriminator.
 		trace := brain3.NewTraceCollector()
 
-		// Pre-create an empty brain message so the streaming UI has a target
-		// to append deltas to. The final content gets written via UPDATE +
-		// message.edited broadcast at the end.
-		streamMsgID := s.createEmptyBrainMessage(slug, channelID, parentID)
-
+		// Buffer-and-send-once. Streaming via pre-created empty bubble +
+		// brain.chunk deltas + message.edited had a real failure mode (empty
+		// bubble when chunks didn't reach the client OR message.edited never
+		// fired), and Anthropic's managed-agents SSE only emits agent.message
+		// at the block level — not true token-level streaming — so the UX
+		// gain was marginal. v1/v2 use the same single-shot path reliably.
+		//
+		// Re-enable when/if Anthropic ships token-level deltas in managed
+		// session events. The OnTextDelta callback in PipelineConfig is left
+		// in the surface for tests + future use; just unwired here.
 		result := brain3.Run(ctx, brain3.PipelineConfig{
 			Slug:         slug,
 			ChannelID:    channelID,
@@ -134,28 +139,13 @@ func (s *Server) handleBrainV3(slug, channelID, parentID, senderName, content st
 			DB:           wdb.DB,
 			ExecuteTool:  s.executeTool,
 			Trace:        trace,
-			OnTextDelta: func(delta string) {
-				if streamMsgID == "" {
-					return
-				}
-				s.broadcastBrainChunk(slug, channelID, parentID, streamMsgID, delta)
-			},
 		})
 
 		if result.Response == "" {
 			result.Response = "I processed your request but couldn't generate a response."
 		}
 
-		// Finalize the streaming message: write final content + broadcast
-		// message.edited so any client that joined mid-stream catches up.
-		// If pre-create failed, fall back to a fresh sendBrainMessage.
-		var msgID string
-		if streamMsgID != "" {
-			s.finalizeBrainMessage(slug, channelID, parentID, streamMsgID, result.Response, result.ToolsUsed)
-			msgID = streamMsgID
-		} else {
-			msgID = s.sendBrainMessage(slug, channelID, parentID, result.Response)
-		}
+		msgID := s.sendBrainMessage(slug, channelID, parentID, result.Response)
 
 		actionID := id.New()
 		brain.LogAction(wdb.DB, actionID, "brain_v3", channelID, content, result.Response, brain3.DefaultModel, result.ToolsUsed)
