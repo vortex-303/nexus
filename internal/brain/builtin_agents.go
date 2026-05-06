@@ -33,6 +33,37 @@ type BuiltinAgent struct {
 	SkillsDir       string   // subdirectory within the embed.FS
 	KnowledgeAccess bool
 	MemoryAccess    bool
+	// Legacy marks an agent as superseded by Brain v3 personas. Legacy
+	// agents stay seeded (data intact, switching workspace back to
+	// v1/v2 brain_version restores them) but are hidden from member
+	// lists, agent lists, and @-mention pickers when the workspace is
+	// in v3 mode and the show_legacy_agents setting isn't true.
+	Legacy bool
+}
+
+// LegacyAgentMemberIDs returns member IDs of all built-in agents marked
+// Legacy. Used by the v3 visibility filter in handleGetWorkspace and
+// handleListAgents.
+func LegacyAgentMemberIDs() []string {
+	out := make([]string, 0, len(BuiltinAgents))
+	for _, ba := range BuiltinAgents {
+		if ba.Legacy {
+			out = append(out, ba.MemberID)
+		}
+	}
+	return out
+}
+
+// LegacyAgentIDs returns agent IDs (== row IDs in agents table) of all
+// built-in agents marked Legacy.
+func LegacyAgentIDs() []string {
+	out := make([]string, 0, len(BuiltinAgents))
+	for _, ba := range BuiltinAgents {
+		if ba.Legacy {
+			out = append(out, ba.ID)
+		}
+	}
+	return out
 }
 
 // BuiltinAgents is the registry of all built-in agents (excluding Brain, which is special).
@@ -76,6 +107,7 @@ This helps the team understand which workflow you're following.
 		SkillsDir:   "skills/creative_director",
 		KnowledgeAccess: true,
 		MemoryAccess:    true,
+		Legacy:          true, // Brain v3 absorbs this via creative-director persona skill.
 	},
 	{
 		ID:       "caly",
@@ -116,6 +148,7 @@ This helps the team understand which workflow you're following.
 		SkillsDir:   "skills/caly",
 		KnowledgeAccess: true,
 		MemoryAccess:    true,
+		Legacy:          true, // Brain v3 absorbs Caly's role via default voice + research/coordination personas.
 	},
 }
 

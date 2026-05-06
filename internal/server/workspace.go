@@ -673,10 +673,21 @@ func (s *Server) handleGetWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
+	hideLegacy := s.shouldHideLegacyAgents(slug)
+	legacyMemberIDs := map[string]bool{}
+	if hideLegacy {
+		for _, id := range brain.LegacyAgentMemberIDs() {
+			legacyMemberIDs[id] = true
+		}
+	}
+
 	var members []memberResp
 	for rows.Next() {
 		var m memberResp
 		if err := rows.Scan(&m.ID, &m.DisplayName, &m.Role, &m.Color); err != nil {
+			continue
+		}
+		if legacyMemberIDs[m.ID] {
 			continue
 		}
 		members = append(members, m)

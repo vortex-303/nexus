@@ -18,6 +18,19 @@ import (
 	"github.com/nexus-chat/nexus/internal/logger"
 )
 
+// shouldHideLegacyAgents returns true when the workspace is on Brain v3
+// AND the show_legacy_agents setting is not opted-in. In that mode, the
+// legacy built-in agents (Creative Director, Caly) are filtered out of
+// agent lists and member lists — Brain v3 absorbs their roles via its
+// persona skills. The data is preserved (filter is applied at query
+// time); switching brain_version back to v1/v2 restores them.
+func (s *Server) shouldHideLegacyAgents(slug string) bool {
+	if s.getBrainSetting(slug, "brain_version") != "v3" {
+		return false
+	}
+	return s.getBrainSetting(slug, "show_legacy_agents") != "true"
+}
+
 // ensureBrainMember creates the Brain member in a workspace if it doesn't exist.
 // Also ensures Brain has a system agent row in the agents table.
 func (s *Server) ensureBrainMember(slug string) error {

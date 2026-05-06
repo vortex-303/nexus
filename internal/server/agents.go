@@ -207,6 +207,14 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
+	hideLegacy := s.shouldHideLegacyAgents(slug)
+	legacyIDs := map[string]bool{}
+	if hideLegacy {
+		for _, id := range brain.LegacyAgentIDs() {
+			legacyIDs[id] = true
+		}
+	}
+
 	agents := []Agent{}
 	for rows.Next() {
 		var a Agent
@@ -216,6 +224,9 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 			&a.MaxIterations, &reqApprovalStr, &a.Constraints, &a.EscalationPrompt,
 			&a.TriggerType, &a.TriggerConfig, &behaviorStr, &a.IsSystem, &a.IsActive, &a.TemplateID, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt,
 		); err != nil {
+			continue
+		}
+		if legacyIDs[a.ID] {
 			continue
 		}
 		a.Tools = json.RawMessage(toolsStr)
