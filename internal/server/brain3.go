@@ -53,13 +53,44 @@ func (a brain3Settings) Set(slug, key, value string) error {
 // per workspace, stores the IDs in brain_settings, and returns a placeholder
 // response. Session lookup/create + streaming come in Phase 2 / 3.
 func (s *Server) handleBrainV3(slug, channelID, parentID, senderName, content string, messageTime time.Time) {
+	// Per-conversation busy lock. Brain mimics human turn-taking: one
+	// reply per (channel, parent_id) at a time, parallel across
+	// conversations. If a turn is already in flight for this exact
+	// conversation, drop this mention silently — the per-channel agent
+	// indicator (broadcast by the in-flight turn) already signals Brain
+	// is busy, so the sender knows. They can re-mention once the
+	// indicator clears.
+	busyKey := slug + "|" + channelID + "|" + parentID
+	s.brainV3BusyMu.Lock()
+	if s.brainV3Busy[busyKey] {
+		s.brainV3BusyMu.Unlock()
+		logger.WithCategory(logger.CatBrain).Info().
+			Str("workspace", slug).
+			Str("channel", channelID).
+			Str("parent", parentID).
+			Str("sender", senderName).
+			Msg("v3: dropping mention — turn already in flight in this conversation")
+		return
+	}
+	s.brainV3Busy[busyKey] = true
+	s.brainV3BusyMu.Unlock()
+
 	go func() {
-		// Acquire semaphore (same pool as v1/v2)
+		defer func() {
+			s.brainV3BusyMu.Lock()
+			delete(s.brainV3Busy, busyKey)
+			s.brainV3BusyMu.Unlock()
+		}()
+
+		// Acquire workspace-wide semaphore (rate cap, shared with v1/v2).
+		// Still blocking here — this is the safety net to keep total
+		// concurrent Brain turns under control across the server. Per-
+		// conversation overlap was already prevented above.
 		select {
 		case s.agentSem <- struct{}{}:
 			defer func() { <-s.agentSem }()
 		default:
-			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Msg("v3: queuing (semaphore full)")
+			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Msg("v3: waiting on global semaphore (rate cap)")
 			s.agentSem <- struct{}{}
 			defer func() { <-s.agentSem }()
 		}
