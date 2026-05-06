@@ -433,4 +433,32 @@ var Tools = []ToolDef{
 			}`),
 		},
 	},
+	{
+		Type: "function",
+		Function: ToolFuncDef{
+			Name:        "list_social_pulses",
+			Description: "List the workspace's existing Social Pulse analyses (X/Twitter + web sentiment + themes + key posts + predictions, run via Grok). Use FIRST when the user asks about social sentiment, what people are saying about a topic, or trends — to check if a recent analysis already exists before kicking off a new one. Returns id, topic, sentiment_score (0-100), summary, status, created_at for each pulse.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"limit": {"type": "integer", "description": "Max pulses to return (default 10, max 50)"},
+					"topic_contains": {"type": "string", "description": "Filter to pulses whose topic contains this string (case-insensitive). Optional."}
+				}
+			}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: ToolFuncDef{
+			Name:        "get_social_pulse",
+			Description: "Fetch a single Social Pulse analysis by id with full structured data: sentiment_score, themes, key_posts, predictions, risks, competitive_mentions, audience_breakdown, source_breakdown, recommendations, and citations. Use after list_social_pulses identifies a relevant pulse, or when the user references a specific pulse.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"pulse_id": {"type": "string", "description": "The pulse id from list_social_pulses"}
+				},
+				"required": ["pulse_id"]
+			}`),
+		},
+	},
 }

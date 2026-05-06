@@ -83,6 +83,10 @@ func (s *Server) executeToolInner(slug, channelID, senderMemberID string, call b
 		return toolFetchURL(call.Function.Arguments)
 	case "trace_knowledge":
 		return s.toolTraceKnowledge(slug, call.Function.Arguments)
+	case "list_social_pulses":
+		return s.toolListSocialPulses(slug, call.Function.Arguments)
+	case "get_social_pulse":
+		return s.toolGetSocialPulse(slug, call.Function.Arguments)
 	default:
 		// Route to MCP server
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1933,4 +1937,100 @@ func (s *Server) handleGetBrainTools(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	tools := s.getAllTools(slug)
 	writeJSON(w, http.StatusOK, map[string]any{"tools": tools})
+}
+
+// toolListSocialPulses returns recent Social Pulse analyses (a Grok-backed
+// X/Twitter + web sentiment + themes feature that already lives in the
+// workspace under /social-pulse). Used by Brain v3's Researcher persona to
+// check for existing analyses before suggesting a fresh run.
+func (s *Server) toolListSocialPulses(slug, argsJSON string) string {
+	var args struct {
+		Limit         int    `json:"limit"`
+		TopicContains string `json:"topic_contains"`
+	}
+	_ = json.Unmarshal([]byte(argsJSON), &args)
+	if args.Limit <= 0 {
+		args.Limit = 10
+	}
+	if args.Limit > 50 {
+		args.Limit = 50
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return "Error opening workspace: " + err.Error()
+	}
+
+	q := "SELECT id, topic, summary, sentiment_score, status, created_at FROM social_pulses"
+	queryArgs := []any{}
+	if args.TopicContains != "" {
+		q += " WHERE LOWER(topic) LIKE ?"
+		queryArgs = append(queryArgs, "%"+strings.ToLower(args.TopicContains)+"%")
+	}
+	q += " ORDER BY created_at DESC LIMIT ?"
+	queryArgs = append(queryArgs, args.Limit)
+
+	rows, err := wdb.DB.Query(q, queryArgs...)
+	if err != nil {
+		return "Error querying social pulses: " + err.Error()
+	}
+	defer rows.Close()
+
+	type pulseSummary struct {
+		ID             string `json:"id"`
+		Topic          string `json:"topic"`
+		Summary        string `json:"summary"`
+		SentimentScore int    `json:"sentiment_score"`
+		Status         string `json:"status"`
+		CreatedAt      string `json:"created_at"`
+	}
+
+	out := []pulseSummary{}
+	for rows.Next() {
+		var p pulseSummary
+		if err := rows.Scan(&p.ID, &p.Topic, &p.Summary, &p.SentimentScore, &p.Status, &p.CreatedAt); err != nil {
+			continue
+		}
+		out = append(out, p)
+	}
+
+	if len(out) == 0 {
+		hint := "No Social Pulse analyses found"
+		if args.TopicContains != "" {
+			hint += " for topic containing \"" + args.TopicContains + "\""
+		}
+		hint += ". Tell the user they can run a new one from the Social Pulse panel (left sidebar) — Grok will scan X + the web and produce sentiment + themes + key posts in ~30s."
+		return hint
+	}
+
+	body, _ := json.MarshalIndent(out, "", "  ")
+	return string(body)
+}
+
+// toolGetSocialPulse returns the full structured analysis for one pulse —
+// sentiment, themes, key_posts, predictions, risks, competitive mentions,
+// audience breakdown, source breakdown, recommendations, and citations.
+func (s *Server) toolGetSocialPulse(slug, argsJSON string) string {
+	var args struct {
+		PulseID string `json:"pulse_id"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return "Error parsing arguments: " + err.Error()
+	}
+	if args.PulseID == "" {
+		return "Error: pulse_id is required"
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return "Error opening workspace: " + err.Error()
+	}
+
+	p, err := scanPulse(wdb.DB.QueryRow("SELECT "+pulseSelectCols+" FROM social_pulses WHERE id = ?", args.PulseID))
+	if err != nil {
+		return "Pulse not found or query failed: " + err.Error()
+	}
+
+	body, _ := json.MarshalIndent(p, "", "  ")
+	return string(body)
 }

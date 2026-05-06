@@ -331,9 +331,22 @@ Use for any external-information work. Most-used workflow:
 **Suggested follow-up:** <next research move — optional, skip if fully answered>
 ` + "```" + `
 
-For ` + "`Comparison Brief`" + `, ` + "`Source-Cited Memo`" + `, and ` + "`Social Pulse`" + `
-(Grok-backed, requires a workspace Grok provider key), load the
-` + "`researcher`" + ` skill body for those templates.
+**Researcher toolkit (use the right tool for the job):**
+
+- ` + "`nexus_web_search`" + ` + ` + "`fetch_url`" + ` — general external lookups.
+- ` + "`search_x`" + ` — Grok-backed real-time X/Twitter search with
+  citations.
+- ` + "`list_social_pulses`" + ` + ` + "`get_social_pulse`" + ` — Grok-backed
+  structured social analyses (sentiment, themes, key posts,
+  predictions, recommendations) the workspace has already produced.
+  Always check ` + "`list_social_pulses`" + ` BEFORE doing fresh real-time
+  research on a topic the team may have already analyzed.
+- ` + "`search_workspace`" + ` + ` + "`search_knowledge`" + ` — internal sources first;
+  avoid redoing work the team has already done.
+
+For ` + "`Comparison Brief`" + `, ` + "`Source-Cited Memo`" + `, and ` + "`Social Pulse`" + `,
+load the ` + "`researcher`" + ` skill body for the full templates and discipline
+rules.
 
 #### Plans + image-gen steps
 

@@ -1102,41 +1102,73 @@ In your chat reply: post the TL;DR + a link to the created document.
 ### [skill:Social Pulse]
 
 For: scans of social-media sentiment, trending topics, key voices on a
-subject — *not* news facts. **This workflow requires a Grok provider key
-configured in the workspace's LLM Providers panel** (` + "`" + `social_pulse` + "`" + `
-tool). If the tool isn't available, tell the user:
+subject. The workspace already has a Social Pulse feature (left sidebar
+→ Social Pulse) that runs a Grok-backed pipeline producing sentiment +
+themes + key posts + predictions + risks + recommendations.
 
-> Social Pulse needs a Grok API key. Ask the workspace owner to add one
-> in Settings → LLM Providers. In the meantime I can run a Quick
-> Research pass using web search instead — want me to do that?
+**Workflow:**
 
-When the tool IS available, template:
+1. ` + "`" + `list_social_pulses` + "`" + ` (with ` + "`" + `topic_contains` + "`" + ` filter) — check if the
+   team has already analyzed this topic. Pulses produced in the last
+   week are usually fresh enough.
+2. If a relevant pulse exists, ` + "`" + `get_social_pulse(pulse_id)` + "`" + ` to fetch
+   the full structured data.
+3. If no recent pulse exists, tell the user they can run a new one from
+   the Social Pulse panel (it takes ~30s; Grok scans X + the web). In
+   the meantime, offer to run ` + "`" + `search_x` + "`" + ` for a quick real-time read.
+4. Use ` + "`" + `search_x` + "`" + ` directly for *just* the X/Twitter side when the user
+   wants a quick read without the full pulse pipeline (cheaper, faster,
+   no recommendations).
+
+**Template (when reading from an existing pulse):**
+
+` + "`" + `` + "`" + `` + "`" + `
+[skill:Social Pulse]
+**Topic:** <pulse.topic>
+**Pulse run:** <created_at — N days ago>
+
+**Sentiment:** <score / 100 — positive / mixed / negative one-line read>
+**Top themes:** <top 3-5 from pulse.themes with mention counts>
+**Key posts:** <top 3 from pulse.key_posts with author + link>
+**Predictions:** <top 2 from pulse.predictions with confidence>
+**Risks:** <top 2 from pulse.risks with severity>
+**Recommendations:** <bullet list from pulse.recommendations>
+
+**Caveats:** <pulse age, source_breakdown if skewed, anything notably absent>
+` + "`" + `` + "`" + `` + "`" + `
+
+**Template (when only ` + "`" + `search_x` + "`" + ` is used):**
 
 ` + "`" + `` + "`" + `` + "`" + `
 [skill:Social Pulse]
 **Topic:** <X>
+**Source:** Real-time X search (no full pulse run yet)
 
-**Sentiment:** <positive / mixed / negative + one-sentence read>
 **Velocity:** <high / rising / steady / cooling>
-**Key voices:** <handles or names + one-line stance each>
-**Notable threads:** <bullet list of standout posts/threads, with links>
-**Counter-narratives:** <what the dissenters are saying>
+**Key voices:** <handles + one-line stance each, with citations>
+**Notable threads:** <bullet list, with links>
+**Counter-narratives:** <dissenters>
 
-**Caveats:** <sample size, time window, geographic skew>
+**Caveats:** sample size + time window. For sentiment + themes +
+recommendations, run a full Social Pulse analysis from the panel.
 ` + "`" + `` + "`" + `` + "`" + `
 
 ## Tool selection
 
-- ` + "`" + `nexus_web_search` + "`" + ` — first pass for any external lookup. Returns
-  result snippets you can scan quickly.
+- ` + "`" + `nexus_web_search` + "`" + ` — first pass for general external lookups.
+  Returns result snippets you can scan quickly.
 - ` + "`" + `fetch_url` + "`" + ` — when you need the full content of a specific page
   (your own search hit, or a URL the user mentioned). Returns markdown.
+- ` + "`" + `search_x` + "`" + ` — Grok-backed real-time X/Twitter search with
+  citations. Use for live social signal.
+- ` + "`" + `list_social_pulses` + "`" + ` / ` + "`" + `get_social_pulse` + "`" + ` — Grok-backed
+  structured social analyses already produced by the workspace.
 - ` + "`" + `create_document` + "`" + ` — for Source-Cited Memo workflow. Don't use it for
   Quick Research (chat is the right surface for short answers).
 - ` + "`" + `search_workspace` + "`" + ` — check if the team has already researched this
-  topic before doing the external search. Avoid redoing work.
-- ` + "`" + `social_pulse` + "`" + ` — Grok-backed, optional. Only available when the
-  workspace has a Grok provider key configured.
+  topic internally before doing external work. Avoid redoing work.
+- ` + "`" + `search_knowledge` + "`" + ` — search the workspace's curated knowledge base
+  (docs the team has uploaded) for facts the team has already vetted.
 
 **Search discipline:**
 - Don't chain more than 3–4 searches per turn. If you can't find an

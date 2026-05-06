@@ -51,7 +51,16 @@ import (
 //        at top, and inlined the Ad Creative + Quick Research output
 //        templates so Claude has the structure even without the persona
 //        skill body loaded (progressive disclosure is unreliable).
-const AgentToolsetRevision = "r6"
+//   r7 — Researcher persona now harnesses the existing Grok-backed
+//        Social Pulse feature: new list_social_pulses + get_social_pulse
+//        tools expose the workspace's already-produced sentiment/theme/
+//        key-post analyses to Brain. Researcher skill body Social Pulse
+//        workflow rewritten around these tools (no new Grok provider
+//        wiring needed; workspace already has xAI key for the panel).
+//        V3OperatingGuide Researcher inline section gains a 'toolkit'
+//        bullet list naming the new tools alongside web search, search_x,
+//        and the workspace internal-search tools.
+const AgentToolsetRevision = "r7"
 
 // FileToolNames are the agent_toolset tool names we keep enabled.
 // Everything else in the toolset is disabled by default_config.
