@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -254,7 +255,35 @@ func dispatchCustomTool(ev anthropic.BetaManagedAgentsStreamSessionEventsUnion, 
 	// senderMemberID is "" for now; v3 doesn't have it in scope yet (see
 	// brain3.go TODO). Tools that need it gracefully degrade — same as
 	// brain2's reflector behavior today.
-	return cfg.ExecuteTool(cfg.Slug, cfg.ChannelID, "", call)
+	result := cfg.ExecuteTool(cfg.Slug, cfg.ChannelID, "", call)
+
+	// v3-specific post-processing for generate_image: the tool returns
+	// "<Gemini text preamble>\n\n![Generated Image](/api/...)" which works
+	// for v1/v2 (ResultAsAnswer pastes it verbatim into chat) but Claude
+	// paraphrases the preamble and drops the URL — the image then never
+	// reaches the user. Wrap with an imperative directing Claude to include
+	// the markdown verbatim.
+	if call.Function.Name == "generate_image" {
+		result = formatGenerateImageResult(result)
+	}
+	return result
+}
+
+// formatGenerateImageResult extracts the markdown image reference from a
+// generate_image tool result and wraps it with explicit instruction so
+// Claude includes the URL verbatim in its reply.
+func formatGenerateImageResult(raw string) string {
+	// Match `![Generated Image](/api/workspaces/<slug>/files/<hash>)`
+	re := regexp.MustCompile(`!\[Generated Image\]\([^)]+\)`)
+	match := re.FindString(raw)
+	if match == "" {
+		// No markdown URL in result — tool likely failed; pass through so
+		// Claude can surface the error.
+		return raw
+	}
+	return "Image generated and saved. You MUST include this exact markdown line in your reply, " +
+		"or the user will not see the image:\n\n" + match + "\n\n" +
+		"Add a short caption before or after if helpful, but the markdown line above is required."
 }
 
 // sendToolResult posts a user.custom_tool_result event back to the session.
