@@ -102,7 +102,7 @@ func Run(ctx context.Context, cfg PipelineConfig) Result {
 	}
 
 	provStart := time.Now()
-	info, err := EnsureProvisioned(ctx, cfg.Settings, cfg.Slug, cfg.SystemPrompt, cfg.AllTools)
+	info, err := EnsureProvisioned(ctx, cfg.Settings, cfg.DB, cfg.Slug, cfg.SystemPrompt, cfg.AllTools)
 	m.ProvisionMs = time.Since(provStart).Milliseconds()
 	if err != nil {
 		m.TotalLatency = time.Since(start)

@@ -2,6 +2,7 @@ package brain3
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -53,7 +54,7 @@ func NewClient(apiKey string) (*anthropic.Client, error) {
 // re-provisions and overwrites. Tool catalog drift is NOT auto-detected here
 // — that's a Phase-1.5 follow-up (hash the tool list, bump agent version on
 // change).
-func EnsureProvisioned(ctx context.Context, settings SettingsStore, slug string, systemPrompt string, tools []brain.ToolDef) (AgentInfo, error) {
+func EnsureProvisioned(ctx context.Context, settings SettingsStore, db *sql.DB, slug string, systemPrompt string, tools []brain.ToolDef) (AgentInfo, error) {
 	apiKey := settings.Get(slug, "anthropic_api_key")
 	client, err := NewClient(apiKey)
 	if err != nil {
@@ -68,10 +69,20 @@ func EnsureProvisioned(ctx context.Context, settings SettingsStore, slug string,
 	// Fast path: all IDs persisted. Still check for drift — if the user
 	// changed model or system-prompt template in settings, we bump the
 	// agent's version so new sessions pick the change up.
+	//
+	// Sessions are pinned to the agent version at create time (Anthropic
+	// behavior); existing sessions keep running the version they were
+	// born on even after the agent is updated. So whenever ANY drift
+	// detector fires, we clear brain_managed_sessions — the in-flight
+	// turn (and every future turn) creates a fresh session that pulls
+	// the latest agent version. Without this, persona/template/tool
+	// changes wouldn't reach existing chats until the user manually
+	// clicked Reset Agent.
 	if envID != "" && agentID != "" && memID != "" {
 		var v int64
 		_, _ = fmt.Sscanf(versionStr, "%d", &v)
 		info := AgentInfo{AgentID: agentID, AgentVersion: v, EnvironmentID: envID, MemoryStoreID: memID}
+		preVersion := info.AgentVersion
 		info, err := applyModelDriftIfNeeded(ctx, client, settings, slug, info)
 		if err != nil {
 			return info, err
@@ -80,7 +91,16 @@ func EnsureProvisioned(ctx context.Context, settings SettingsStore, slug string,
 		if err != nil {
 			return info, err
 		}
-		return applyTemplateDriftIfNeeded(ctx, client, settings, slug, systemPrompt, info)
+		info, err = applyTemplateDriftIfNeeded(ctx, client, settings, slug, systemPrompt, info)
+		if err != nil {
+			return info, err
+		}
+		if info.AgentVersion != preVersion && db != nil {
+			// Drift fired (any of the three). Clear stale session rows so
+			// the current turn re-creates against the new agent version.
+			_, _ = db.Exec("DELETE FROM brain_managed_sessions")
+		}
+		return info, nil
 	}
 
 	// Slow path: provision whichever pieces are missing. Order matters —
