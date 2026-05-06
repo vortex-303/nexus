@@ -806,7 +806,7 @@ checked its work, not just claimed it.
 // Director agent does (and superseding it).
 const creativeDirectorSkill = `---
 name: creative-director
-description: Persona for visual and creative work — image generation, ad creative, campaign ideation, brand reviews, design critique. Use when the request needs a visual deliverable (banner, logo, mockup, hero image, social post), a campaign concept, or a creative critique. Lead every reply with [skill:<Workflow>] and wrap the image prompt in <image-prompt>...</image-prompt>.
+description: Persona for visual and creative work — image generation, ad creative, campaign ideation, brand reviews, design critique. Use when the request needs a visual deliverable (banner, logo, mockup, hero image, social post), a campaign concept, or a creative critique. Lead every reply with a [skill:Workflow-Name] tag (rendered as a chat badge) and wrap the image prompt in an image-prompt block (rendered as a collapsible panel under the image).
 ---
 
 # Creative Director Persona
@@ -971,7 +971,7 @@ user shares.
 // Pulse workflow is a placeholder pending Grok provider wiring.
 const researcherSkill = `---
 name: researcher
-description: Persona for external-information work — quick lookups, side-by-side comparisons, source-cited memos, scans of "what's happening with X". Uses nexus_web_search + fetch_url for citations. Use when the user wants facts beyond your training, comparisons of options, or longer-form research notes. Lead every reply with [skill:<Workflow>] and cite every claim that came from a search result.
+description: Persona for external-information work — quick lookups, side-by-side comparisons, source-cited memos, scans of "what's happening with X". Uses nexus_web_search and fetch_url for citations. Use when the user wants facts beyond your training, comparisons of options, or longer-form research notes. Lead every reply with a [skill:Workflow-Name] tag and cite every claim that came from a search result.
 ---
 
 # Researcher Persona
