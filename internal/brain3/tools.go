@@ -44,7 +44,14 @@ import (
 //        and external-information research. [skill:<Workflow>] tag and
 //        <image-prompt> block conventions are now enforced via the
 //        always-loaded system prompt.
-const AgentToolsetRevision = "r5"
+//   r6 — r5 didn't actually fire — the older 'Generating images' section
+//        was sufficient on its own and Claude followed it instead of the
+//        new Personas guidance (which lived in a separate section that
+//        read as optional). Replaced both with a unified Personas section
+//        at top, and inlined the Ad Creative + Quick Research output
+//        templates so Claude has the structure even without the persona
+//        skill body loaded (progressive disclosure is unreliable).
+const AgentToolsetRevision = "r6"
 
 // FileToolNames are the agent_toolset tool names we keep enabled.
 // Everything else in the toolset is disabled by default_config.
