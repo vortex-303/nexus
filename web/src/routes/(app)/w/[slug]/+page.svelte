@@ -150,13 +150,15 @@
 
 	// Onboarding wizard state
 	let showWizard = $state(false);
-	let wizardStep = $state<'welcome' | 'engine' | 'apikey' | 'done'>('welcome');
+	let wizardStep = $state<'welcome' | 'engine' | 'apikey' | 'gemini' | 'done'>('welcome');
 	// wizardEngine is the engine the admin picked in the engine step. Drives
 	// which API key field is shown in the apikey step + which engine setting
 	// gets persisted on save. Default 'claude' since it's the recommended
 	// path (managed agents + personas + memory store).
 	let wizardEngine = $state<'claude' | 'openrouter'>('claude');
 	let wizardApiKey = $state('');
+	let wizardGeminiKey = $state('');
+	let wizardReplaceKey = $state(false); // true = user wants to replace an already-set key
 	let wizardSaving = $state(false);
 
 	// Tasks state
@@ -6202,6 +6204,9 @@ autonomy: reactive
 					<div class="wizard-engine-header">
 						<strong>Claude</strong>
 						<span class="engine-card-tag claude">Recommended</span>
+						{#if brainSettings.anthropic_api_key_set === 'true'}
+							<span class="wizard-connected">✓ Connected</span>
+						{/if}
 					</div>
 					<div class="wizard-engine-tagline">Managed Agents — Anthropic runs the runtime, not just the API.</div>
 					<ul class="wizard-engine-bullets">
@@ -6215,6 +6220,9 @@ autonomy: reactive
 					<div class="wizard-engine-header">
 						<strong>OpenRouter</strong>
 						<span class="engine-card-tag">Agnostic</span>
+						{#if brainSettings.api_key_set === 'true'}
+							<span class="wizard-connected">✓ Connected</span>
+						{/if}
 					</div>
 					<div class="wizard-engine-tagline">100+ models, latest first, lowest cost.</div>
 					<ul class="wizard-engine-bullets">
@@ -6229,47 +6237,98 @@ autonomy: reactive
 			<button class="wizard-btn wizard-btn-primary" onclick={() => wizardStep = 'apikey'}>Continue with {wizardEngine === 'claude' ? 'Claude' : 'OpenRouter'} →</button>
 			<button class="wizard-btn wizard-btn-skip" onclick={() => wizardStep = 'welcome'}>← Back</button>
 		{:else if wizardStep === 'apikey'}
+			{@const claudeKeySet = brainSettings.anthropic_api_key_set === 'true'}
+			{@const orKeySet = brainSettings.api_key_set === 'true'}
+			{@const keyAlreadySet = (wizardEngine === 'claude' && claudeKeySet) || (wizardEngine === 'openrouter' && orKeySet)}
 			<h2 class="wizard-title">Connect {wizardEngine === 'claude' ? 'Claude' : 'OpenRouter'}</h2>
-			{#if wizardEngine === 'claude'}
-				<p class="wizard-sub">Brain will use your Anthropic API key to talk to Claude. Stored encrypted, never logged.</p>
-				<div class="wizard-field">
-					<label>Anthropic API Key</label>
-					<input type="password" class="brain-input" placeholder="sk-ant-..." bind:value={wizardApiKey} autocomplete="off" />
-					<a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener" class="wizard-link">Get a key at console.anthropic.com →</a>
-				</div>
+			{#if keyAlreadySet && !wizardReplaceKey}
+				<p class="wizard-sub">
+					✓ <strong>{wizardEngine === 'claude' ? 'Anthropic' : 'OpenRouter'} API key</strong> is already configured —
+					<code style="font-size: 0.78rem;">{wizardEngine === 'claude' ? brainSettings.anthropic_api_key_masked : brainSettings.api_key_masked}</code>.
+					You can continue with the existing key or replace it.
+				</p>
+				<button class="wizard-btn wizard-btn-primary" disabled={wizardSaving} onclick={async () => {
+					wizardSaving = true;
+					try {
+						// Just persist the engine choice + onboarding_complete; key already set.
+						await updateBrainSettings(slug, { engine: wizardEngine, onboarding_complete: 'true' });
+						await loadBrainSettings();
+						wizardStep = 'gemini';
+					} catch { alert('Failed to save engine choice'); }
+					wizardSaving = false;
+				}}>{wizardSaving ? 'Saving...' : 'Continue with existing key →'}</button>
+				<button class="wizard-btn wizard-btn-skip" onclick={() => { wizardReplaceKey = true; wizardApiKey = ''; }}>Replace key</button>
 			{:else}
-				<p class="wizard-sub">Brain will use your OpenRouter API key. Free credits at signup; pay-as-you-go after.</p>
-				<div class="wizard-field">
-					<label>OpenRouter API Key</label>
-					<input type="password" class="brain-input" placeholder="sk-or-v1-..." bind:value={wizardApiKey} autocomplete="off" />
-					<a href="https://openrouter.ai/keys" target="_blank" rel="noopener" class="wizard-link">Get a free key at openrouter.ai →</a>
-				</div>
-			{/if}
-			<button class="wizard-btn wizard-btn-primary" disabled={wizardSaving || !wizardApiKey.trim()} onclick={async () => {
-				wizardSaving = true;
-				try {
-					// engine save side-effects (in handleUpdateBrainSettings) also set
-					// brain_version + ollama_enabled — single field handles routing.
-					const updates: Record<string, string> = {
-						engine: wizardEngine,
-						onboarding_complete: 'true',
-					};
-					if (wizardEngine === 'claude') {
-						updates.anthropic_api_key = wizardApiKey.trim();
-					} else {
-						updates.api_key = wizardApiKey.trim();
+				{#if wizardEngine === 'claude'}
+					<p class="wizard-sub">Brain will use your Anthropic API key to talk to Claude. Stored encrypted, never logged.</p>
+					<div class="wizard-field">
+						<label>Anthropic API Key</label>
+						<input type="password" class="brain-input" placeholder="sk-ant-..." bind:value={wizardApiKey} autocomplete="off" />
+						<a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener" class="wizard-link">Get a key at console.anthropic.com →</a>
+					</div>
+				{:else}
+					<p class="wizard-sub">Brain will use your OpenRouter API key. Free credits at signup; pay-as-you-go after.</p>
+					<div class="wizard-field">
+						<label>OpenRouter API Key</label>
+						<input type="password" class="brain-input" placeholder="sk-or-v1-..." bind:value={wizardApiKey} autocomplete="off" />
+						<a href="https://openrouter.ai/keys" target="_blank" rel="noopener" class="wizard-link">Get a free key at openrouter.ai →</a>
+					</div>
+				{/if}
+				<button class="wizard-btn wizard-btn-primary" disabled={wizardSaving || !wizardApiKey.trim()} onclick={async () => {
+					wizardSaving = true;
+					try {
+						const updates: Record<string, string> = {
+							engine: wizardEngine,
+							onboarding_complete: 'true',
+						};
+						if (wizardEngine === 'claude') {
+							updates.anthropic_api_key = wizardApiKey.trim();
+						} else {
+							updates.api_key = wizardApiKey.trim();
+						}
+						await updateBrainSettings(slug, updates);
+						await loadBrainSettings();
+						wizardReplaceKey = false;
+						wizardStep = 'gemini';
+					} catch (e) {
+						alert('Failed to save API key');
 					}
-					await updateBrainSettings(slug, updates);
-					await loadBrainSettings();
-					wizardStep = 'done';
-				} catch (e) {
-					alert('Failed to save API key');
-				}
-				wizardSaving = false;
-			}}>
-				{#if wizardSaving}Saving...{:else}Save & Continue{/if}
-			</button>
-			<button class="wizard-btn wizard-btn-skip" onclick={() => wizardStep = 'engine'}>← Back to engine</button>
+					wizardSaving = false;
+				}}>{wizardSaving ? 'Saving...' : 'Save & Continue →'}</button>
+				{#if keyAlreadySet}
+					<button class="wizard-btn wizard-btn-skip" onclick={() => { wizardReplaceKey = false; wizardApiKey = ''; }}>← Use existing key</button>
+				{:else}
+					<button class="wizard-btn wizard-btn-skip" onclick={() => wizardStep = 'engine'}>← Back to engine</button>
+				{/if}
+			{/if}
+		{:else if wizardStep === 'gemini'}
+			{@const geminiSet = brainSettings.gemini_api_key_set === 'true'}
+			<h2 class="wizard-title">Image generation (optional)</h2>
+			<p class="wizard-sub">Add a Google Gemini key to enable <code>generate_image</code> — for banners, ad creative, mockups, social posts. Powers the Creative Director persona's visual workflow.</p>
+			{#if geminiSet}
+				<p class="wizard-sub">
+					✓ <strong>Gemini API key</strong> is already configured —
+					<code style="font-size: 0.78rem;">{brainSettings.gemini_api_key_masked}</code>.
+				</p>
+				<button class="wizard-btn wizard-btn-primary" onclick={() => wizardStep = 'done'}>Continue →</button>
+				<button class="wizard-btn wizard-btn-skip" onclick={() => { wizardGeminiKey = ''; }}>Replace Gemini key</button>
+			{:else}
+				<div class="wizard-field">
+					<label>Gemini API Key (optional)</label>
+					<input type="password" class="brain-input" placeholder="AIza..." bind:value={wizardGeminiKey} autocomplete="off" />
+					<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" class="wizard-link">Get a free key at aistudio.google.com →</a>
+				</div>
+				<button class="wizard-btn wizard-btn-primary" disabled={wizardSaving || !wizardGeminiKey.trim()} onclick={async () => {
+					wizardSaving = true;
+					try {
+						await updateBrainSettings(slug, { gemini_api_key: wizardGeminiKey.trim() });
+						await loadBrainSettings();
+						wizardStep = 'done';
+					} catch { alert('Failed to save Gemini key'); }
+					wizardSaving = false;
+				}}>{wizardSaving ? 'Saving...' : 'Save & Continue →'}</button>
+				<button class="wizard-btn wizard-btn-skip" onclick={() => wizardStep = 'done'}>Skip — add later in Settings → Services</button>
+			{/if}
 		{:else if wizardStep === 'done'}
 			<div class="wizard-icon">
 				<svg width="48" height="48" viewBox="0 0 48 48" fill="none">
@@ -6493,7 +6552,7 @@ autonomy: reactive
 						<span class="summary-chip">{brainSkills.length} skills</span>
 						<span class="summary-chip">{mcpServers.length} MCP</span>
 						<button class="btn btn-ghost btn-xs" onclick={() => { brainTab = 'extensions'; loadSkills(); loadMCPServersData(); }} style="margin-left: 8px;">View Extensions →</button>
-						<button class="btn btn-ghost btn-xs" title="Re-open the engine + API key setup wizard" onclick={() => { wizardStep = 'welcome'; wizardApiKey = ''; showWizard = true; }}>↺ Setup wizard</button>
+						<button class="btn btn-ghost btn-xs" title="Re-open the engine + API key setup wizard" onclick={() => { wizardStep = 'welcome'; wizardApiKey = ''; wizardGeminiKey = ''; wizardReplaceKey = false; wizardEngine = (brainEngine || 'claude'); showWizard = true; }}>↺ Setup wizard</button>
 					</div>
 				</div>
 			</div>
@@ -13559,6 +13618,15 @@ autonomy: reactive
 		color: var(--text-tertiary);
 		text-align: center;
 		margin: 4px 0 0;
+	}
+	.wizard-connected {
+		font-size: 0.65rem;
+		padding: 1px 6px;
+		border-radius: 8px;
+		background: rgba(34,197,94,0.15);
+		color: #4ade80;
+		font-weight: 600;
+		white-space: nowrap;
 	}
 
 	/* North Star sidebar badge */
