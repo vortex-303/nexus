@@ -6687,6 +6687,38 @@ autonomy: reactive
 							</select>
 							<span class="brain-hint">Self-correction iterations on tool failures. Higher = more retries.</span>
 						</div>
+						{#if brainModel === 'nexus/free-auto'}
+							<details class="engine-advanced" style="margin-top: 12px;">
+								<summary>Free Auto router (priority list)</summary>
+								<span class="brain-hint" style="display: block; margin: 4px 0 8px;">Models tried in order. First available model responds.</span>
+								{#if workspaceFreeModels.length > 0}
+									<div class="free-model-list">
+										{#each workspaceFreeModels as model, i}
+											<div class="free-model-row">
+												<span class="free-model-priority">{i + 1}</span>
+												<span class="free-model-id">{model.id}</span>
+												<span class="free-model-name">{model.name}</span>
+												<div class="free-model-actions">
+													<button class="btn btn-ghost btn-xs" onclick={() => moveWorkspaceFreeModel(i, -1)} disabled={i === 0}>&#9650;</button>
+													<button class="btn btn-ghost btn-xs" onclick={() => moveWorkspaceFreeModel(i, 1)} disabled={i === workspaceFreeModels.length - 1}>&#9660;</button>
+													<button class="btn btn-ghost btn-xs danger" onclick={() => removeWorkspaceFreeModel(model.id)}>&times;</button>
+												</div>
+											</div>
+										{/each}
+									</div>
+								{:else}
+									<span class="brain-hint" style="font-style: italic">Using global defaults</span>
+								{/if}
+								<div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; align-items: flex-end;">
+									<div style="flex: 1;"><input class="brain-input" bind:value={newFreeId} placeholder="provider/model:free" style="font-size: 0.8rem; font-family: var(--font-mono);" /></div>
+									<div style="flex: 0.6;"><input class="brain-input" bind:value={newFreeName} placeholder="Name" style="font-size: 0.8rem;" /></div>
+									<button class="btn btn-primary btn-sm" onclick={addWorkspaceFreeModel} disabled={!newFreeId.trim()}>Add</button>
+								</div>
+								{#if workspaceFreeModels.length > 0}
+									<button class="btn btn-ghost btn-xs" style="margin-top: 0.5rem; color: var(--text-tertiary);" onclick={resetWorkspaceFreeModels}>Reset to defaults</button>
+								{/if}
+							</details>
+						{/if}
 					</div>
 				{:else if brainEngine === 'claude'}
 					<div class="engine-detail">
@@ -6708,7 +6740,57 @@ autonomy: reactive
 								<option value="claude-opus-4-7">Claude Opus 4.7 — max capability (1M ctx)</option>
 								<option value="claude-opus-4-6">Claude Opus 4.6 — prior flagship</option>
 							</select>
+							{#if brainSettings.mga_provisioned_model && brainSettings.mga_provisioned_model !== brainAnthropicModel}
+								<span class="brain-hint" style="color: var(--accent);">⚠ Currently running <strong>{brainSettings.mga_provisioned_model}</strong>. Saving bumps the agent version on the next @Brain message.</span>
+							{/if}
 						</div>
+						<details class="engine-advanced" style="margin-top: 12px;">
+							<summary>Advanced (system prompt template · provisioning · skills · reset)</summary>
+							<div class="brain-field" style="margin-top: 10px;">
+								<label>System prompt template</label>
+								<select class="brain-input" bind:value={brainSystemPromptTemplate}>
+									<option value="v3-team-brain">v3 Team Brain — workspace voice + v3 Operating Guide (recommended)</option>
+									<option value="workspace">Workspace — only your SOUL.md / INSTRUCTIONS.md (v1/v2-compatible)</option>
+								</select>
+								<span class="brain-hint">
+									{#if brainSettings.mga_provisioned_template && brainSettings.mga_provisioned_template !== brainSystemPromptTemplate}
+										⚠ Agent currently running <strong>{brainSettings.mga_provisioned_template}</strong>. Saving bumps the agent version on the next @Brain message.
+									{:else}
+										v3 Team Brain layers a runtime guide (sessions, skills, tool selection, memory discipline) on top of your workspace files.
+									{/if}
+								</span>
+							</div>
+							{#if brainSettings.anthropic_api_key_set === 'true'}
+								<div class="brain-field">
+									<label>Provisioning</label>
+									<div class="brain-key-status" style="display: flex; flex-direction: column; gap: 4px; font-family: var(--font-mono, monospace); font-size: 0.78rem;">
+										<span>Agent: <strong>{brainSettings.mga_agent_id || 'not yet provisioned'}</strong>{#if brainSettings.mga_agent_version}<span style="color: var(--text-secondary);"> v{brainSettings.mga_agent_version}</span>{/if}</span>
+										<span>Environment: <strong>{brainSettings.mga_environment_id || '—'}</strong></span>
+										<span>Memory store: <strong>{brainSettings.mga_memory_store_id || '—'}</strong></span>
+									</div>
+									<span class="brain-hint">First @Brain message provisions all three (~2–4s, one-time). Memory store is FUSE-mounted at /mnt/memory/nexus-brain-{slug}/.</span>
+								</div>
+								{#if v3SkillsAttached.length > 0}
+									<div class="brain-field">
+										<label>Skills attached</label>
+										<div class="brain-key-status" style="display: flex; flex-wrap: wrap; gap: 6px; font-family: var(--font-mono, monospace); font-size: 0.75rem;">
+											{#each v3SkillsAttached as sk}
+												<span title={sk.kind === 'anthropic' ? 'Anthropic pre-built' : 'Custom (uploaded by Nexus)'} style="padding: 2px 8px; border-radius: 10px; background: {sk.kind === 'anthropic' ? 'rgba(255,255,255,0.06)' : 'rgba(217,119,87,0.15)'}; border: 1px solid {sk.kind === 'anthropic' ? 'rgba(255,255,255,0.08)' : 'rgba(217,119,87,0.3)'};">
+													<strong>{sk.name}</strong><span style="color: var(--text-secondary); margin-left: 4px;">{sk.kind === 'anthropic' ? '· built-in' : '· custom'}</span>
+												</span>
+											{/each}
+										</div>
+										<span class="brain-hint">Pre-built skills (built-in) are Anthropic-published; custom skills are uploaded by Nexus to your Anthropic org.</span>
+									</div>
+								{/if}
+								{#if brainSettings.mga_agent_id}
+									<button class="btn btn-secondary btn-sm" style="margin-top: 8px;" disabled={resettingV3Agent} onclick={resetV3AgentClick}>
+										{resettingV3Agent ? 'Resetting…' : 'Reset Agent'}
+									</button>
+									<span class="brain-hint" style="display: block; margin-top: 4px;">Archives the current agent + clears all sessions. Memory_store data survives. Use after non-auto-propagating changes (e.g. SOUL.md edits used to need this; now they auto-fire drift).</span>
+								{/if}
+							{/if}
+						</details>
 					</div>
 				{/if}
 			</div>
@@ -6917,9 +6999,14 @@ autonomy: reactive
 			{/if}
 
 			{#if isAdmin}
+			<!-- Engine Keys section removed — engine config (key + model + advanced)
+			     now lives inside the per-engine cards above. The "Configure" details
+			     for each engine became the source of truth, and the duplicate cards
+			     here were causing confusion. -->
+			{#if false}
 			<div class="brain-section">
-				<h3 class="brain-section-title">Engine Keys</h3>
-				<p class="brain-section-desc">API keys for the engines you've selected above. Configure OpenRouter for the OpenRouter engine, or Anthropic for the Claude engine — or both.</p>
+				<h3 class="brain-section-title">Engine Keys (legacy)</h3>
+				<p class="brain-section-desc">[hidden]</p>
 				<div class="service-cards">
 					<!-- OpenRouter -->
 					<div class="service-card" class:service-active={brainSettings.api_key_set === 'true'}>
@@ -7120,6 +7207,7 @@ autonomy: reactive
 					{brainSaving ? 'Saving...' : 'Save Settings'}
 				</button>
 			</div>
+			{/if}
 
 			<div class="brain-section">
 				<h3 class="brain-section-title">Services</h3>
