@@ -447,7 +447,19 @@ func (s *Server) handleBrainWelcome(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	welcome := s.buildWelcomeMessage(slug, wdb)
+	// User name for the greeting — first name only.
+	var displayName string
+	_ = wdb.DB.QueryRow("SELECT display_name FROM members WHERE id = ?", userID).Scan(&displayName)
+	firstName := displayName
+	if i := strings.Index(displayName, " "); i > 0 {
+		firstName = displayName[:i]
+	}
+
+	// just_setup=true is sent by the wizard's Done button, signals we should
+	// frame the message as a fresh-setup confirmation instead of generic welcome.
+	justSetup := r.URL.Query().Get("just_setup") == "true"
+
+	welcome := s.buildWelcomeMessage(slug, wdb, firstName, justSetup)
 	s.sendBrainMessage(slug, channelID, "", welcome)
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "channel_id": channelID})
@@ -455,11 +467,18 @@ func (s *Server) handleBrainWelcome(w http.ResponseWriter, r *http.Request) {
 
 // buildWelcomeMessage assembles a workspace-aware first-time welcome from
 // real data. Pure SQL + string templating; no LLM call. Adapts to:
+//   - the recipient's first name (from members.display_name)
+//   - whether they just finished the setup wizard (justSetup flag)
 //   - active engine + model
-//   - configured services (only mentions what's set up)
-//   - channel + member + doc + task counts
-//   - top channels by activity
-func (s *Server) buildWelcomeMessage(slug string, wdb *db.WorkspaceDB) string {
+//   - configured services — each line shows ✓ when connected, "→ add in
+//     Settings → Services" when not
+//   - persona skills always seeded (creative-director, researcher)
+//   - engine-specific capability bullets (Claude personas + memory_store
+//     vs OpenRouter live model browser + free auto)
+//   - tailored "Try one of these" suggestions based on configured services
+//
+// Cost: zero. Same output deterministic from inputs.
+func (s *Server) buildWelcomeMessage(slug string, wdb *db.WorkspaceDB, firstName string, justSetup bool) string {
 	// Workspace name + active engine / model
 	var wsName string
 	_ = s.global.DB.QueryRow("SELECT name FROM workspaces WHERE slug = ?", slug).Scan(&wsName)
@@ -467,117 +486,121 @@ func (s *Server) buildWelcomeMessage(slug string, wdb *db.WorkspaceDB) string {
 		wsName = slug
 	}
 	engine := s.resolveEngine(slug)
-	var engineLabel, modelLabel string
+	var engineLabel, modelLabel, modelShort, otherEngineLabel string
 	if engine == "claude" {
-		engineLabel = "Claude (managed agents)"
+		engineLabel = "Claude (Managed Agents)"
 		modelLabel = s.getBrainSetting(slug, "mga_model", "claude-sonnet-4-6")
+		modelShort = strings.ReplaceAll(strings.TrimPrefix(modelLabel, "claude-"), "-", " ")
+		otherEngineLabel = "OpenRouter"
 	} else {
 		engineLabel = "OpenRouter"
 		modelLabel = s.getBrainSetting(slug, "model", "google/gemma-4-26b-a4b-it")
 		if modelLabel == "nexus/free-auto" {
-			modelLabel = "Free Auto (free-tier model rotation)"
-		}
-	}
-
-	// Configured services — only list those with keys
-	var services []string
-	if s.getGeminiAPIKey(slug) != "" {
-		services = append(services, "Gemini · image generation")
-	}
-	if s.getXAIKey(slug) != "" {
-		services = append(services, "Grok · X/social search + Social Pulse")
-	}
-	if s.getBrainSetting(slug, "brave_api_key") != "" {
-		services = append(services, "Brave · web search")
-	}
-	if s.getOpenAIKey(slug) != "" {
-		services = append(services, "OpenAI · memory extraction")
-	}
-
-	// Counts
-	var memberCount, channelCount, docCount, taskCount, decisionCount int
-	_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM members WHERE role NOT IN ('agent','brain')").Scan(&memberCount)
-	_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM channels WHERE type IN ('public','private')").Scan(&channelCount)
-	_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM documents").Scan(&docCount)
-	_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM tasks WHERE COALESCE(status,'todo') NOT IN ('completed','cancelled')").Scan(&taskCount)
-	_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM brain_memories WHERE type = 'decision' AND COALESCE(superseded_by,'')='' AND COALESCE(valid_until,'')=''").Scan(&decisionCount)
-
-	// Top 5 channels by message count
-	type channelRow struct {
-		Name  string
-		Count int
-	}
-	var topChannels []channelRow
-	rows, err := wdb.DB.Query(`
-		SELECT c.name, COUNT(m.id) AS msg_count
-		FROM channels c
-		LEFT JOIN messages m ON m.channel_id = c.id AND m.deleted = FALSE
-		WHERE c.type IN ('public','private')
-		GROUP BY c.id
-		ORDER BY msg_count DESC
-		LIMIT 5
-	`)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var ch channelRow
-			if rows.Scan(&ch.Name, &ch.Count) == nil {
-				topChannels = append(topChannels, ch)
+			modelShort = "Free Auto (model rotation)"
+		} else {
+			parts := strings.SplitN(modelLabel, "/", 2)
+			if len(parts) == 2 {
+				modelShort = parts[1]
+			} else {
+				modelShort = modelLabel
 			}
 		}
+		otherEngineLabel = "Claude"
 	}
+
+	// Service status — separate booleans so the message can show per-line
+	// "✓ connected" / "→ add in Settings → Services".
+	geminiOn := s.getGeminiAPIKey(slug) != ""
+	grokOn := s.getXAIKey(slug) != ""
+	braveOn := s.getBrainSetting(slug, "brave_api_key") != ""
+	openaiOn := s.getOpenAIKey(slug) != ""
+
+	maxToolDepth := s.getBrainSetting(slug, "tool_max_depth", "5")
 
 	// Compose the message
 	var b strings.Builder
-	fmt.Fprintf(&b, "👋 **Welcome to %s**\n\n", wsName)
-	b.WriteString("I'm Brain — your AI teammate. Here's what's set up:\n\n")
-	fmt.Fprintf(&b, "**Engine:** %s · `%s`\n", engineLabel, modelLabel)
-	if len(services) > 0 {
-		fmt.Fprintf(&b, "**Services:** %s\n", strings.Join(services, " · "))
+	greeting := "👋"
+	if firstName != "" {
+		fmt.Fprintf(&b, "%s Hi **%s** — Brain is set up for **%s**.\n\n", greeting, firstName, wsName)
 	} else {
-		b.WriteString("**Services:** none configured yet — add a Gemini key for images, Grok for X/social, or Brave for web search in **Settings → Services**.\n")
+		fmt.Fprintf(&b, "%s Brain is set up for **%s**.\n\n", greeting, wsName)
+	}
+	if justSetup {
+		b.WriteString("You just finished the setup wizard — here's everything you've got and what to try first.\n\n")
+	}
+
+	// Engine + service status block
+	fmt.Fprintf(&b, "**Engine:** %s · `%s`\n", engineLabel, modelShort)
+	if geminiOn {
+		b.WriteString("**Image generation:** ✓ Gemini connected (Nano Banana 2)\n")
+	} else {
+		b.WriteString("**Image generation:** — add a Gemini key in Settings → Services\n")
+	}
+	if braveOn {
+		b.WriteString("**Web search:** ✓ Brave connected\n")
+	} else {
+		b.WriteString("**Web search:** — add a Brave key in Settings → Services\n")
+	}
+	if grokOn {
+		b.WriteString("**Social / news:** ✓ Grok connected (X search + Social Pulse)\n")
+	} else {
+		b.WriteString("**Social / news:** — add a Grok key in Settings → Services\n")
+	}
+	if openaiOn {
+		b.WriteString("**Memory extraction:** ✓ OpenAI connected\n")
 	}
 	b.WriteString("\n")
 
-	// Workspace snapshot
-	b.WriteString("**Your workspace right now:**\n")
-	fmt.Fprintf(&b, "- %d members across %d channels\n", memberCount, channelCount)
-	fmt.Fprintf(&b, "- %d docs · %d open tasks", docCount, taskCount)
-	if decisionCount > 0 {
-		fmt.Fprintf(&b, " · %d decisions logged", decisionCount)
+	// Capability list — what I can do here, engine-aware
+	b.WriteString("**What I can do here**\n")
+	b.WriteString("- **Tasks · Documents · Calendar · Knowledge · Memory** — built-in workspace tools\n")
+	b.WriteString("- **Creative Director persona** — _\"@Brain make a 16:9 banner for X\"_ → structured Ad Brief + image\n")
+	b.WriteString("- **Researcher persona** — _\"@Brain research X\"_ → cited bullets + bottom line\n")
+	if engine == "claude" {
+		b.WriteString("- **Persistent memory_store** — I write decisions, profiles, projects to /mnt/memory and read them next turn\n")
+		b.WriteString("- **Native skills**: `docx` · `pdf` · `xlsx` · `pptx` (read, edit, generate)\n")
+	} else {
+		fmt.Fprintf(&b, "- **Self-correcting tool loop** with up to %s retries on tool failures\n", maxToolDepth)
+		b.WriteString("- **Live model browser** in Settings → OpenRouter card — try DeepSeek V4, Gemma 4 MoE, Qwen3, Llama 3.3, free-tier rotations\n")
 	}
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 
-	// Top channels (only if any with messages)
-	if len(topChannels) > 0 && topChannels[0].Count > 0 {
-		b.WriteString("**Most active channels:**\n")
-		for _, ch := range topChannels {
-			if ch.Count == 0 {
-				break
-			}
-			fmt.Fprintf(&b, "- #%s — %d messages\n", ch.Name, ch.Count)
+	// Tailored "Try one of these" — first item depends on Gemini key,
+	// third item adds web/X note when Brave/Grok set.
+	b.WriteString("**Try one of these:**\n")
+	if geminiOn {
+		fmt.Fprintf(&b, "1. `@Brain make a banner with \"Welcome to %s\" on it` — I'll compose a prompt, render via Nano Banana 2, embed it here.\n", wsName)
+	} else {
+		b.WriteString("1. `@Brain summarize this workspace` — I'll pull what I know about channels, members, and recent activity.\n")
+	}
+	b.WriteString("2. `@Brain create a task: ship the launch by Friday` — I'll propose the task structure and ask before saving.\n")
+	thirdSuffix := ""
+	if braveOn || grokOn {
+		var srcs []string
+		if braveOn {
+			srcs = append(srcs, "web")
 		}
-		b.WriteString("\n")
+		if grokOn {
+			srcs = append(srcs, "X")
+		}
+		thirdSuffix = " (uses " + strings.Join(srcs, " + ") + " for context)"
 	}
-
-	// Three things to try — adapt suggestions to engine + services
-	b.WriteString("**Three things to try:**\n")
-	b.WriteString("1. **Ask me anything** — `@Brain` me in any channel. I research, take notes, and remember.\n")
-	b.WriteString("2. **Create a task by chatting** — `@Brain create a task to ship the launch by Friday`. I'll propose it and ask before saving.\n")
-	if s.getGeminiAPIKey(slug) != "" {
-		b.WriteString("3. **Generate visuals** — `@Brain make a 16:9 banner for our launch`. I'll compose the prompt, render it, and embed it here.\n")
-	} else {
-		b.WriteString("3. **Generate visuals** — add a Gemini key in **Settings → Services**, then `@Brain make a 16:9 banner for our launch`.\n")
-	}
+	fmt.Fprintf(&b, "3. `@Brain research [topic you care about]`%s — I'll cite sources and lead with a bottom-line.\n", thirdSuffix)
 	b.WriteString("\n")
 
-	// Where to customize
-	b.WriteString("**Shape my voice and behavior:**\n")
-	b.WriteString("- **Personality** tab in Brain Settings — edit my SOUL.md and INSTRUCTIONS.md\n")
-	b.WriteString("- **Extensions** tab — see my skills and connected integrations\n")
-	b.WriteString("- **Memory** tab — see what I've learned about your workspace\n\n")
+	// Customization pointers
+	b.WriteString("**Make me yours**\n")
+	b.WriteString("- **Personality** tab → edit my `SOUL.md` and `INSTRUCTIONS.md` (voice + workspace rules)\n")
+	b.WriteString("- **Extensions** tab → see my skills, propose new ones via the **Skill Distiller**, connect MCP servers\n")
+	b.WriteString("- **Memory** tab → watch what I learn over time\n")
+	fmt.Fprintf(&b, "- **Settings** → add **%s** as a secondary engine anytime\n", otherEngineLabel)
+	b.WriteString("\n")
 
-	b.WriteString("Ready when you are.")
+	if justSetup {
+		b.WriteString("You're set. Let's build something.")
+	} else {
+		b.WriteString("Ready when you are.")
+	}
 	return b.String()
 }
 

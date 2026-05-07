@@ -6342,7 +6342,10 @@ autonomy: reactive
 			<button class="wizard-btn wizard-btn-primary" onclick={async () => {
 				showWizard = false;
 				try {
-					const result = await triggerBrainWelcome(slug);
+					// Pass just_setup=true so the welcome message is framed as a
+					// fresh-setup confirmation ("You just finished the wizard...")
+					// instead of a generic re-greeting.
+					const result = await triggerBrainWelcome(slug, true);
 					if (result.channel_id) {
 						const ch = $channels.find((c: Channel) => c.id === result.channel_id);
 						if (ch) {

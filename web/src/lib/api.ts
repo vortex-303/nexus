@@ -938,8 +938,9 @@ export async function getLogs(slug: string, params?: { category?: string; level?
 }
 
 // Search
-export async function triggerBrainWelcome(slug: string) {
-	return request('POST', `/api/workspaces/${slug}/brain/welcome`);
+export async function triggerBrainWelcome(slug: string, justSetup = false) {
+	const q = justSetup ? '?just_setup=true' : '';
+	return request('POST', `/api/workspaces/${slug}/brain/welcome${q}`);
 }
 
 export async function getBrainPrompt(slug: string, channelId?: string, query?: string) {
