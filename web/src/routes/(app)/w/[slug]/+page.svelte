@@ -6542,6 +6542,16 @@ autonomy: reactive
 				</div>
 				{#if brainEngine === 'openrouter'}
 					<div class="engine-detail">
+						<div class="engine-key-row">
+							<label class="engine-key-label">OpenRouter API key</label>
+							{#if brainSettings.api_key_set === 'true'}
+								<span class="engine-key-status">✓ Configured ({brainSettings.api_key_masked})</span>
+							{/if}
+							<input type="password" class="brain-input engine-key-input" placeholder="sk-or-v1-..." bind:value={brainApiKey} />
+							<span class="brain-hint">
+								<a href="https://openrouter.ai/keys" target="_blank" rel="noopener">Get a key</a> · paste here, then click Save Settings below.
+							</span>
+						</div>
 						<div style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem; flex-wrap: wrap; margin-bottom: 8px;">
 							<label style="color: var(--text-secondary); white-space: nowrap; font-weight: 500;">Active model:</label>
 							<select class="brain-input" style="flex: 1; min-width: 280px; padding: 6px 10px; font-size: 0.85rem;" value={brainModel} onchange={async (e) => {
@@ -6610,11 +6620,25 @@ autonomy: reactive
 					</div>
 				{:else if brainEngine === 'claude'}
 					<div class="engine-detail">
-						{#if brainSettings.anthropic_api_key_set === 'true'}
-							<div style="font-size: 0.8rem; color: var(--text-secondary);">✓ Anthropic API key configured. Sessions are per (channel, thread); workspace memory lives in an Anthropic-managed memory_store.</div>
-						{:else}
-							<div style="font-size: 0.8rem; color: var(--accent);">⚠ Requires an Anthropic API key — configure it in the <strong>Anthropic / Claude</strong> provider card below before saving.</div>
-						{/if}
+						<div class="engine-key-row">
+							<label class="engine-key-label">Anthropic API key</label>
+							{#if brainSettings.anthropic_api_key_set === 'true'}
+								<span class="engine-key-status">✓ Configured ({brainSettings.anthropic_api_key_masked})</span>
+							{/if}
+							<input type="password" class="brain-input engine-key-input" placeholder="sk-ant-..." bind:value={brainAnthropicKey} />
+							<span class="brain-hint">
+								<a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Get a key</a> · sessions are per (channel, thread); workspace memory lives in an Anthropic-managed memory_store.
+							</span>
+						</div>
+						<div style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem; flex-wrap: wrap; margin-top: 8px;">
+							<label style="color: var(--text-secondary); white-space: nowrap; font-weight: 500;">Model:</label>
+							<select class="brain-input" style="flex: 1; min-width: 240px; padding: 6px 10px; font-size: 0.85rem;" bind:value={brainAnthropicModel}>
+								<option value="claude-sonnet-4-6">Claude Sonnet 4.6 — recommended</option>
+								<option value="claude-haiku-4-5">Claude Haiku 4.5 — fastest, cheapest</option>
+								<option value="claude-opus-4-7">Claude Opus 4.7 — max capability (1M ctx)</option>
+								<option value="claude-opus-4-6">Claude Opus 4.6 — prior flagship</option>
+							</select>
+						</div>
 					</div>
 				{/if}
 			</div>
@@ -10311,6 +10335,28 @@ autonomy: reactive
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-md);
 		margin-top: var(--space-sm);
+	}
+	.engine-key-row {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding-bottom: var(--space-sm);
+		margin-bottom: var(--space-sm);
+		border-bottom: 1px dashed var(--border-subtle);
+	}
+	.engine-key-label {
+		font-size: 0.78rem;
+		font-weight: 500;
+		color: var(--text-secondary);
+	}
+	.engine-key-status {
+		font-size: 0.75rem;
+		color: #4ade80;
+	}
+	.engine-key-input {
+		max-width: 480px;
+		padding: 6px 10px;
+		font-size: 0.85rem;
 	}
 	.webllm-installed-list {
 		display: flex;
