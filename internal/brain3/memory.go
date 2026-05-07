@@ -93,12 +93,13 @@ func ensureMemoryStore(ctx context.Context, client *anthropic.Client, settings S
 type PreloadedContext struct {
 	Pinned        string // contents of pinned.md, "" if not present
 	SenderProfile string // contents of people/<sender>.md, "" if not present
+	Model         string // current Claude model id (e.g. "claude-sonnet-4-6") — runtime ground truth
 }
 
 // IsEmpty reports whether the preload added nothing — used to skip emitting
 // an empty <context> block.
 func (c PreloadedContext) IsEmpty() bool {
-	return c.Pinned == "" && c.SenderProfile == ""
+	return c.Pinned == "" && c.SenderProfile == "" && c.Model == ""
 }
 
 // Render formats the preload as a <context> block to prepend to the user message.
@@ -110,6 +111,16 @@ func (c PreloadedContext) Render(senderName string) string {
 	}
 	var b strings.Builder
 	b.WriteString("<context>\n")
+	if c.Model != "" {
+		// Runtime ground truth — names the model so the agent doesn't parrot
+		// earlier turns when the user has switched models. Brain's underlying
+		// model can change between turns (drift detection auto-bumps the
+		// agent version), so this is included every turn.
+		b.WriteString("# Runtime\n\n")
+		b.WriteString("You are Brain, running on `")
+		b.WriteString(c.Model)
+		b.WriteString("` (Anthropic Managed Agents). When asked which model or LLM you are, name this exactly. Do not quote earlier turns — your underlying model can change between messages.\n\n")
+	}
 	if c.Pinned != "" {
 		b.WriteString("# Pinned (always-relevant constraints)\n\n")
 		b.WriteString(strings.TrimSpace(c.Pinned))

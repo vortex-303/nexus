@@ -151,6 +151,11 @@ func Run(ctx context.Context, cfg PipelineConfig) Result {
 		// Non-fatal — worst case the agent reads memory itself via its file tools.
 		preload = PreloadedContext{}
 	}
+	// Runtime ground truth — names the active Anthropic model in the per-turn
+	// pre-injected context block so the agent doesn't parrot earlier turns
+	// when the model has changed (drift detection auto-bumps agent versions
+	// faster than the agent can notice from its own internals).
+	preload.Model = resolveModel(cfg.Settings, cfg.Slug)
 
 	userMessage := buildUserMessage(preload, cfg.SenderName, cfg.Content)
 

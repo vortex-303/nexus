@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 
@@ -86,6 +87,13 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 		model := s.getBrainSetting(slug, "model", "openai/gpt-4o-mini")
 		resolvedModel, fallbacks := s.resolveFreeAuto(model, slug)
 		client := s.makeBrainClient(slug, apiKey, resolvedModel, fallbacks)
+
+		// Runtime ground truth: tell the model what it is. Without this, when
+		// the user switches models (e.g. Claude Sonnet 4.6 -> DeepSeek V4
+		// Flash), the new model still parrots the old name from prior turns
+		// in the channel because that's the only "model" reference it sees in
+		// context. Naming the model explicitly anchors it.
+		systemPrompt += fmt.Sprintf("\n\n---\n\n## Runtime\n\nYou are Brain, running on `%s` via OpenRouter for this turn. When asked which model or LLM you are, name this exactly. Do not quote earlier turns — Brain's underlying model can change between messages.\n", resolvedModel)
 
 		// Get all tools (reuses v1)
 		allTools := s.getAllTools(slug)

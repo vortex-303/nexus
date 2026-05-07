@@ -228,6 +228,10 @@ func (s *Server) handleBrainMention(slug, channelID, senderName, content string)
 
 		resolvedModel, fallbacks := s.resolveFreeAuto(model, slug)
 		client := s.makeBrainClient(slug, apiKey, resolvedModel, fallbacks)
+		// Runtime ground truth — names the actual model so the LLM doesn't
+		// parrot earlier turns when the user has switched models. Same fix
+		// applied to v2 in brain2.go.
+		systemPrompt += fmt.Sprintf("\n\n---\n\n## Runtime\n\nYou are Brain, running on `%s` via OpenRouter for this turn. When asked which model or LLM you are, name this exactly. Do not quote earlier turns — Brain's underlying model can change between messages.\n", resolvedModel)
 		response, usage, err := client.Complete(systemPrompt, messages)
 		if err != nil {
 			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("LLM error")
