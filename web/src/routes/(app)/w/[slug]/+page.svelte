@@ -485,6 +485,29 @@
 	// this flag — flip to true to bring them back when local-AI returns
 	// as a Pro/enterprise tier.
 	const SHOW_LOCAL_AI = false;
+
+	// Curated quick-pick list for the OpenRouter engine card. Lead with the
+	// MoE flagships the user explicitly asked for (DeepSeek V4 family + Gemma
+	// 4) and add a few well-known agentic-grade models. Picking from the
+	// dropdown auto-pins the model to workspace_models if it isn't already,
+	// so subsequent UI pieces (memory model selector, free-auto router, etc.)
+	// see it consistently.
+	type RecommendedModel = {
+		id: string;
+		label: string;
+		contextLength?: number;
+		supportsTools?: boolean;
+		pricingPrompt?: string;     // USD per token (string per OpenRouter shape)
+		pricingCompletion?: string;
+	};
+	const openRouterRecommended: RecommendedModel[] = [
+		{ id: 'deepseek/deepseek-v4-pro',  label: 'DeepSeek V4 Pro — MoE 1.6T/49B active · $0.43/$0.87/M', contextLength: 1_050_000, supportsTools: true,  pricingPrompt: '0.000000435', pricingCompletion: '0.00000087' },
+		{ id: 'deepseek/deepseek-v4-flash', label: 'DeepSeek V4 Flash — MoE 284B/13B active · $0.14/$0.28/M', contextLength: 1_050_000, supportsTools: true, pricingPrompt: '0.00000014',  pricingCompletion: '0.00000028' },
+		{ id: 'google/gemma-4-26b-a4b-it',  label: 'Gemma 4 26B-a4b — MoE · Google',                          contextLength: 0,         supportsTools: true,  pricingPrompt: '0',           pricingCompletion: '0' },
+		{ id: 'qwen/qwen3-235b-a22b-thinking-2507', label: 'Qwen3 235B-a22b — MoE thinking',                  contextLength: 262_144,   supportsTools: true,  pricingPrompt: '0',           pricingCompletion: '0' },
+		{ id: 'mistralai/mixtral-8x22b-instruct', label: 'Mixtral 8x22B — Mistral classic MoE',               contextLength: 65_536,    supportsTools: true,  pricingPrompt: '0',           pricingCompletion: '0' },
+		{ id: 'meta-llama/llama-3.3-70b-instruct', label: 'Llama 3.3 70B — Meta open weights',                contextLength: 131_072,   supportsTools: true,  pricingPrompt: '0',           pricingCompletion: '0' },
+	];
 	let brainToolMaxDepth = $state(_cachedBrain?.tool_max_depth || '5');
 	let brainAutomationsEnabled = $state(_cachedBrain?.automations_enabled === 'true');
 	let bridgeConnected = $state(false);
@@ -6520,10 +6543,59 @@ autonomy: reactive
 				{#if brainEngine === 'openrouter'}
 					<div class="engine-detail">
 						<div style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem; flex-wrap: wrap; margin-bottom: 8px;">
+							<label style="color: var(--text-secondary); white-space: nowrap; font-weight: 500;">Active model:</label>
+							<select class="brain-input" style="flex: 1; min-width: 280px; padding: 6px 10px; font-size: 0.85rem;" value={brainModel} onchange={async (e) => {
+								const newModel = (e.target as HTMLSelectElement).value;
+								if (newModel === brainModel) return;
+								brainModel = newModel;
+								// Make sure it's in the workspace catalog (recommended IDs
+								// won't be in workspace_models yet on first pick).
+								const inCatalog = pinnedModels.some(m => m.id === newModel) || addedModels.some(m => m.id === newModel);
+								if (!inCatalog && newModel !== 'nexus/free-auto') {
+									const rec = openRouterRecommended.find(r => r.id === newModel);
+									if (rec) {
+										addedModels = [...addedModels, { id: rec.id, display_name: rec.label }];
+										try {
+											await addWorkspaceModel(slug, {
+												id: rec.id,
+												display_name: rec.label,
+												provider: rec.id.split('/')[0] || '',
+												context_length: rec.contextLength || 0,
+												supports_tools: rec.supportsTools || false,
+												pricing_prompt: rec.pricingPrompt || '0',
+												pricing_completion: rec.pricingCompletion || '0',
+											});
+										} catch {}
+									}
+								}
+								try {
+									await updateBrainSettings(slug, { model: newModel });
+									await loadBrainSettings();
+								} catch {}
+							}}>
+								<option value="nexus/free-auto">Free Auto (chains free models)</option>
+								<optgroup label="Recommended — MoE flagships">
+									{#each openRouterRecommended as r}
+										<option value={r.id}>{r.label}</option>
+									{/each}
+								</optgroup>
+								{#if pinnedModels.length > 0 || addedModels.filter(am => !pinnedModels.some(pm => pm.id === am.id) && !openRouterRecommended.some(r => r.id === am.id)).length > 0}
+									<optgroup label="Pinned to this workspace">
+										{#each pinnedModels.filter(pm => !openRouterRecommended.some(r => r.id === pm.id)) as m}
+											<option value={m.id}>{m.display_name}</option>
+										{/each}
+										{#each addedModels.filter(am => !pinnedModels.some(pm => pm.id === am.id) && !openRouterRecommended.some(r => r.id === am.id)) as m}
+											<option value={m.id}>{m.display_name}</option>
+										{/each}
+									</optgroup>
+								{/if}
+							</select>
+						</div>
+						<div style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem; flex-wrap: wrap; margin-bottom: 8px;">
 							<button type="button" class="btn btn-secondary btn-sm" onclick={openModelBrowser}>
 								Browse 100+ models →
 							</button>
-							<span class="brain-hint">Discover and test DeepSeek V4, Gemma 4 MoE, free models, and more — live from OpenRouter.</span>
+							<span class="brain-hint">Discover and pin more — DeepSeek V4 variants, Gemma 4 family, free-tier models, anything live on OpenRouter.</span>
 						</div>
 						<div style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem; flex-wrap: wrap;">
 							<label style="color: var(--text-secondary); white-space: nowrap;">Max tool depth:</label>
