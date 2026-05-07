@@ -911,7 +911,7 @@ export async function getAvailability(slug: string, member_ids: string[], from: 
 }
 
 export function eventICSDownloadURL(slug: string, eventId: string): string {
-	return `/api/workspaces/${slug}/calendar/events/${eventId}.ics`;
+	return `/api/workspaces/${slug}/calendar/events/${eventId}/ics`;
 }
 
 // Workspace Models

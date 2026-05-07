@@ -401,7 +401,7 @@ func (s *Server) subscriptionURLFor(wdb *db.WorkspaceDB, slug, userID string) st
 		return ""
 	}
 	base := s.publicBaseURL()
-	return fmt.Sprintf("%s/api/calendar/%s/%s.ics?token=%s", base, slug, userID, token)
+	return fmt.Sprintf("%s/api/calendar/%s/%s/ics?token=%s", base, slug, userID, token)
 }
 
 // handleCalendarSubscription serves the workspace calendar as ICS to the
