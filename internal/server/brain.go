@@ -784,7 +784,12 @@ func (s *Server) handleGetBrainSettings(w http.ResponseWriter, r *http.Request) 
 	settings := map[string]string{
 		"model":                 "google/gemma-4-26b-a4b-it",
 		"image_model":           brain.DefaultGeminiImageModel,
-		"memory_model":          "openai/gpt-4o-mini",
+		// memory_model intentionally empty — memoryComplete() falls back to
+		// the active brain model when this is unset, so memory extraction
+		// and reflection use whatever the user picked in Engine Keys
+		// instead of hardcoding GPT-4o-mini. Users can still override per-
+		// service in Settings if they want a cheaper model for memory ops.
+		"memory_model":          "",
 		"memory_enabled":        "true",
 		"system_memory_enabled": "true",
 		"extraction_frequency":  "15",

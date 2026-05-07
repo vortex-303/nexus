@@ -480,6 +480,8 @@
 	// engine_resolved (derived from engine setting, fallback to brain_version
 	// migration) so legacy workspaces land on the right card on first load.
 	let brainEngine = $state<'openrouter' | 'claude'>(_cachedBrain?.engine_resolved || 'openrouter');
+	let runningReflection = $state(false);
+	let runningExtraction = $state(false);
 	// Cloud-only product right now. Local AI components (Ollama, WebLLM,
 	// Local LLM, the legacy "Engine Mode" radio block) are hidden behind
 	// this flag — flip to true to bring them back when local-AI returns
@@ -6495,6 +6497,42 @@ autonomy: reactive
 						<span class="brain-hint" style="display: block; margin-top: 2px;">Heartbeat (morning brief), memory extraction, reflection, scheduled briefs. Costs tokens when active.</span>
 					</div>
 				</label>
+				<div class="automations-triggers">
+					<div class="brain-hint" style="margin-bottom: 6px;">
+						Trigger automations on demand instead of running them on a schedule. Each uses your <strong>active model</strong> (set in the engine card above) — no separate billing config.
+					</div>
+					<div style="display: flex; gap: 8px; flex-wrap: wrap;">
+						<button class="btn btn-secondary btn-sm" disabled={runningReflection} onclick={async () => {
+							runningReflection = true;
+							try {
+								await triggerReflection(slug);
+								alert('Reflection started in the background — check Personality → REFLECTIONS.md in ~30s for the updated content.');
+							} catch (e: any) {
+								alert('Failed: ' + (e.message || e));
+							}
+							runningReflection = false;
+						}}>
+							{runningReflection ? 'Reflecting…' : 'Run reflection now'}
+						</button>
+						<button class="btn btn-secondary btn-sm" disabled={runningExtraction || !$activeChannel} onclick={async () => {
+							const ch = $activeChannel;
+							if (!ch) { alert('Open a channel first — extraction runs against a specific channel.'); return; }
+							runningExtraction = true;
+							try {
+								const r = await extractMemoriesNow(slug, ch.id);
+								alert(`Extracted ${r.extracted ?? 0} memories from #${ch.name || ch.id}.`);
+							} catch (e: any) {
+								alert('Failed: ' + (e.message || e));
+							}
+							runningExtraction = false;
+						}}>
+							{runningExtraction ? 'Extracting…' : 'Extract memories now'}
+						</button>
+					</div>
+					<span class="brain-hint" style="margin-top: 6px; display: block;">
+						Reflection rewrites <code>REFLECTIONS.md</code>. Memory extraction pulls facts from the active channel into the system memory (see <strong>Memory</strong> tab) — different from <code>MEMORY.md</code>, which is your static workspace context.
+					</span>
+				</div>
 			</div>
 			<div class="brain-section engine-section">
 				<h3 class="brain-section-title">Choose your engine</h3>
