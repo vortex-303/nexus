@@ -201,7 +201,9 @@ func (s *Server) gatherReflectionData(slug string, period string) (*ReflectionDa
 func formatReflectionPrompt(rd *ReflectionData) string {
 	var b strings.Builder
 
+	now := time.Now().UTC()
 	b.WriteString(fmt.Sprintf("You are Brain performing a %s self-reflection on your workspace.\n\n", rd.Period))
+	b.WriteString(fmt.Sprintf("**Today is %s (UTC: %s).** Use this exact date in the REFLECTIONS.md \"Updated:\" line — do not invent a date or use a date from training data.\n\n", now.Format("Monday, January 2, 2006"), now.Format("2006-01-02")))
 	b.WriteString("Analyze the following workspace data and produce an updated REFLECTIONS.md file.\n\n")
 
 	// North Star
@@ -268,7 +270,8 @@ Write the complete updated REFLECTIONS.md file. Use this exact structure:
 ` + "```" + `markdown
 # Reflections
 
-Brain's self-reflection journal. Updated: {current date}
+Brain's self-reflection journal. Updated: ` + now.Format("January 2, 2006"))
+	b.WriteString(`
 
 ## Workspace Pulse
 {2-4 bullet points: team energy, velocity, what's hot, who's active/quiet}
@@ -329,7 +332,9 @@ func (s *Server) runReflection(slug string, period string, checkEnabled ...bool)
 
 	prompt := formatReflectionPrompt(rd)
 
-	result, usage, err := s.memoryComplete(slug, "You are Brain, reflecting on your workspace activity. Be concise, data-driven, and honest.", []brain.Message{
+	now := time.Now().UTC()
+	systemPrompt := fmt.Sprintf("You are Brain, reflecting on your workspace activity. Today is %s. Be concise, data-driven, and honest. Always use today's date when writing 'Updated:' fields — never invent dates from training data.", now.Format("Monday, January 2, 2006"))
+	result, usage, err := s.memoryComplete(slug, systemPrompt, []brain.Message{
 		{Role: "user", Content: prompt},
 	})
 	if err != nil {
