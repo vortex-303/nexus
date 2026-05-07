@@ -310,6 +310,10 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/workspaces/{slug}/brain/v3/reset-agent", authed(http.HandlerFunc(s.requireAdmin(s.handleResetV3Agent))))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/v3/memory", authed(http.HandlerFunc(s.requireAdmin(s.handleListV3Memory))))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/reflections", authed(http.HandlerFunc(s.requireAdmin(s.handleReflectionHistory))))
+	s.mux.Handle("POST /api/workspaces/{slug}/brain/distill-skills", authed(http.HandlerFunc(s.handleDistillSkills)))
+	s.mux.Handle("GET /api/workspaces/{slug}/brain/skill-proposals", authed(http.HandlerFunc(s.handleListSkillProposals)))
+	s.mux.Handle("POST /api/workspaces/{slug}/brain/skill-proposals/{name}/approve", authed(http.HandlerFunc(s.handleApproveSkillProposal)))
+	s.mux.Handle("DELETE /api/workspaces/{slug}/brain/skill-proposals/{name}", authed(http.HandlerFunc(s.handleRejectSkillProposal)))
 	s.mux.Handle("GET /api/workspaces/{slug}/usage", authed(http.HandlerFunc(s.requireAdmin(s.handleGetUsage))))
 
 	// Living Briefs

@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, testModel, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, joinChannel, leaveChannel, browseChannels, inviteToChannel, listChannelMembers, pinMessage, unpinMessage, listPinnedMessages, getMemoryPinnedMessageIds, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, resetV3Agent, getV3Memory, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings, listNotifications, markNotificationRead, markAllNotificationsRead, getNotificationCount } from '$lib/api';
+	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, testModel, distillSkills, listSkillProposals, approveSkillProposal, rejectSkillProposal, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, joinChannel, leaveChannel, browseChannels, inviteToChannel, listChannelMembers, pinMessage, unpinMessage, listPinnedMessages, getMemoryPinnedMessageIds, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, resetV3Agent, getV3Memory, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings, listNotifications, markNotificationRead, markAllNotificationsRead, getNotificationCount } from '$lib/api';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { connect, disconnect, onMessage, sendMessage, sendTyping, sendReaction, removeReaction, clearChannel, markChannelRead, connectionStatus, generateClientId } from '$lib/ws';
 	import { channels, members, messages, activeChannel, typingUsers, onlineUsers } from '$lib/stores/workspace';
@@ -482,6 +482,16 @@
 	let brainEngine = $state<'openrouter' | 'claude'>(_cachedBrain?.engine_resolved || 'openrouter');
 	let runningReflection = $state(false);
 	let runningExtraction = $state(false);
+	let runningDistill = $state(false);
+	let skillProposals = $state<any[]>([]);
+	let lastDistillRun = $state('');
+	async function loadSkillProposals() {
+		try {
+			const r = await listSkillProposals(slug);
+			skillProposals = r.proposals || [];
+			lastDistillRun = r.last_run || '';
+		} catch {}
+	}
 	// Cloud-only product right now. Local AI components (Ollama, WebLLM,
 	// Local LLM, the legacy "Engine Mode" radio block) are hidden behind
 	// this flag — flip to true to bring them back when local-AI returns
@@ -6324,7 +6334,7 @@ autonomy: reactive
 					<button class="brain-nav-item" class:active={brainTab === 'definitions'} onclick={() => brainTab = 'definitions'}>Personality</button>
 					<button class="brain-nav-item" class:active={brainTab === 'memory'} onclick={() => { brainTab = 'memory'; loadMemories(); loadV3Memory(); }}>Memory</button>
 					<button class="brain-nav-item" class:active={brainTab === 'activity'} onclick={() => { brainTab = 'activity'; loadActions(); }}>Activity</button>
-					<button class="brain-nav-item" class:active={brainTab === 'extensions'} onclick={() => { brainTab = 'extensions'; loadSkills(); loadMCPServersData(); loadMCPTemplates(); }}>Extensions</button>
+					<button class="brain-nav-item" class:active={brainTab === 'extensions'} onclick={() => { brainTab = 'extensions'; loadSkills(); loadMCPServersData(); loadMCPTemplates(); loadSkillProposals(); }}>Extensions</button>
 					<button class="brain-nav-item" class:active={brainTab === 'knowledge'} onclick={() => { brainTab = 'knowledge'; loadKnowledge(); }}>Knowledge</button>
 					<button class="brain-nav-item" class:active={brainTab === 'integrations'} onclick={() => { brainTab = 'integrations'; loadIntegrations(); }}>Integrations</button>
 					<button class="brain-nav-item" class:active={brainTab === 'roles'} onclick={() => { brainTab = 'roles'; loadRoles(); }}>Roles</button>
@@ -7780,6 +7790,71 @@ autonomy: reactive
 				{/if}
 				<div style="display: flex; gap: 8px; margin-top: 12px;">
 					<button class="btn btn-primary btn-sm" onclick={() => { brainTab = 'skills'; }}>Manage Skills →</button>
+				</div>
+			</div>
+
+			<!-- Skill proposals — distiller-generated drafts awaiting review -->
+			<div class="brain-section">
+				<h3 class="brain-section-title">Skill Distiller <span style="font-size: 0.75rem; color: var(--text-tertiary); font-weight: 400;">· {skillProposals.length} pending review</span></h3>
+				<p class="brain-section-desc">Brain analyzes recent activity and proposes new workspace skills capturing patterns, recurring corrections, or implicit conventions. Review and approve to add them to your skills library. Manual trigger; runs at most weekly per workspace.</p>
+				{#if skillProposals.length > 0}
+					<div class="extensions-summary-list">
+						{#each skillProposals as p}
+							<div class="proposal-card">
+								<div style="display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 4px;">
+									<span class="extensions-summary-name">{p.name}</span>
+									<span class="extensions-summary-meta">{(p.engines || []).join(' · ')}</span>
+								</div>
+								<div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 6px;">{p.description}</div>
+								{#if p.rationale}
+									<div style="font-size: 0.72rem; color: var(--text-tertiary); margin-bottom: 6px;"><strong>Why:</strong> {p.rationale}</div>
+								{/if}
+								{#if p.based_on && p.based_on.length > 0}
+									<details style="margin-bottom: 6px;">
+										<summary style="font-size: 0.72rem; color: var(--text-tertiary); cursor: pointer;">Based on {p.based_on.length} observation{p.based_on.length === 1 ? '' : 's'}</summary>
+										<ul style="margin: 4px 0 0; padding-left: 18px; font-size: 0.72rem; color: var(--text-tertiary);">
+											{#each p.based_on as ev}<li>{ev}</li>{/each}
+										</ul>
+									</details>
+								{/if}
+								<details>
+									<summary style="font-size: 0.72rem; color: var(--text-tertiary); cursor: pointer;">View full skill body</summary>
+									<pre style="margin-top: 6px; padding: 8px 10px; background: var(--bg-base); border-radius: 4px; font-size: 0.72rem; max-height: 240px; overflow: auto; white-space: pre-wrap;">{p.body}</pre>
+								</details>
+								<div style="display: flex; gap: 6px; margin-top: 8px;">
+									<button class="btn btn-primary btn-xs" onclick={async () => {
+										try { await approveSkillProposal(slug, p.file_path.replace(/\.md$/, '')); await loadSkillProposals(); } catch (e: any) { alert(e.message); }
+									}}>Approve</button>
+									<button class="btn btn-ghost btn-xs" onclick={async () => {
+										try { await rejectSkillProposal(slug, p.file_path.replace(/\.md$/, '')); await loadSkillProposals(); } catch (e: any) { alert(e.message); }
+									}}>Reject</button>
+								</div>
+							</div>
+						{/each}
+					</div>
+				{:else}
+					<p class="brain-hint">No proposals pending. {#if lastDistillRun}Last analysis ran {new Date(lastDistillRun).toLocaleString()}.{/if}</p>
+				{/if}
+				<div style="display: flex; gap: 8px; margin-top: 12px; align-items: center; flex-wrap: wrap;">
+					<button class="btn btn-secondary btn-sm" disabled={runningDistill} onclick={async () => {
+						runningDistill = true;
+						try {
+							const r = await distillSkills(slug, true);
+							if (r.skipped) {
+								alert('Skipped: ' + (r.message || r.reason));
+							} else {
+								// Wait briefly for the goroutine to finish, then reload
+								setTimeout(() => loadSkillProposals(), 5000);
+								alert('Analysis started — proposals will appear here in ~30s.');
+							}
+						} catch (e: any) {
+							alert('Failed: ' + (e.message || e));
+						}
+						runningDistill = false;
+					}}>
+						{runningDistill ? 'Analyzing…' : 'Propose new skills'}
+					</button>
+					<span class="brain-hint">Uses your active model · ~$0.05–0.15 per run on Sonnet · cooldown 7 days</span>
 				</div>
 			</div>
 
@@ -10653,6 +10728,13 @@ autonomy: reactive
 	.extensions-summary-meta {
 		font-size: 0.7rem;
 		color: var(--text-tertiary);
+	}
+	.proposal-card {
+		padding: 10px 12px;
+		background: var(--bg-base);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		margin-bottom: 8px;
 	}
 	.settings-summary {
 		background: linear-gradient(180deg, var(--bg-raised), var(--bg-base));

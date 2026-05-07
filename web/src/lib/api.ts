@@ -899,6 +899,21 @@ export async function checkModelAvailability(slug: string) {
 	return request('GET', `/api/workspaces/${slug}/models/check`);
 }
 
+// Skill-distiller — proposes new workspace skills from observed patterns.
+export async function distillSkills(slug: string, force = false) {
+	const q = force ? '?force=1' : '';
+	return request('POST', `/api/workspaces/${slug}/brain/distill-skills${q}`);
+}
+export async function listSkillProposals(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/brain/skill-proposals`);
+}
+export async function approveSkillProposal(slug: string, name: string) {
+	return request('POST', `/api/workspaces/${slug}/brain/skill-proposals/${encodeURIComponent(name)}/approve`);
+}
+export async function rejectSkillProposal(slug: string, name: string) {
+	return request('DELETE', `/api/workspaces/${slug}/brain/skill-proposals/${encodeURIComponent(name)}`);
+}
+
 export async function testModel(slug: string, modelId: string, prompt?: string) {
 	return request('POST', `/api/workspaces/${slug}/models/test`, { model_id: modelId, prompt: prompt || '' });
 }
