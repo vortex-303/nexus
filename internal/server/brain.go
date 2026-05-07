@@ -398,7 +398,11 @@ func (s *Server) updateThreadActivity(wdb *db.WorkspaceDB, channelID, parentID s
 	)
 }
 
-// handleBrainWelcome sends a canned welcome DM from Brain to the requesting user.
+// handleBrainWelcome sends a workspace-aware welcome DM from Brain to the
+// requesting user. Templated from real workspace data — engine, services,
+// member count, channels, docs, tasks, decisions. Token-free (no LLM call),
+// so it works pre-API-key configuration and costs nothing.
+//
 // POST /api/workspaces/{slug}/brain/welcome
 func (s *Server) handleBrainWelcome(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
@@ -437,18 +441,138 @@ func (s *Server) handleBrainWelcome(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	welcome := "Hey! I'm **Brain**, your AI assistant for this workspace.\n\n" +
-		"Here are some things I can help with:\n" +
-		"- **@Brain** me in any channel to ask questions or get help\n" +
-		"- Create and manage **tasks** and **documents**\n" +
-		"- Search the web and **fetch URLs**\n" +
-		"- Use **tools** from connected MCP servers\n" +
-		"- Generate **images** with a simple prompt\n\n" +
-		"Try typing something below to get started!"
-
+	welcome := s.buildWelcomeMessage(slug, wdb)
 	s.sendBrainMessage(slug, channelID, "", welcome)
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "channel_id": channelID})
+}
+
+// buildWelcomeMessage assembles a workspace-aware first-time welcome from
+// real data. Pure SQL + string templating; no LLM call. Adapts to:
+//   - active engine + model
+//   - configured services (only mentions what's set up)
+//   - channel + member + doc + task counts
+//   - top channels by activity
+func (s *Server) buildWelcomeMessage(slug string, wdb *db.WorkspaceDB) string {
+	// Workspace name + active engine / model
+	var wsName string
+	_ = s.global.DB.QueryRow("SELECT name FROM workspaces WHERE slug = ?", slug).Scan(&wsName)
+	if wsName == "" {
+		wsName = slug
+	}
+	engine := s.resolveEngine(slug)
+	var engineLabel, modelLabel string
+	if engine == "claude" {
+		engineLabel = "Claude (managed agents)"
+		modelLabel = s.getBrainSetting(slug, "mga_model", "claude-sonnet-4-6")
+	} else {
+		engineLabel = "OpenRouter"
+		modelLabel = s.getBrainSetting(slug, "model", "google/gemma-4-26b-a4b-it")
+		if modelLabel == "nexus/free-auto" {
+			modelLabel = "Free Auto (free-tier model rotation)"
+		}
+	}
+
+	// Configured services — only list those with keys
+	var services []string
+	if s.getGeminiAPIKey(slug) != "" {
+		services = append(services, "Gemini · image generation")
+	}
+	if s.getXAIKey(slug) != "" {
+		services = append(services, "Grok · X/social search + Social Pulse")
+	}
+	if s.getBrainSetting(slug, "brave_api_key") != "" {
+		services = append(services, "Brave · web search")
+	}
+	if s.getOpenAIKey(slug) != "" {
+		services = append(services, "OpenAI · memory extraction")
+	}
+
+	// Counts
+	var memberCount, channelCount, docCount, taskCount, decisionCount int
+	_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM members WHERE role NOT IN ('agent','brain')").Scan(&memberCount)
+	_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM channels WHERE type IN ('public','private')").Scan(&channelCount)
+	_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM documents").Scan(&docCount)
+	_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM tasks WHERE COALESCE(status,'todo') NOT IN ('completed','cancelled')").Scan(&taskCount)
+	_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM brain_memories WHERE type = 'decision' AND COALESCE(superseded_by,'')='' AND COALESCE(valid_until,'')=''").Scan(&decisionCount)
+
+	// Top 5 channels by message count
+	type channelRow struct {
+		Name  string
+		Count int
+	}
+	var topChannels []channelRow
+	rows, err := wdb.DB.Query(`
+		SELECT c.name, COUNT(m.id) AS msg_count
+		FROM channels c
+		LEFT JOIN messages m ON m.channel_id = c.id AND m.deleted = FALSE
+		WHERE c.type IN ('public','private')
+		GROUP BY c.id
+		ORDER BY msg_count DESC
+		LIMIT 5
+	`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var ch channelRow
+			if rows.Scan(&ch.Name, &ch.Count) == nil {
+				topChannels = append(topChannels, ch)
+			}
+		}
+	}
+
+	// Compose the message
+	var b strings.Builder
+	fmt.Fprintf(&b, "👋 **Welcome to %s**\n\n", wsName)
+	b.WriteString("I'm Brain — your AI teammate. Here's what's set up:\n\n")
+	fmt.Fprintf(&b, "**Engine:** %s · `%s`\n", engineLabel, modelLabel)
+	if len(services) > 0 {
+		fmt.Fprintf(&b, "**Services:** %s\n", strings.Join(services, " · "))
+	} else {
+		b.WriteString("**Services:** none configured yet — add a Gemini key for images, Grok for X/social, or Brave for web search in **Settings → Services**.\n")
+	}
+	b.WriteString("\n")
+
+	// Workspace snapshot
+	b.WriteString("**Your workspace right now:**\n")
+	fmt.Fprintf(&b, "- %d members across %d channels\n", memberCount, channelCount)
+	fmt.Fprintf(&b, "- %d docs · %d open tasks", docCount, taskCount)
+	if decisionCount > 0 {
+		fmt.Fprintf(&b, " · %d decisions logged", decisionCount)
+	}
+	b.WriteString("\n\n")
+
+	// Top channels (only if any with messages)
+	if len(topChannels) > 0 && topChannels[0].Count > 0 {
+		b.WriteString("**Most active channels:**\n")
+		for _, ch := range topChannels {
+			if ch.Count == 0 {
+				break
+			}
+			fmt.Fprintf(&b, "- #%s — %d messages\n", ch.Name, ch.Count)
+		}
+		b.WriteString("\n")
+	}
+
+	// Three things to try — adapt suggestions to engine + services
+	b.WriteString("**Three things to try:**\n")
+	b.WriteString("1. **Ask me anything** — `@Brain` me in any channel. I research, take notes, and remember.\n")
+	b.WriteString("2. **Create a task by chatting** — `@Brain create a task to ship the launch by Friday`. I'll propose it and ask before saving.\n")
+	if s.getGeminiAPIKey(slug) != "" {
+		b.WriteString("3. **Generate visuals** — `@Brain make a 16:9 banner for our launch`. I'll compose the prompt, render it, and embed it here.\n")
+	} else {
+		b.WriteString("3. **Generate visuals** — add a Gemini key in **Settings → Services**, then `@Brain make a 16:9 banner for our launch`.\n")
+	}
+	b.WriteString("\n")
+
+	// Where to customize
+	b.WriteString("**Shape my voice and behavior:**\n")
+	b.WriteString("- **Personality** tab in Brain Settings — edit my SOUL.md and INSTRUCTIONS.md\n")
+	b.WriteString("- **Extensions** tab — see my skills and connected integrations\n")
+	b.WriteString("- **Memory** tab — see what I've learned about your workspace\n\n")
+
+	b.WriteString("Ready when you are.")
+	return b.String()
 }
 
 // getRecentMessages fetches recent channel messages formatted for the LLM.
