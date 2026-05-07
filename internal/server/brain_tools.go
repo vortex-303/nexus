@@ -900,6 +900,14 @@ func (s *Server) buildContextForMode(slug string, wdb *db.WorkspaceDB, channelID
 			systemPrompt += "\n\n---\n\n" + skillContext
 			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(skillContext)).Int("total", len(systemPrompt)).Msg("+skills (thread)")
 		}
+		// Persona / keyword-matched skill bodies — inlined into system prompt
+		// for this turn when the user's message matches a skill's keywords.
+		// Same effect Claude's skill loader provides via progressive disclosure.
+		activated := brain.MatchSkillsByContent(skills, content)
+		if personaCtx := brain.BuildPersonaContext(activated, 3000); personaCtx != "" {
+			systemPrompt += "\n\n---\n\n" + personaCtx
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(personaCtx)).Int("activated", len(activated)).Int("total", len(systemPrompt)).Msg("+persona_bodies (thread)")
+		}
 
 		// COLD: Knowledge — only if topic-relevant, capped at 5000 chars
 		kbContext := brain.BuildKnowledgeContext(wdb.DB, content, brain.SemanticOpts{
@@ -945,6 +953,14 @@ func (s *Server) buildContextForMode(slug string, wdb *db.WorkspaceDB, channelID
 		if skillContext != "" {
 			systemPrompt += "\n\n---\n\n" + skillContext
 			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(skillContext)).Int("total", len(systemPrompt)).Msg("+skills")
+		}
+		// Persona / keyword-matched skill bodies — inlined into system prompt
+		// for this turn when the user's message matches a skill's keywords.
+		// Same effect Claude's skill loader provides via progressive disclosure.
+		activated := brain.MatchSkillsByContent(skills, content)
+		if personaCtx := brain.BuildPersonaContext(activated, 3000); personaCtx != "" {
+			systemPrompt += "\n\n---\n\n" + personaCtx
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(personaCtx)).Int("activated", len(activated)).Int("total", len(systemPrompt)).Msg("+persona_bodies")
 		}
 
 		// Append knowledge base context

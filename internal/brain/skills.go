@@ -10,11 +10,12 @@ import (
 type Skill struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
-	Trigger     string   `json:"trigger"`     // "mention", "schedule", "keyword"
-	Channels    []string `json:"channels"`    // empty = all channels
-	Roles       []string `json:"roles"`       // empty = all roles
-	Autonomy    string   `json:"autonomy"`    // "reactive", "proactive"
-	Prompt      string   `json:"prompt"`      // The skill's instruction prompt
+	Trigger     string   `json:"trigger"`  // "mention", "schedule", "keyword"
+	Keywords    []string `json:"keywords"` // for trigger=keyword: any match in user message activates the skill body
+	Channels    []string `json:"channels"` // empty = all channels
+	Roles       []string `json:"roles"`    // empty = all roles
+	Autonomy    string   `json:"autonomy"` // "reactive", "proactive"
+	Prompt      string   `json:"prompt"`   // The skill's instruction prompt body — inlined into system prompt when activated (v1/v2)
 	FileName    string   `json:"file_name"`
 	Enabled     bool     `json:"enabled"`
 }
@@ -78,6 +79,17 @@ func parseSkill(content string) Skill {
 				skill.Description = val
 			case "trigger":
 				skill.Trigger = val
+			case "keywords":
+				// Parse "keywords: [a, b, c]" or "keywords: a, b, c"
+				v := strings.TrimSpace(val)
+				v = strings.TrimPrefix(v, "[")
+				v = strings.TrimSuffix(v, "]")
+				for _, k := range strings.Split(v, ",") {
+					k = strings.TrimSpace(k)
+					if k != "" {
+						skill.Keywords = append(skill.Keywords, k)
+					}
+				}
 			case "channels":
 				for _, ch := range strings.Split(val, ",") {
 					ch = strings.TrimSpace(ch)
@@ -618,4 +630,73 @@ func BuildSkillContext(skills []Skill) string {
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// MatchSkillsByContent returns skills whose trigger=="keyword" and at least
+// one keyword appears (case-insensitive substring) in the user content.
+// Used by the v1/v2 pipeline to inline skill bodies into the system prompt
+// for the matching turn — same effect Claude's skill loader provides via
+// progressive disclosure on managed agents.
+func MatchSkillsByContent(skills []Skill, content string) []Skill {
+	if content == "" {
+		return nil
+	}
+	contentLower := strings.ToLower(content)
+	var out []Skill
+	for _, s := range skills {
+		if s.Trigger != "keyword" || len(s.Keywords) == 0 {
+			continue
+		}
+		for _, k := range s.Keywords {
+			k = strings.ToLower(strings.TrimSpace(k))
+			if k == "" {
+				continue
+			}
+			if strings.Contains(contentLower, k) {
+				out = append(out, s)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// BuildPersonaContext inlines the bodies of activated skills into the system
+// prompt. Use for skills where the body content is what shapes Brain's
+// behavior (personas, structured-output workflows). The body is what's
+// already parsed out of the skill .md (via parseSkill, including the
+// OpenRouter-terse variant when present).
+//
+// Cap each body at maxBodyChars to bound prompt cost. ~3000 chars per
+// skill is enough for the personas we ship; longer bodies usually mean
+// the skill needs trimming.
+func BuildPersonaContext(activated []Skill, maxBodyChars int) string {
+	if len(activated) == 0 {
+		return ""
+	}
+	if maxBodyChars <= 0 {
+		maxBodyChars = 3000
+	}
+	var b strings.Builder
+	b.WriteString("# Active skills (matched on this turn)\n\n")
+	b.WriteString("Follow each skill's instructions exactly. The structured output contracts below are mandatory when a workflow tag like `[skill:Workflow]` is in the body.\n\n")
+	for _, s := range activated {
+		body := strings.TrimSpace(s.Prompt)
+		if body == "" {
+			continue
+		}
+		if len(body) > maxBodyChars {
+			body = body[:maxBodyChars] + "\n\n[... truncated]"
+		}
+		b.WriteString("## Skill: ")
+		b.WriteString(s.Name)
+		if s.Description != "" {
+			b.WriteString(" — ")
+			b.WriteString(s.Description)
+		}
+		b.WriteString("\n\n")
+		b.WriteString(body)
+		b.WriteString("\n\n---\n\n")
+	}
+	return b.String()
 }

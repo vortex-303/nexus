@@ -37,17 +37,13 @@ func (s *Server) resolveEngine(slug string) string {
 	return "openrouter"
 }
 
-// shouldHideLegacyAgents returns true when the workspace is on the
-// Claude engine AND show_legacy_agents is not opted-in. In that mode,
-// the legacy built-in agents (Creative Director, Caly) are filtered out
-// of agent lists and member lists — Claude managed-agents Brain absorbs
-// their roles via its persona skills. Data is preserved at all layers;
-// switching engine back to OpenRouter (or setting show_legacy_agents=
-// true) restores them.
+// shouldHideLegacyAgents returns true when the legacy built-in agents
+// (Creative Director, Caly) should be filtered out of agent lists and
+// member lists. They're hidden by default for both engines now that
+// the persona skills (creative-director, researcher) supersede them
+// on both v1/v2 and v3. Data is preserved at all layers; setting
+// show_legacy_agents=true in brain_settings restores visibility.
 func (s *Server) shouldHideLegacyAgents(slug string) bool {
-	if s.resolveEngine(slug) != "claude" {
-		return false
-	}
 	return s.getBrainSetting(slug, "show_legacy_agents") != "true"
 }
 
@@ -100,6 +96,16 @@ func (s *Server) ensureBrainMember(slug string) error {
 		if err != nil {
 			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("failed to seed system agent")
 		}
+	}
+
+	// Seed persona skills (creative-director, researcher) to brain/skills/.
+	// Idempotent — only writes files that don't exist, preserves user edits.
+	// v1/v2 picks them up via the existing keyword-match → body-inline path
+	// (brain.MatchSkillsByContent + BuildPersonaContext); v3 uploads its
+	// own copy via internal/brain3/skills.go (same content, different path).
+	brainDir := brain.BrainDir(s.cfg.DataDir, slug)
+	if err := brain.SeedPersonaSkills(brainDir); err != nil {
+		logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("failed to seed persona skills")
 	}
 
 	return nil
