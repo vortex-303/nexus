@@ -6433,6 +6433,7 @@ autonomy: reactive
 						<span class="summary-chip">{brainSkills.length} skills</span>
 						<span class="summary-chip">{mcpServers.length} MCP</span>
 						<button class="btn btn-ghost btn-xs" onclick={() => { brainTab = 'extensions'; loadSkills(); loadMCPServersData(); }} style="margin-left: 8px;">View Extensions →</button>
+						<button class="btn btn-ghost btn-xs" title="Re-open the engine + API key setup wizard" onclick={() => { wizardStep = 'welcome'; wizardApiKey = ''; showWizard = true; }}>↺ Setup wizard</button>
 					</div>
 				</div>
 			</div>
