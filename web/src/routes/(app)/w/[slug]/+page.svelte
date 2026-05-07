@@ -6738,7 +6738,8 @@ autonomy: reactive
 
 			{#if isAdmin}
 			<div class="brain-section">
-				<h3 class="brain-section-title">LLM Provider</h3>
+				<h3 class="brain-section-title">Engine Keys</h3>
+				<p class="brain-section-desc">API keys for the engines you've selected above. Configure OpenRouter for the OpenRouter engine, or Anthropic for the Claude engine — or both.</p>
 				<div class="service-cards">
 					<!-- OpenRouter -->
 					<div class="service-card" class:service-active={brainSettings.api_key_set === 'true'}>
@@ -6933,21 +6934,33 @@ autonomy: reactive
 						</details>
 					</div>
 
-					<!-- Google Gemini -->
+				</div>
+
+				<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveBrainSettings} disabled={brainSaving}>
+					{brainSaving ? 'Saving...' : 'Save Settings'}
+				</button>
+			</div>
+
+			<div class="brain-section">
+				<h3 class="brain-section-title">Services</h3>
+				<p class="brain-section-desc">Add-on capabilities that work with any engine. Each one is optional — Brain works without them, but they unlock specific tools and workflows.</p>
+				<div class="service-cards">
+					<!-- Google Gemini — Images -->
 					<div class="service-card" class:service-active={brainSettings.gemini_api_key_set === 'true'}>
 						<div class="service-header">
 							<div class="service-status-dot" class:active={brainSettings.gemini_api_key_set === 'true'}></div>
 							<div class="service-title-area">
 								<span class="service-name">Google Gemini</span>
+								<span class="service-role">Images</span>
 								<span class="service-badge">{brainSettings.gemini_api_key_set === 'true' ? 'Connected' : 'Not configured'}</span>
 							</div>
 						</div>
 						<div class="service-desc">
 							{#if brainSettings.gemini_api_key_set === 'true'}
-								Image model: <strong>{brainImageModel.replace('gemini-', '').replace('-image', '').replace('-preview', '')}</strong>
+								Image model: <strong>{brainImageModel.replace('gemini-', '').replace('-image', '').replace('-preview', '')}</strong> · Powers <code>generate_image</code> in chat.
 								{#if brainSettings.gemini_api_key_masked}&middot; Key: {brainSettings.gemini_api_key_masked}{/if}
 							{:else}
-								Powers image generation for agents. Free tier available.
+								Image generation — Brain calls <code>generate_image</code> for banners, mockups, ad creative. Free tier available; Nano Banana 2 is ~$0.04 per image.
 							{/if}
 						</div>
 						<details class="service-details">
@@ -6973,31 +6986,23 @@ autonomy: reactive
 							</div>
 						</details>
 					</div>
-				</div>
 
-				<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveBrainSettings} disabled={brainSaving}>
-					{brainSaving ? 'Saving...' : 'Save Settings'}
-				</button>
-			</div>
-
-			<div class="brain-section">
-				<h3 class="brain-section-title">Services</h3>
-				<div class="service-cards">
-					<!-- OpenAI -->
+					<!-- OpenAI — Memory -->
 					<div class="service-card" class:service-active={brainSettings.openai_api_key_set === 'true'}>
 						<div class="service-header">
 							<div class="service-status-dot" class:active={brainSettings.openai_api_key_set === 'true'}></div>
 							<div class="service-title-area">
 								<span class="service-name">OpenAI</span>
+								<span class="service-role">Memory · optional</span>
 								<span class="service-badge">{brainSettings.openai_api_key_set === 'true' ? 'Connected' : 'Not configured'}</span>
 							</div>
 						</div>
 						<div class="service-desc">
 							{#if brainSettings.openai_api_key_set === 'true'}
-								Available for memory extraction.
+								Memory extraction routed via OpenAI directly.
 								{#if brainSettings.openai_api_key_masked}Key: {brainSettings.openai_api_key_masked}{/if}
 							{:else}
-								Use OpenAI models directly for memory extraction. GPT-4o Mini is $0.15/M input.
+								Optional — direct OpenAI access for memory extraction (GPT-4o Mini ≈ $0.15/M input). Skip this if you're happy with the default extraction model via OpenRouter.
 							{/if}
 						</div>
 						<details class="service-details">
@@ -7015,21 +7020,22 @@ autonomy: reactive
 						</details>
 					</div>
 
-					<!-- Brave Search -->
+					<!-- Brave Search — Web Search -->
 					<div class="service-card" class:service-active={brainSettings.brave_api_key_set === 'true'}>
 						<div class="service-header">
 							<div class="service-status-dot" class:active={brainSettings.brave_api_key_set === 'true'}></div>
 							<div class="service-title-area">
 								<span class="service-name">Brave Search</span>
+								<span class="service-role">Web Search</span>
 								<span class="service-badge">{brainSettings.brave_api_key_set === 'true' ? 'Connected' : 'Not configured'}</span>
 							</div>
 						</div>
 						<div class="service-desc">
 							{#if brainSettings.brave_api_key_set === 'true'}
-								Web search enabled for Brain tools.
+								Powers <code>web_search</code> + Researcher persona's Quick Research workflow.
 								{#if brainSettings.brave_api_key_masked}Key: {brainSettings.brave_api_key_masked}{/if}
 							{:else}
-								Enables the web_search Brain tool. Free 2,000 queries/month.
+								Web search — enables <code>web_search</code> for Brain and the Researcher persona's Quick Research / Source-Cited Memo workflows. Free tier: 2,000 queries/month.
 							{/if}
 						</div>
 						<details class="service-details">
@@ -7047,12 +7053,13 @@ autonomy: reactive
 						</details>
 					</div>
 
-					<!-- Grok / xAI -->
+					<!-- Grok / xAI — News & Social -->
 					<div class="service-card" class:service-active={brainSettings.xai_api_key_set === 'true' && !!brainXAIModel}>
 						<div class="service-header">
 							<div class="service-status-dot" class:active={brainSettings.xai_api_key_set === 'true' && !!brainXAIModel}></div>
 							<div class="service-title-area">
 								<span class="service-name">Grok / xAI</span>
+								<span class="service-role">News &amp; Social</span>
 								<span class="service-badge">
 									{#if brainSettings.xai_api_key_set === 'true' && brainXAIModel}
 										Active &middot; {brainXAIModel}
@@ -7066,9 +7073,9 @@ autonomy: reactive
 						</div>
 						<div class="service-desc">
 							{#if brainSettings.xai_api_key_set === 'true' && brainXAIModel}
-								Brain routes all requests via xAI &mdash; lower latency, native X/Twitter search.
+								Powers <code>search_x</code> + the workspace Social Pulse (sentiment, themes, key posts) + Researcher persona's Social Pulse workflow.
 							{:else}
-								Direct access to Grok models with native X/Twitter search. No OpenRouter needed.
+								News &amp; social signal — native X/Twitter search via <code>search_x</code>, plus the full Social Pulse pipeline (sentiment + themes + key posts + predictions). Includes free credits at signup.
 							{/if}
 						</div>
 						<details class="service-details" open={!brainSettings.xai_api_key_set || !brainXAIModel}>
@@ -10358,11 +10365,22 @@ autonomy: reactive
 		display: flex;
 		align-items: baseline;
 		gap: 8px;
+		flex-wrap: wrap;
 	}
 	.service-name {
 		font-size: 0.85rem;
 		font-weight: 600;
 		color: var(--text-primary);
+	}
+	.service-role {
+		font-size: 0.7rem;
+		font-weight: 500;
+		padding: 1px 8px;
+		border-radius: 10px;
+		background: var(--bg-base);
+		border: 1px solid var(--border-subtle);
+		color: var(--text-secondary);
+		white-space: nowrap;
 	}
 	.service-badge {
 		font-size: 0.7rem;
