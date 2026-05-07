@@ -69,6 +69,13 @@ type PipelineConfig struct {
 	// turn pre-injected context block alongside Model + Pinned + sender
 	// profile.
 	Capabilities string
+	// Images are recent channel images the user shared, attached to the
+	// user message as image content blocks. Claude Sonnet 4.6 / Opus 4.7
+	// read them natively. Server-side handler builds these via
+	// getRecentChannelImages (same source v2 uses for vision); the v3
+	// pipeline converts them into Anthropic's BetaManagedAgentsImageBlock
+	// shape inside runTurn. Empty for non-image turns.
+	Images []brain.MessageImage
 	// OnTextDelta is called for every agent.message text block as it arrives
 	// on the SSE stream. Optional — if nil, streaming is disabled and the
 	// caller gets only the final aggregated text in Result.Response.

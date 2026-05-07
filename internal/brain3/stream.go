@@ -52,6 +52,33 @@ func runTurn(ctx context.Context, client *anthropic.Client, sessionID string, us
 	stream := client.Beta.Sessions.Events.StreamEvents(ctx, sessionID, anthropic.BetaSessionEventStreamParams{})
 	defer stream.Close()
 
+	// Build the user message content array — text first, then any
+	// attached images as base64 image blocks. Sonnet 4.6 / Opus 4.7 read
+	// images natively so we can send raw without going through Gemini.
+	content := []anthropic.BetaManagedAgentsUserMessageEventParamsContentUnion{
+		{OfText: &anthropic.BetaManagedAgentsTextBlockParam{Text: userMessage, Type: anthropic.BetaManagedAgentsTextBlockTypeText}},
+	}
+	for _, img := range cfg.Images {
+		// brain.MessageImage carries images as data: URLs ("data:image/png;base64,...").
+		// Split into media_type + base64 data for the Anthropic shape.
+		mediaType, b64data := splitDataURL(img.ImageURL.URL)
+		if b64data == "" {
+			continue
+		}
+		content = append(content, anthropic.BetaManagedAgentsUserMessageEventParamsContentUnion{
+			OfImage: &anthropic.BetaManagedAgentsImageBlockParam{
+				Type: anthropic.BetaManagedAgentsImageBlockTypeImage,
+				Source: anthropic.BetaManagedAgentsImageBlockSourceUnionParam{
+					OfBase64: &anthropic.BetaManagedAgentsBase64ImageSourceParam{
+						Type:      anthropic.BetaManagedAgentsBase64ImageSourceTypeBase64,
+						MediaType: mediaType,
+						Data:      b64data,
+					},
+				},
+			},
+		})
+	}
+
 	// Send the user message now that the stream is buffering. We build the
 	// params struct directly because the SDK's
 	// BetaManagedAgentsEventParamsOfUserMessage helper doesn't set the
@@ -61,10 +88,8 @@ func runTurn(ctx context.Context, client *anthropic.Client, sessionID string, us
 		Events: []anthropic.BetaManagedAgentsEventParamsUnion{
 			{
 				OfUserMessage: &anthropic.BetaManagedAgentsUserMessageEventParams{
-					Type: anthropic.BetaManagedAgentsUserMessageEventParamsTypeUserMessage,
-					Content: []anthropic.BetaManagedAgentsUserMessageEventParamsContentUnion{
-						{OfText: &anthropic.BetaManagedAgentsTextBlockParam{Text: userMessage, Type: anthropic.BetaManagedAgentsTextBlockTypeText}},
-					},
+					Type:    anthropic.BetaManagedAgentsUserMessageEventParamsTypeUserMessage,
+					Content: content,
 				},
 			},
 		},
@@ -74,6 +99,37 @@ func runTurn(ctx context.Context, client *anthropic.Client, sessionID string, us
 	}
 
 	return consumeStream(ctx, client, sessionID, stream, cfg)
+}
+
+// splitDataURL splits a data URL ("data:image/png;base64,XXX") into
+// media_type and base64 payload. Returns empty strings if the URL doesn't
+// match the expected shape; caller should skip the image in that case.
+func splitDataURL(url string) (mediaType, b64data string) {
+	const prefix = "data:"
+	if len(url) < len(prefix) || url[:len(prefix)] != prefix {
+		return "", ""
+	}
+	rest := url[len(prefix):]
+	semi := indexByte(rest, ';')
+	if semi < 0 {
+		return "", ""
+	}
+	mediaType = rest[:semi]
+	rest = rest[semi+1:]
+	if len(rest) < 7 || rest[:7] != "base64," {
+		return "", ""
+	}
+	return mediaType, rest[7:]
+}
+
+// indexByte is a tiny strings.IndexByte to avoid an import here.
+func indexByte(s string, b byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == b {
+			return i
+		}
+	}
+	return -1
 }
 
 // consumeStream iterates events until the session reaches a terminal idle

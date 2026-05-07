@@ -163,6 +163,15 @@ func (s *Server) handleBrainV3(slug, channelID, parentID, senderName, content st
 		mgaModel := s.getBrainSetting(slug, "mga_model", "claude-sonnet-4-6")
 		capabilities := s.BuildCapabilitiesSection(slug, "claude", mgaModel)
 
+		// Vision: attach recent channel images so Sonnet 4.6 / Opus 4.7 can
+		// read them natively. Same source v2 uses (getRecentChannelImages),
+		// but only for the Claude path — v2 reads them via brain2 pipeline.
+		// 5-min window, max 3 images, files > 10MB skipped.
+		images := s.getRecentChannelImages(slug, wdb, channelID, messageTime.Add(-5*time.Minute), 3)
+		if len(images) > 0 {
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("images", len(images)).Msg("v3: attaching images to user message")
+		}
+
 		result := brain3.Run(ctx, brain3.PipelineConfig{
 			Slug:         slug,
 			ChannelID:    channelID,
@@ -177,6 +186,7 @@ func (s *Server) handleBrainV3(slug, channelID, parentID, senderName, content st
 			ExecuteTool:  s.executeTool,
 			Trace:        trace,
 			Capabilities: capabilities,
+			Images:       images,
 			// Surface tool calls in the chat UI as Brain runs them — flips
 			// the agent-state indicator to "tool_executing" with the tool's
 			// name (e.g. "Brain is generating an image..."), then back to
