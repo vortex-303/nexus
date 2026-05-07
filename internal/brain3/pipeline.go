@@ -3,6 +3,7 @@ package brain3
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"time"
 
@@ -218,6 +219,38 @@ func buildUserMessage(preload PreloadedContext, senderName, content string) stri
 	return b.String()
 }
 
+// errorResponse turns a pipeline error into a chat-visible message. The
+// Anthropic SDK surfaces auth + rate-limit + config issues as wrapped HTTP
+// errors whose .Error() string is verbose and includes the raw URL + request
+// ID — fine for logs, but unhelpful as a chat reply. We special-case the
+// failure modes a workspace admin can act on, so the message points at the
+// fix instead of dumping a stack trace.
 func errorResponse(err error) string {
-	return "Brain v3 couldn't complete this turn: " + err.Error()
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	switch {
+	case errors.Is(err, ErrNoAPIKey):
+		return "Brain (Claude) isn't connected yet. An admin can add an Anthropic API key in **Settings → Brain → API Keys**, or switch the engine to OpenRouter."
+	case isAuthError(msg):
+		return "Brain's Anthropic API key isn't working — Anthropic returned 401 Unauthorized. An admin can re-enter the key in **Settings → Brain → API Keys**, or switch the engine to OpenRouter as a quick fallback."
+	case isDisplayTitleCollision(msg):
+		return "Brain couldn't bootstrap its skills — Anthropic reports a display-title collision (the same Claude API key is already in use by another Nexus workspace). This is usually a stale-cache issue; an admin can click **Reset Brain Agent** in Settings → Brain to re-provision."
+	case isRateLimitError(msg):
+		return "Anthropic is rate-limiting this workspace right now. Try again in a minute, or switch the engine to OpenRouter in **Settings → Brain → Engine**."
+	}
+	return "Brain v3 couldn't complete this turn: " + msg
+}
+
+func isAuthError(msg string) bool {
+	return strings.Contains(msg, "401") || strings.Contains(msg, "authentication_error") || strings.Contains(msg, "Authentication failed")
+}
+
+func isDisplayTitleCollision(msg string) bool {
+	return strings.Contains(msg, "cannot reuse an existing display_title")
+}
+
+func isRateLimitError(msg string) bool {
+	return strings.Contains(msg, "429") || strings.Contains(msg, "rate_limit")
 }

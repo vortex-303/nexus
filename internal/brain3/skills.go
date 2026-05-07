@@ -366,6 +366,11 @@ func (sk CustomSkill) contentHash() string {
 // Latest version is implicitly used by the agent (we don't pin a version
 // when attaching), so a new version uploaded here is picked up by the next
 // agent.Update without further work.
+//
+// display_title is namespaced per workspace ("Nexus <Title> · <slug>") so
+// multiple Nexus workspaces sharing the same Claude API key don't collide
+// on Anthropic's "display_title must be unique within an API workspace"
+// constraint — early failure mode that bricked second-workspace bootstraps.
 func EnsureCustomSkills(ctx context.Context, client *anthropic.Client, settings SettingsStore, slug string) (map[string]string, error) {
 	out := make(map[string]string, len(CustomSkills))
 	for _, sk := range CustomSkills {
@@ -378,7 +383,7 @@ func EnsureCustomSkills(ctx context.Context, client *anthropic.Client, settings 
 
 		// State 1 — no cached id, full create.
 		if cachedID == "" {
-			id, err := uploadCustomSkill(ctx, client, sk)
+			id, err := uploadCustomSkill(ctx, client, sk, slug)
 			if err != nil {
 				return out, fmt.Errorf("upload skill %q: %w", sk.Name, err)
 			}
@@ -438,9 +443,20 @@ func uploadCustomSkillVersion(ctx context.Context, client *anthropic.Client, ski
 // single SKILL.md file. Returns the skill_id Anthropic assigned. Sends the
 // skills-2025-10-02 beta header explicitly because the Skills API isn't
 // covered by the managed-agents auto-header.
-func uploadCustomSkill(ctx context.Context, client *anthropic.Client, sk CustomSkill) (string, error) {
+//
+// The display_title is suffixed with the workspace slug because Anthropic
+// rejects duplicate display titles within a single API workspace, and many
+// Nexus deployments share a Claude API key across multiple workspaces. The
+// suffix is human-friendly ("Nexus Decision Log · acme") and uniquely keys
+// each upload, while the model never sees this — DisplayTitle is console-only.
+func uploadCustomSkill(ctx context.Context, client *anthropic.Client, sk CustomSkill, slug string) (string, error) {
 	uploadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+
+	title := sk.DisplayTitle
+	if slug != "" {
+		title = sk.DisplayTitle + " · " + slug
+	}
 
 	// Anthropic requires a top-level folder containing SKILL.md (and any
 	// helper assets). Even for a single-file skill, the multipart filename
@@ -450,7 +466,7 @@ func uploadCustomSkill(ctx context.Context, client *anthropic.Client, sk CustomS
 	// Using the skill's Name as the folder makes it readable in the
 	// Anthropic console too.
 	resp, err := client.Beta.Skills.New(uploadCtx, anthropic.BetaSkillNewParams{
-		DisplayTitle: param.NewOpt(sk.DisplayTitle),
+		DisplayTitle: param.NewOpt(title),
 		Files: []io.Reader{
 			namedReader{
 				Reader: bytes.NewReader([]byte(sk.SkillMD)),
