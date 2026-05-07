@@ -6844,6 +6844,7 @@ autonomy: reactive
 					{/if}
 				{/if}
 			</div>
+			{/if}
 
 			{#if isAdmin}
 			<div class="brain-section">
@@ -7396,6 +7397,7 @@ autonomy: reactive
 				{/if}
 			</div>
 
+			{#if SHOW_LOCAL_AI}
 			<div class="brain-section" style="margin-top: 1rem;">
 				<h3 class="brain-section-title">WebLLM System Prompt</h3>
 				<p class="brain-hint" style="margin-bottom: 0.5rem">System prompt for the local WebLLM model. Keep it short — the local model has a ~4K token context window.</p>
