@@ -7818,9 +7818,24 @@ autonomy: reactive
 									</details>
 								{/if}
 								<details>
-									<summary style="font-size: 0.72rem; color: var(--text-tertiary); cursor: pointer;">View full skill body</summary>
+									<summary style="font-size: 0.72rem; color: var(--text-tertiary); cursor: pointer;">View skill body{p.body_openrouter ? ' (Claude variant)' : ''}</summary>
 									<pre style="margin-top: 6px; padding: 8px 10px; background: var(--bg-base); border-radius: 4px; font-size: 0.72rem; max-height: 240px; overflow: auto; white-space: pre-wrap;">{p.body}</pre>
 								</details>
+								{#if p.body_openrouter}
+									<details>
+										<summary style="font-size: 0.72rem; color: var(--text-tertiary); cursor: pointer;">View OpenRouter variant (terser, prompt-prepended verbatim)</summary>
+										<pre style="margin-top: 6px; padding: 8px 10px; background: var(--bg-base); border-radius: 4px; font-size: 0.72rem; max-height: 200px; overflow: auto; white-space: pre-wrap;">{p.body_openrouter}</pre>
+									</details>
+								{/if}
+								{#if p.test_prompt}
+									<div style="margin-top: 8px; padding: 6px 10px; background: var(--bg-base); border: 1px dashed var(--border-subtle); border-radius: 4px; font-size: 0.74rem;">
+										<span style="color: var(--text-tertiary);">Try it after approving:</span>
+										<div style="display: flex; gap: 6px; align-items: center; margin-top: 2px;">
+											<code style="flex: 1; font-size: 0.74rem; color: var(--text-primary);">@Brain {p.test_prompt}</code>
+											<button class="btn btn-ghost btn-xs" title="Copy to clipboard" onclick={() => { navigator.clipboard.writeText('@Brain ' + p.test_prompt); }}>Copy</button>
+										</div>
+									</div>
+								{/if}
 								<div style="display: flex; gap: 6px; margin-top: 8px;">
 									<button class="btn btn-primary btn-xs" onclick={async () => {
 										try { await approveSkillProposal(slug, p.file_path.replace(/\.md$/, '')); await loadSkillProposals(); } catch (e: any) { alert(e.message); }

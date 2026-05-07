@@ -108,11 +108,24 @@ func parseSkill(content string) Skill {
 		}
 	}
 
-	// Body is everything after frontmatter
+	// Body is everything after frontmatter. If the file contains a
+	// "<!-- ===BODY_OPENROUTER=== -->" sentinel (written by the
+	// skill-distiller for engine-specific variants), prefer the OpenRouter-
+	// terse body for v1/v2 keyword-matched prompt prepending. Claude's
+	// skill-loader path uses the canonical body before the sentinel.
+	const orSentinel = "<!-- ===BODY_OPENROUTER=== -->"
+	body := ""
 	if bodyStart > 0 && bodyStart < len(lines) {
-		skill.Prompt = strings.TrimSpace(strings.Join(lines[bodyStart:], "\n"))
+		body = strings.TrimSpace(strings.Join(lines[bodyStart:], "\n"))
 	} else {
-		skill.Prompt = strings.TrimSpace(content)
+		body = strings.TrimSpace(content)
+	}
+	if idx := strings.Index(body, orSentinel); idx >= 0 {
+		// v1/v2 prompt-prepend gets the terser variant; the canonical body
+		// (used by Claude's skill loader) lives before the sentinel.
+		skill.Prompt = strings.TrimSpace(body[idx+len(orSentinel):])
+	} else {
+		skill.Prompt = body
 	}
 
 	if skill.Trigger == "" {

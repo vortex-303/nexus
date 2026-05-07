@@ -30,13 +30,15 @@ const distillerTraceCap = 30
 // SkillProposal is one distilled-skill draft saved to the proposals dir.
 // It's the JSON shape we ask the LLM to return so we can parse + persist.
 type SkillProposal struct {
-	Name             string   `json:"name"`              // kebab-case, used as filename
-	Description      string   `json:"description"`       // 1-line summary for the YAML frontmatter
-	Engines          []string `json:"engines"`           // e.g. ["claude", "openrouter"]
-	TriggerKeywords  []string `json:"trigger_keywords"`  // for OpenRouter keyword matching
-	Body             string   `json:"body"`              // markdown body of the SKILL.md
-	Rationale        string   `json:"rationale"`         // why we proposed this — shown in UI for review
-	BasedOn          []string `json:"based_on"`          // 2-4 short citations from observed patterns
+	Name            string   `json:"name"`             // kebab-case, used as filename
+	Description     string   `json:"description"`      // 1-line summary for the YAML frontmatter
+	Engines         []string `json:"engines"`          // e.g. ["claude", "openrouter"]
+	TriggerKeywords []string `json:"trigger_keywords"` // for OpenRouter keyword matching
+	Body            string   `json:"body"`             // canonical body — used by Claude (skill loader) + OpenRouter when no openrouter variant
+	BodyOpenRouter  string   `json:"body_openrouter"`  // optional terser variant for OpenRouter (prepended verbatim into prompt; 100-150 words ideal)
+	TestPrompt      string   `json:"test_prompt"`      // example user-message that should trigger the skill — for quick verification
+	Rationale       string   `json:"rationale"`        // why we proposed this — shown in UI for review
+	BasedOn         []string `json:"based_on"`         // 2-4 short citations from observed patterns
 }
 
 // distillerSystemPrompt is the LLM system prompt for the analysis pass.
@@ -46,20 +48,32 @@ const distillerSystemPrompt = `You are Brain's skill-distiller — a meta-skill 
 
 Your job: find recurring patterns, repeated user corrections, implicit conventions, or workflow shapes that should be codified as a reusable skill so future Brain sessions follow them automatically.
 
-Skip patterns that are already covered by existing skills (you'll see the existing skill names in the input). Skip one-off events. Skip personal preferences from a single user (unless that user is the workspace owner correcting Brain's behavior workspace-wide).
+Skip patterns already covered by existing skills (you'll see the existing skill names in the input). Skip one-off events. Skip personal preferences from a single user (unless that user is the workspace owner correcting Brain's behavior workspace-wide).
 
 Quality bar: a good proposal is specific, actionable, and based on at least 2-3 observed instances. Bad proposals: vague tone advice, generic "be helpful", or anything you couldn't trace to real evidence in the input.
 
-Output: a strict JSON array of skill proposals. Empty array [] if no patterns warrant a new skill — that's a perfectly fine answer. Do NOT wrap in markdown fences. Each proposal must have:
+# How skill bodies are loaded — write accordingly
+
+- **Claude (managed agents)** loads skill bodies *on demand* via a skill loader (progressive disclosure). Body length is fine here; Claude only pays the token cost when the skill is actually relevant. Use this surface for the canonical, fuller skill body.
+- **OpenRouter (v2)** matches trigger_keywords and *prepends the body verbatim into the system prompt* for that turn. Long bodies dilute attention and hurt cheaper models. Write the OpenRouter variant terse and rule-dense — 100-150 words, declarative bullets, no padding.
+
+So for skills that go to both engines, write a richer "body" (Claude-default) AND an optional "body_openrouter" terse variant. If the canonical body is already short and prescriptive, you can skip body_openrouter and the same body will be used on both.
+
+# Output
+
+Strict JSON array of proposals. Empty array [] if no patterns warrant a new skill — that's a perfectly fine answer. Do NOT wrap in markdown fences. Each proposal must have:
+
 - name: kebab-case (e.g. "spanish-client-output")
 - description: one sentence describing what the skill does and when it fires
-- engines: array, choose from "claude", "openrouter" — both unless one engine is clearly the only fit
-- trigger_keywords: 3-8 keywords that should activate this skill on OpenRouter (where keyword-matching is the firing mechanism)
-- body: the full markdown body of the SKILL.md, with frontmatter + headings + concrete instructions. ~200-600 words. Match the structure of the existing workspace skills shown in the input.
+- engines: array — pick from "claude", "openrouter". Default to both unless one engine is clearly the only fit.
+- trigger_keywords: 3-8 keywords / phrases that should activate this skill on OpenRouter (lowercase, distinctive)
+- body: canonical markdown body (frontmatter + headings + concrete rules). **HARD CAP 250 words.** Match the structure of the existing workspace skills shown in the input. This is what Claude's skill loader sees.
+- body_openrouter: optional terser variant for OpenRouter prompt-prepend (100-150 words; rule-dense, no examples). Skip this field if the canonical body is already short and dense (under ~150 words and pure rules).
+- test_prompt: one short example user-message a workspace member could send that should activate this skill. Used by the user to verify the skill applies after approval. Make it natural, not contrived.
 - rationale: 1-2 sentences explaining what pattern you observed and why a skill helps
 - based_on: 2-4 short quotes / paraphrases from the input that motivated this proposal (so the user can verify your reasoning).
 
-Be concise. Propose 0-3 skills max — quality over quantity.`
+Be ruthlessly concise. Propose 0-3 skills max — quality over quantity. Most workspaces benefit from 1-2 skills per analysis run, not the max.`
 
 // handleDistillSkills runs skill-distiller — analyzes recent workspace
 // activity and writes 0-3 skill proposals to data/workspaces/<slug>/brain/
@@ -112,14 +126,17 @@ func (s *Server) handleListSkillProposals(w http.ResponseWriter, r *http.Request
 	}
 
 	type proposalView struct {
-		Name        string   `json:"name"`
-		Description string   `json:"description"`
-		Engines     []string `json:"engines"`
-		Rationale   string   `json:"rationale"`
-		BasedOn     []string `json:"based_on"`
-		Body        string   `json:"body"`
-		FilePath    string   `json:"file_path"`
-		CreatedAt   string   `json:"created_at"`
+		Name           string   `json:"name"`
+		Description    string   `json:"description"`
+		Engines        []string `json:"engines"`
+		TriggerKeywords []string `json:"trigger_keywords"`
+		Rationale      string   `json:"rationale"`
+		BasedOn        []string `json:"based_on"`
+		Body           string   `json:"body"`
+		BodyOpenRouter string   `json:"body_openrouter,omitempty"`
+		TestPrompt     string   `json:"test_prompt,omitempty"`
+		FilePath       string   `json:"file_path"`
+		CreatedAt      string   `json:"created_at"`
 	}
 	var out []proposalView
 	for _, e := range entries {
@@ -137,14 +154,17 @@ func (s *Server) handleListSkillProposals(w http.ResponseWriter, r *http.Request
 			createdAt = info.ModTime().UTC().Format(time.RFC3339)
 		}
 		out = append(out, proposalView{
-			Name:        p.Name,
-			Description: p.Description,
-			Engines:     p.Engines,
-			Rationale:   p.Rationale,
-			BasedOn:     p.BasedOn,
-			Body:        p.Body,
-			FilePath:    e.Name(),
-			CreatedAt:   createdAt,
+			Name:            p.Name,
+			Description:     p.Description,
+			Engines:         p.Engines,
+			TriggerKeywords: p.TriggerKeywords,
+			Rationale:       p.Rationale,
+			BasedOn:         p.BasedOn,
+			Body:            p.Body,
+			BodyOpenRouter:  p.BodyOpenRouter,
+			TestPrompt:      p.TestPrompt,
+			FilePath:        e.Name(),
+			CreatedAt:       createdAt,
 		})
 	}
 	if out == nil {
@@ -445,6 +465,23 @@ func parseProposals(raw string) []SkillProposal {
 // formatProposalFile composes the .md file for a saved proposal. The body
 // from the LLM is already markdown; we wrap it with our own metadata at
 // the top so the UI can render rationale + based_on without re-parsing.
+//
+// File shape — keeps both engine variants in a single file:
+//
+//	---
+//	name: ...
+//	description: ...
+//	engines: [...]
+//	trigger_keywords: [...]
+//	test_prompt: ...
+//	---
+//	<!-- distiller-rationale: ... -->
+//	<!-- distiller-based-on: ... -->
+//
+//	<canonical body — used by Claude>
+//
+//	<!-- ===BODY_OPENROUTER=== -->
+//	<terse variant — used by OpenRouter when present>
 func formatProposalFile(p SkillProposal) string {
 	var b strings.Builder
 	b.WriteString("---\n")
@@ -453,6 +490,9 @@ func formatProposalFile(p SkillProposal) string {
 	fmt.Fprintf(&b, "engines: [%s]\n", strings.Join(p.Engines, ", "))
 	if len(p.TriggerKeywords) > 0 {
 		fmt.Fprintf(&b, "trigger_keywords: [%s]\n", strings.Join(p.TriggerKeywords, ", "))
+	}
+	if p.TestPrompt != "" {
+		fmt.Fprintf(&b, "test_prompt: %s\n", strings.ReplaceAll(p.TestPrompt, "\n", " "))
 	}
 	b.WriteString("---\n\n")
 	if p.Rationale != "" {
@@ -466,11 +506,17 @@ func formatProposalFile(p SkillProposal) string {
 	}
 	b.WriteString(strings.TrimSpace(p.Body))
 	b.WriteString("\n")
+	if strings.TrimSpace(p.BodyOpenRouter) != "" {
+		b.WriteString("\n<!-- ===BODY_OPENROUTER=== -->\n")
+		b.WriteString(strings.TrimSpace(p.BodyOpenRouter))
+		b.WriteString("\n")
+	}
 	return b.String()
 }
 
 // parseProposalFile re-reads a .md proposal file written by formatProposalFile.
-// Pulls the metadata out of the YAML frontmatter + comment markers.
+// Pulls the metadata out of the YAML frontmatter + comment markers, and
+// splits the body on the BODY_OPENROUTER sentinel into canonical + variant.
 func parseProposalFile(content string) SkillProposal {
 	var p SkillProposal
 	rest := content
@@ -489,6 +535,8 @@ func parseProposalFile(content string) SkillProposal {
 					p.Engines = parseListField(v)
 				} else if v, ok := strings.CutPrefix(line, "trigger_keywords:"); ok {
 					p.TriggerKeywords = parseListField(v)
+				} else if v, ok := strings.CutPrefix(line, "test_prompt:"); ok {
+					p.TestPrompt = strings.TrimSpace(v)
 				}
 			}
 		}
@@ -504,7 +552,8 @@ func parseProposalFile(content string) SkillProposal {
 			p.BasedOn = append(p.BasedOn, strings.TrimSpace(v))
 		}
 	}
-	// Body is the content after frontmatter, minus the comment lines we already extracted
+	// Body extraction. Strip distiller-comment lines, then split on the
+	// OpenRouter sentinel if present.
 	var bodyLines []string
 	for _, line := range strings.Split(rest, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "<!-- distiller-") {
@@ -512,7 +561,13 @@ func parseProposalFile(content string) SkillProposal {
 		}
 		bodyLines = append(bodyLines, line)
 	}
-	p.Body = strings.TrimSpace(strings.Join(bodyLines, "\n"))
+	bodyText := strings.Join(bodyLines, "\n")
+	if idx := strings.Index(bodyText, "<!-- ===BODY_OPENROUTER=== -->"); idx >= 0 {
+		p.Body = strings.TrimSpace(bodyText[:idx])
+		p.BodyOpenRouter = strings.TrimSpace(bodyText[idx+len("<!-- ===BODY_OPENROUTER=== -->"):])
+	} else {
+		p.Body = strings.TrimSpace(bodyText)
+	}
 	return p
 }
 
