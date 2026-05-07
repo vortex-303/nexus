@@ -324,9 +324,30 @@ var mcpTemplates = []MCPTemplate{
 	},
 }
 
+// curatedMCPTemplateNames is the small set of MCP integrations we surface
+// in the Brain Configuration → Extensions tab. The full mcpTemplates slice
+// stays intact (existing connected servers continue to work) but we only
+// offer these as new options. Power users can still attach custom MCP
+// servers via the "Advanced: Add custom MCP server" panel.
+//
+// Keeps the catalog focused on actual workspace tools the team already uses.
+// 14 redundant / niche / dev-only templates were removed from discovery.
+var curatedMCPTemplateNames = map[string]bool{
+	"GitHub":       true,
+	"Notion":       true,
+	"Slack":        true,
+	"Google Drive": true,
+}
+
 func (s *Server) handleListMCPTemplates(w http.ResponseWriter, r *http.Request) {
+	out := make([]MCPTemplate, 0, len(curatedMCPTemplateNames))
+	for _, t := range mcpTemplates {
+		if curatedMCPTemplateNames[t.Name] {
+			out = append(out, t)
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(mcpTemplates)
+	json.NewEncoder(w).Encode(out)
 }
 
 // fixupMCPCommands patches stale uvx-based MCP server commands to their npx equivalents.

@@ -6324,10 +6324,9 @@ autonomy: reactive
 					<button class="brain-nav-item" class:active={brainTab === 'definitions'} onclick={() => brainTab = 'definitions'}>Personality</button>
 					<button class="brain-nav-item" class:active={brainTab === 'memory'} onclick={() => { brainTab = 'memory'; loadMemories(); loadV3Memory(); }}>Memory</button>
 					<button class="brain-nav-item" class:active={brainTab === 'activity'} onclick={() => { brainTab = 'activity'; loadActions(); }}>Activity</button>
-					<button class="brain-nav-item" class:active={brainTab === 'skills'} onclick={() => { brainTab = 'skills'; loadSkills(); }}>Skills</button>
+					<button class="brain-nav-item" class:active={brainTab === 'extensions'} onclick={() => { brainTab = 'extensions'; loadSkills(); loadMCPServersData(); loadMCPTemplates(); }}>Extensions</button>
 					<button class="brain-nav-item" class:active={brainTab === 'knowledge'} onclick={() => { brainTab = 'knowledge'; loadKnowledge(); }}>Knowledge</button>
 					<button class="brain-nav-item" class:active={brainTab === 'integrations'} onclick={() => { brainTab = 'integrations'; loadIntegrations(); }}>Integrations</button>
-					<button class="brain-nav-item" class:active={brainTab === 'tools'} onclick={() => { brainTab = 'tools'; loadMCPServersData(); loadMCPTemplates(); }}>Tools</button>
 					<button class="brain-nav-item" class:active={brainTab === 'roles'} onclick={() => { brainTab = 'roles'; loadRoles(); }}>Roles</button>
 					<button class="brain-nav-item" class:active={brainTab === 'info'} onclick={() => { brainTab = 'info'; loadWorkspaceInfo(); }}>Info</button>
 					<button class="brain-nav-item" class:active={brainTab === 'network'} onclick={() => { brainTab = 'network'; getNetworkLog(slug, 'stats').then(s => networkStats = s); }}>Network</button>
@@ -7610,8 +7609,93 @@ autonomy: reactive
 				{/if}
 			</div>
 
+			{:else if brainTab === 'extensions'}
+			<!-- Engine matrix — read-only summary at the top. -->
+			<div class="brain-section">
+				<h3 class="brain-section-title">What this engine has</h3>
+				<p class="brain-section-desc">Brain extends product features (tasks, docs, calendar, memory, knowledge) with skills and MCP integrations. Both engines see the surface below — what differs is per-engine mechanics.</p>
+				<div class="engine-matrix">
+					<div class="engine-matrix-col" class:active-engine={brainEngine === 'claude'}>
+						<div class="engine-matrix-header">
+							<strong>Claude</strong>
+							<span class="engine-card-tag claude">Managed Agents</span>
+							{#if brainEngine === 'claude'}<span class="engine-matrix-active-pill">Active</span>{/if}
+						</div>
+						<ul class="engine-matrix-list">
+							<li>~18 built-in workspace tools</li>
+							<li>5 file ops on memory_store (read / write / edit / glob / grep)</li>
+							<li>4 Anthropic native skills: docx · xlsx · pdf · pptx</li>
+							<li>5 workspace skills: writing-plans · executing-plans · verification-before-completion · task-conventions · decision-log</li>
+							<li>2 personas: creative-director · researcher</li>
+							<li>MCP tools attached → exposed as additional functions</li>
+							<li>Sessions persist per (channel, thread); skill loader is on-demand</li>
+						</ul>
+					</div>
+					<div class="engine-matrix-col" class:active-engine={brainEngine === 'openrouter'}>
+						<div class="engine-matrix-header">
+							<strong>OpenRouter</strong>
+							<span class="engine-card-tag">Agnostic</span>
+							{#if brainEngine === 'openrouter'}<span class="engine-matrix-active-pill">Active</span>{/if}
+						</div>
+						<ul class="engine-matrix-list">
+							<li>~18 built-in workspace tools</li>
+							<li>Self-correcting tool loop (max {brainToolMaxDepth} iterations)</li>
+							<li>Workspace skills: appended to system prompt when keyword-matched</li>
+							<li>MCP tools attached → exposed as additional functions</li>
+							<li>Stateless turns; no persistent sessions or memory_store</li>
+						</ul>
+					</div>
+				</div>
+			</div>
+
+			<!-- Workspace Skills — summary + drill into legacy detail view -->
+			<div class="brain-section">
+				<h3 class="brain-section-title">Workspace Skills <span style="font-size: 0.75rem; color: var(--text-tertiary); font-weight: 400;">· {brainSkills.length} active</span></h3>
+				<p class="brain-section-desc">Behavioral playbooks Brain follows. <strong>Claude</strong> loads them on demand via the skill loader; <strong>OpenRouter</strong> appends them to the prompt when trigger keywords match.</p>
+				{#if brainSkills.length > 0}
+					<div class="extensions-summary-list">
+						{#each brainSkills.slice(0, 6) as skill}
+							<div class="extensions-summary-item">
+								<span class="extensions-summary-name">{skill.name}</span>
+								<span class="extensions-summary-meta">{skill.trigger} · {skill.enabled ? 'enabled' : 'disabled'}</span>
+							</div>
+						{/each}
+						{#if brainSkills.length > 6}
+							<div class="extensions-summary-meta" style="padding-left: 12px;">+ {brainSkills.length - 6} more</div>
+						{/if}
+					</div>
+				{:else}
+					<p class="brain-hint">No workspace skills yet.</p>
+				{/if}
+				<div style="display: flex; gap: 8px; margin-top: 12px;">
+					<button class="btn btn-primary btn-sm" onclick={() => { brainTab = 'skills'; }}>Manage Skills →</button>
+				</div>
+			</div>
+
+			<!-- MCP Integrations — summary + drill into legacy detail view -->
+			<div class="brain-section">
+				<h3 class="brain-section-title">MCP Integrations <span style="font-size: 0.75rem; color: var(--text-tertiary); font-weight: 400;">· {mcpServers.length} connected</span></h3>
+				<p class="brain-section-desc">Connect external services as additional tools Brain can call. Curated set: <strong>GitHub</strong> · <strong>Notion</strong> · <strong>Slack</strong> · <strong>Google Drive</strong>. Custom MCP servers under Advanced.</p>
+				{#if mcpServers.length > 0}
+					<div class="extensions-summary-list">
+						{#each mcpServers as srv}
+							<div class="extensions-summary-item">
+								<span class="extensions-summary-name">{srv.name}</span>
+								<span class="extensions-summary-meta">{(srv.tools || []).length} tools · {srv.transport || 'stdio'}</span>
+							</div>
+						{/each}
+					</div>
+				{:else}
+					<p class="brain-hint">No MCP integrations yet. Connect GitHub, Notion, Slack, or Google Drive for richer tool surface.</p>
+				{/if}
+				<div style="display: flex; gap: 8px; margin-top: 12px;">
+					<button class="btn btn-primary btn-sm" onclick={() => { brainTab = 'tools'; }}>Manage MCP Integrations →</button>
+				</div>
+			</div>
+
 			{:else if brainTab === 'skills'}
 			<div class="brain-section">
+				<button class="btn btn-ghost btn-sm" style="margin-bottom: 12px;" onclick={() => { brainTab = 'extensions'; }}>← Back to Extensions</button>
 				<p class="brain-hint" style="margin-bottom: 0.75rem">Skills define specialized behaviors Brain can perform.</p>
 
 				{#if isAdmin}
@@ -7909,6 +7993,7 @@ autonomy: reactive
 
 			{:else if brainTab === 'tools'}
 			<div class="brain-section">
+				<button class="btn btn-ghost btn-sm" style="margin-bottom: 12px;" onclick={() => { brainTab = 'extensions'; }}>← Back to Extensions</button>
 				<p class="brain-hint" style="margin-bottom: 1rem">Add MCP tool servers to extend Brain and Agent capabilities.</p>
 
 				{#if isAdmin && mcpTemplates.length > 0}
@@ -10385,6 +10470,78 @@ autonomy: reactive
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-md);
 		margin-top: var(--space-sm);
+	}
+	.engine-matrix {
+		display: grid;
+		grid-template-columns: repeat(2, 1fr);
+		gap: var(--space-md);
+		margin-top: var(--space-sm);
+	}
+	@media (max-width: 720px) {
+		.engine-matrix { grid-template-columns: 1fr; }
+	}
+	.engine-matrix-col {
+		padding: var(--space-md);
+		background: var(--bg-raised);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-lg);
+		opacity: 0.7;
+	}
+	.engine-matrix-col.active-engine {
+		opacity: 1;
+		border-color: var(--accent);
+		box-shadow: 0 0 0 1px var(--accent) inset;
+	}
+	.engine-matrix-header {
+		display: flex;
+		align-items: center;
+		gap: var(--space-sm);
+		flex-wrap: wrap;
+		margin-bottom: var(--space-sm);
+	}
+	.engine-matrix-header strong {
+		font-size: 1rem;
+	}
+	.engine-matrix-active-pill {
+		font-size: 0.65rem;
+		padding: 2px 8px;
+		border-radius: 10px;
+		background: rgba(34,197,94,0.15);
+		color: #4ade80;
+	}
+	.engine-matrix-list {
+		margin: 0;
+		padding-left: 1rem;
+		font-size: 0.78rem;
+		color: var(--text-secondary);
+		line-height: 1.5;
+	}
+	.engine-matrix-list li {
+		margin: 3px 0;
+	}
+	.extensions-summary-list {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		margin-top: 8px;
+	}
+	.extensions-summary-item {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		padding: 6px 12px;
+		background: var(--bg-base);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-sm);
+		font-size: 0.8rem;
+	}
+	.extensions-summary-name {
+		font-weight: 500;
+		color: var(--text-primary);
+	}
+	.extensions-summary-meta {
+		font-size: 0.7rem;
+		color: var(--text-tertiary);
 	}
 	.engine-key-row {
 		display: flex;
