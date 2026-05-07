@@ -226,7 +226,7 @@ var Tools = []ToolDef{
 		Type: "function",
 		Function: ToolFuncDef{
 			Name:        "recall_memory",
-			Description: "Search workspace memory for specific facts, decisions, or commitments. Use when you need to remember something discussed before.",
+			Description: "Search workspace memory (the team's extracted-facts index — decisions, commitments, policies, people, insights). Call this for ANY question about past context: 'what did we decide about X', 'who owns Y', 'what's our policy on Z'. Don't guess from training data. Returns top matches by relevance, with confidence scores and dates.",
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {

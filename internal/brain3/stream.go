@@ -293,12 +293,13 @@ func dispatchCustomTool(ev anthropic.BetaManagedAgentsStreamSessionEventsUnion, 
 		return "Error: tool execution is not wired in this v3 pipeline."
 	}
 
-	// Defense-in-depth: refuse v1/v2-only memory tools even if an older
-	// session's pinned agent version still has them in its catalog. The
-	// agent_toolset's `write` tool is the v3 path. Returning a redirect
-	// message gets Claude to retry with the right tool inside the same turn.
+	// Defense-in-depth: refuse v1/v2-only write tools even if an older
+	// session's pinned agent version still has them in its catalog. v3
+	// writes go to /mnt/memory via file tools. Currently just save_memory
+	// — recall_memory is now allowed (it reads brain_memories, the
+	// workspace's extracted-facts index, which v3 SHOULD be able to query).
 	if v1v2OnlyToolNames[ev.Name] {
-		return "This tool is unavailable in Brain v3. Use the `write` file tool " +
+		return "save_memory is unavailable in Brain v3. Use the `write` file tool " +
 			"to save to the workspace memory mount instead. For decisions, " +
 			"write to a path like /mnt/memory/<store-name>/decisions/" +
 			"<YYYY-MM-DD>-<slug>.md following the decision-log skill template."

@@ -873,11 +873,10 @@ func (s *Server) buildContextForMode(slug string, wdb *db.WorkspaceDB, channelID
 		systemPrompt += fmt.Sprintf("\n\n## Current Conversation\nYou are talking to: **%s**. Address them by this name.", senderName)
 		logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("mode", "thread").Int("chars", len(systemPrompt)).Msg("thread context")
 
-		// WARM: Memories (query-filtered to content)
-		memoryContext := brain.BuildMemoryContext(wdb.DB, content)
-		if memoryContext != "" {
-			systemPrompt += "\n\n---\n\n" + memoryContext
-			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(memoryContext)).Int("total", len(systemPrompt)).Msg("+memories (thread)")
+		// Memory hint (RAG) — recall_memory tool, not a content dump
+		if memHint := brain.BuildMemoryStubHint(wdb.DB); memHint != "" {
+			systemPrompt += "\n\n---\n\n" + memHint
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(memHint)).Int("total", len(systemPrompt)).Msg("+memory_hint (thread)")
 		}
 
 		// WARM: Channel summary (capped at 500 chars)
@@ -929,11 +928,10 @@ func (s *Server) buildContextForMode(slug string, wdb *db.WorkspaceDB, channelID
 		// Tell Brain who it's talking to
 		systemPrompt += fmt.Sprintf("\n\n## Current Conversation\nYou are talking to: **%s**. Address them by this name.", senderName)
 
-		// Append memories
-		memoryContext := brain.BuildMemoryContext(wdb.DB, content)
-		if memoryContext != "" {
-			systemPrompt += "\n\n---\n\n" + memoryContext
-			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(memoryContext)).Int("total", len(systemPrompt)).Msg("+memories")
+		// Memory hint (RAG) — recall_memory tool, not a content dump
+		if memHint := brain.BuildMemoryStubHint(wdb.DB); memHint != "" {
+			systemPrompt += "\n\n---\n\n" + memHint
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(memHint)).Int("total", len(systemPrompt)).Msg("+memory_hint")
 		}
 
 		// Append skills context (role-gated + enabled filter)

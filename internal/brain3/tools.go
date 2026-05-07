@@ -60,7 +60,13 @@ import (
 //        V3OperatingGuide Researcher inline section gains a 'toolkit'
 //        bullet list naming the new tools alongside web search, search_x,
 //        and the workspace internal-search tools.
-const AgentToolsetRevision = "r7"
+//   r8 — recall_memory re-enabled for v3. brain_memories (the workspace's
+//        extracted-facts index) was previously inaccessible to Claude;
+//        now v3 can RAG over it via the recall_memory tool. save_memory
+//        stays blocked — v3 writes go to memory_store via file tools.
+//        Description sharpened to nudge Claude to call this for past-
+//        context questions instead of guessing from training data.
+const AgentToolsetRevision = "r8"
 
 // FileToolNames are the agent_toolset tool names we keep enabled.
 // Everything else in the toolset is disabled by default_config.
@@ -174,18 +180,22 @@ var reservedAgentToolNames = map[string]bool{
 	"web_search": true,
 }
 
-// v1v2OnlyToolNames are Nexus tools that were designed against the v1/v2
-// brain_memories table and don't belong in the v3 catalog. v3 has its own
-// memory layer (Anthropic memory_store, mounted in the session container)
-// and exposing these tools would let Claude write to the wrong place — e.g.
-// the trace from v3's first decision-log test showed Claude picking
-// `save_memory` (v1/v2's brain_memories writer) instead of `write` (file
-// tool against memory_store) because the name better matched user intent.
+// v1v2OnlyToolNames are Nexus tools that don't belong in the v3 catalog
+// because v3 has a different write path (Anthropic memory_store, mounted
+// in the session container, written via file tools). Currently just
+// save_memory — that tool's "save to brain_memories" semantics confused
+// Claude during early v3 testing, where it picked save_memory over the
+// `write` file tool. v3 writes go to /mnt/memory exclusively.
+//
+// recall_memory was previously also blocked, but is now re-enabled. The
+// brain_memories table is the workspace's *extracted facts index* —
+// populated by the extraction pipeline from chat — and v3 should be able
+// to retrieve from it via RAG. memory_store stays the agent's curated
+// state; recall_memory taps the team's organizational knowledge.
 //
 // Filter these from the catalog at conversion time.
 var v1v2OnlyToolNames = map[string]bool{
-	"save_memory":   true,
-	"recall_memory": true,
+	"save_memory": true,
 }
 
 const anthropicReservedPrefix = "nexus_"

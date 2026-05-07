@@ -218,10 +218,12 @@ func (s *Server) handleBrainMention(slug, channelID, senderName, content string)
 		// Tell Brain who it's talking to
 		systemPrompt += fmt.Sprintf("\n\n## Current Conversation\nYou are talking to: **%s**. Address them by this name.", senderName)
 
-		// Append active memories to system prompt
-		memoryContext := brain.BuildMemoryContext(wdb.DB, content)
-		if memoryContext != "" {
-			systemPrompt += "\n\n---\n\n" + memoryContext
+		// Memory hint (RAG): name the recall_memory tool surface without
+		// dumping content. Brain queries on demand instead of seeing every
+		// memory in every turn — bounded prompt cost, scales as the
+		// workspace memory grows.
+		if memHint := brain.BuildMemoryStubHint(wdb.DB); memHint != "" {
+			systemPrompt += "\n\n---\n\n" + memHint
 		}
 
 		messages := s.getRecentMessages(wdb, channelID, 20)

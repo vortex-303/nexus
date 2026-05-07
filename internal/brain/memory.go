@@ -411,8 +411,30 @@ func SaveChannelSummary(db *sql.DB, channelID, summary, lastMessageID string, me
 	return err
 }
 
+// BuildMemoryStubHint returns a tiny system-prompt line that names the
+// memory tool surface without dumping content. Brain queries memory on
+// demand via recall_memory(query) instead of seeing every memory in
+// every turn — same RAG pattern the knowledge base already uses. Returns
+// "" when there are no memories (don't pollute the prompt for empty workspaces).
+func BuildMemoryStubHint(db *sql.DB) string {
+	var n int
+	if db.QueryRow("SELECT COUNT(*) FROM brain_memories WHERE COALESCE(superseded_by,'')='' AND COALESCE(valid_until,'')=''").Scan(&n); n == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"# Workspace Memory\n\n%d organizational memories are searchable (decisions, facts, commitments, people). "+
+			"Call `recall_memory(query)` to look up past context — don't guess from training data. "+
+			"Memories are extracted from chat by the team's reflection / extraction pipeline.",
+		n,
+	)
+}
+
 // BuildMemoryContext creates a text block of memories for inclusion in system prompt.
 // Only includes current memories (not superseded). Shows participants and dates.
+//
+// DEPRECATED in the brain pipeline path — replaced by BuildMemoryStubHint +
+// recall_memory tool (RAG pattern). Still used by the standalone prompt /
+// WebLLM-context endpoints where the client doesn't have tool calling.
 func BuildMemoryContext(db *sql.DB, query string) string {
 	var memories []Memory
 	var err error
