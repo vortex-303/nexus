@@ -4,6 +4,7 @@ package brain2
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/nexus-chat/nexus/internal/brain"
@@ -80,9 +81,15 @@ type PipelineConfig struct {
 
 // PipelineResult holds the output of a complete pipeline run.
 type PipelineResult struct {
-	Response string
-	Metrics  Metrics
+	Response  string
+	Metrics   Metrics
 	ToolsUsed []string
+	// LastError carries the underlying LLM-client error (e.g. an OpenRouter
+	// auth failure or upstream 5xx) when the pipeline produced an empty
+	// response. The server handler turns this into a chat-friendly message
+	// via FriendlyError so users see "your key isn't working" instead of a
+	// silent "I processed your request but couldn't generate a response."
+	LastError string
 }
 
 // Run executes the Brain v2 pipeline with self-correcting tool loop.
@@ -99,7 +106,7 @@ func Run(cfg PipelineConfig) PipelineResult {
 	// This is the core v2 improvement over v1's fixed 2-round loop.
 	execStart := time.Now()
 	plan := Plan{ScopedTools: nil} // no scoping — model sees all tools
-	results, toolsUsed := RunExecutor(cfg, plan)
+	results, toolsUsed, lastErr := RunExecutor(cfg, plan)
 	m.ExecLatency = time.Since(execStart)
 	m.ToolCalls = len(results)
 
@@ -128,6 +135,8 @@ func Run(cfg PipelineConfig) PipelineResult {
 		fmt.Printf("[brain2] pipeline fallback: err=%v len=%d\n", err, len(plainResp))
 		if err == nil && plainResp != "" {
 			response = plainResp
+		} else if err != nil {
+			lastErr = err.Error()
 		}
 		m.LLMCalls++
 	}
@@ -136,5 +145,35 @@ func Run(cfg PipelineConfig) PipelineResult {
 
 	m.Success = response != ""
 	m.TotalLatency = time.Since(start)
-	return PipelineResult{Response: response, Metrics: m, ToolsUsed: toolsUsed}
+	return PipelineResult{Response: response, Metrics: m, ToolsUsed: toolsUsed, LastError: lastErr}
+}
+
+// FriendlyError converts a captured LLM-client error string from a v2 turn
+// into a chat-visible message that points at the actual fix (or back at the
+// engine selector). Matches brain3.errorResponse semantics so v2 and v3 send
+// the same shape of message for the same admin-actionable failure modes.
+//
+// Returns an empty string if no friendly mapping applies — caller should
+// keep its generic fallback in that case.
+func FriendlyError(msg string) string {
+	if msg == "" {
+		return ""
+	}
+	switch {
+	case strings.Contains(msg, "User not found"),
+		strings.Contains(strings.ToLower(msg), "invalid api key"),
+		strings.Contains(msg, "401"),
+		strings.Contains(msg, "Authentication failed"):
+		return "Brain's OpenRouter API key isn't working — OpenRouter rejected the request. An admin can re-enter the key in **Settings → Brain → API Keys**, or switch the engine to Claude in **Settings → Brain → Engine**."
+	case strings.Contains(msg, "402"),
+		strings.Contains(strings.ToLower(msg), "insufficient credits"),
+		strings.Contains(strings.ToLower(msg), "credit"):
+		return "OpenRouter account is out of credits. An admin can top up at openrouter.ai/credits, or switch the engine to Claude in **Settings → Brain → Engine**."
+	case strings.Contains(msg, "429"), strings.Contains(strings.ToLower(msg), "rate limit"):
+		return "OpenRouter is rate-limiting this workspace. Try again in a minute, or switch the engine to Claude in **Settings → Brain → Engine**."
+	case strings.Contains(msg, "model_not_found"),
+		strings.Contains(strings.ToLower(msg), "no allowed providers"):
+		return "The selected OpenRouter model isn't available — pick a different one in **Settings → Brain → Models**."
+	}
+	return ""
 }

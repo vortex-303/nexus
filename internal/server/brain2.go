@@ -125,7 +125,11 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 		})
 
 		if result.Response == "" {
-			result.Response = "I processed your request but couldn't generate a response."
+			if friendly := brain2.FriendlyError(result.LastError); friendly != "" {
+				result.Response = friendly
+			} else {
+				result.Response = "I processed your request but couldn't generate a response."
+			}
 		}
 
 		// Send the response (reuses v1)

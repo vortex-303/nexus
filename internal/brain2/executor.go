@@ -11,9 +11,16 @@ import (
 
 // RunExecutor executes the planned steps with parallel execution, validation,
 // and a self-correction loop (up to MaxDepth iterations).
-func RunExecutor(cfg PipelineConfig, plan Plan) ([]StepResult, []string) {
+//
+// Returns (results, toolsUsed, lastErr) where lastErr is the underlying
+// LLM-client error string when the executor's call failed (e.g. an
+// OpenRouter auth failure). The pipeline propagates this up to PipelineResult
+// so the server handler can render a friendly message instead of an empty
+// "couldn't generate a response" bubble.
+func RunExecutor(cfg PipelineConfig, plan Plan) ([]StepResult, []string, string) {
 	if len(plan.Steps) > 0 {
-		return executePlan(cfg, plan)
+		results, used := executePlan(cfg, plan)
+		return results, used, ""
 	}
 	// No pre-planned steps — use self-correction loop with LLM tool calling
 	return executeSelfCorrectingLoop(cfg, plan)
@@ -128,7 +135,12 @@ func executeStep(cfg PipelineConfig, step Step) StepResult {
 
 // executeSelfCorrectingLoop mirrors v1's proven tool-calling pattern but adds
 // validation, timeouts, and multi-round self-correction.
-func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []string) {
+//
+// Returns (results, toolsUsed, lastErr) — lastErr captures the final
+// LLM-client error string when both the tool-call path AND the plain-text
+// fallback failed (typical: bad API key, no credits, upstream 5xx). Empty
+// when the model produced any usable output.
+func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []string, string) {
 	scopedTools := ScopeTools(cfg.AllTools, plan.ScopedTools)
 
 	var allResults []StepResult
@@ -145,8 +157,15 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []s
 			allResults = append(allResults, StepResult{
 				StepID: "fallback_0", Tool: "_response", Result: plainResp,
 			})
+			return allResults, toolsUsed, ""
 		}
-		return allResults, toolsUsed
+		// Both calls failed — surface whichever error has a message; prefer
+		// the plain-completion one because that's the most recent attempt.
+		errMsg := err.Error()
+		if plainErr != nil {
+			errMsg = plainErr.Error()
+		}
+		return allResults, toolsUsed, errMsg
 	}
 
 	// No tool calls — model answered directly (this is fine, same as v1)
@@ -156,7 +175,7 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []s
 				StepID: "direct_0", Tool: "_response", Result: responseContent,
 			})
 		}
-		return allResults, toolsUsed
+		return allResults, toolsUsed, ""
 	}
 
 	// Execute tool calls with validation and timeout
@@ -227,7 +246,7 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []s
 		}
 	}
 
-	return allResults, toolsUsed
+	return allResults, toolsUsed, ""
 }
 
 func executeWithTimeout(cfg PipelineConfig, call brain.ToolCall) string {
