@@ -150,7 +150,12 @@
 
 	// Onboarding wizard state
 	let showWizard = $state(false);
-	let wizardStep = $state<'welcome' | 'apikey' | 'done'>('welcome');
+	let wizardStep = $state<'welcome' | 'engine' | 'apikey' | 'done'>('welcome');
+	// wizardEngine is the engine the admin picked in the engine step. Drives
+	// which API key field is shown in the apikey step + which engine setting
+	// gets persisted on save. Default 'claude' since it's the recommended
+	// path (managed agents + personas + memory store).
+	let wizardEngine = $state<'claude' | 'openrouter'>('claude');
 	let wizardApiKey = $state('');
 	let wizardSaving = $state(false);
 
@@ -6186,21 +6191,75 @@ autonomy: reactive
 				</svg>
 			</div>
 			<h2 class="wizard-title">Welcome to Nexus</h2>
-			<p class="wizard-sub">Let's set up your AI assistant so you can start chatting right away.</p>
-			<button class="wizard-btn wizard-btn-primary" onclick={() => wizardStep = 'apikey'}>Get Started</button>
+			<p class="wizard-sub">Brain is your AI teammate. Let's pick the engine that powers it — you can add the other one later as a secondary.</p>
+			<button class="wizard-btn wizard-btn-primary" onclick={() => wizardStep = 'engine'}>Get Started</button>
 			<button class="wizard-btn wizard-btn-skip" onclick={() => { showWizard = false; updateBrainSettings(slug, { onboarding_complete: 'true' }); }}>Skip setup</button>
-		{:else if wizardStep === 'apikey'}
-			<h2 class="wizard-title">Connect an AI Model</h2>
-			<p class="wizard-sub">Enter your OpenRouter API key to power Brain, agents, and tools.</p>
-			<div class="wizard-field">
-				<label>OpenRouter API Key</label>
-				<input type="password" class="brain-input" placeholder="sk-or-v1-..." bind:value={wizardApiKey} />
-				<a href="https://openrouter.ai/keys" target="_blank" rel="noopener" class="wizard-link">Get a free key at openrouter.ai</a>
+		{:else if wizardStep === 'engine'}
+			<h2 class="wizard-title">Choose your engine</h2>
+			<p class="wizard-sub">Brain runs on the engine you pick. Both work for chat + tasks + research; they differ in how much infrastructure you get for the price.</p>
+			<div class="wizard-engine-grid">
+				<button type="button" class="wizard-engine-card" class:selected={wizardEngine === 'claude'} onclick={() => wizardEngine = 'claude'}>
+					<div class="wizard-engine-header">
+						<strong>Claude</strong>
+						<span class="engine-card-tag claude">Recommended</span>
+					</div>
+					<div class="wizard-engine-tagline">Managed Agents — Anthropic runs the runtime, not just the API.</div>
+					<ul class="wizard-engine-bullets">
+						<li>Persistent per-thread sessions + memory_store</li>
+						<li>Native skills (docx/pdf/xlsx/pptx) + 2 personas (Creative Director, Researcher)</li>
+						<li>Sonnet 4.6 default · Opus 4.7 for max capability</li>
+						<li>From <strong>$1/M input tokens</strong> (Sonnet)</li>
+					</ul>
+				</button>
+				<button type="button" class="wizard-engine-card" class:selected={wizardEngine === 'openrouter'} onclick={() => wizardEngine = 'openrouter'}>
+					<div class="wizard-engine-header">
+						<strong>OpenRouter</strong>
+						<span class="engine-card-tag">Agnostic</span>
+					</div>
+					<div class="wizard-engine-tagline">100+ models, latest first, lowest cost.</div>
+					<ul class="wizard-engine-bullets">
+						<li>Live model browser — DeepSeek V4, Gemma 4, Qwen3, Llama 3.3</li>
+						<li>Free-tier models for unlimited internal use</li>
+						<li>Self-correcting tool loop · per-channel model overrides</li>
+						<li>Pay-as-you-go from <strong>$0.14/M input tokens</strong></li>
+					</ul>
+				</button>
 			</div>
+			<p class="wizard-hint">You can add the other engine as a secondary anytime in Brain Settings.</p>
+			<button class="wizard-btn wizard-btn-primary" onclick={() => wizardStep = 'apikey'}>Continue with {wizardEngine === 'claude' ? 'Claude' : 'OpenRouter'} →</button>
+			<button class="wizard-btn wizard-btn-skip" onclick={() => wizardStep = 'welcome'}>← Back</button>
+		{:else if wizardStep === 'apikey'}
+			<h2 class="wizard-title">Connect {wizardEngine === 'claude' ? 'Claude' : 'OpenRouter'}</h2>
+			{#if wizardEngine === 'claude'}
+				<p class="wizard-sub">Brain will use your Anthropic API key to talk to Claude. Stored encrypted, never logged.</p>
+				<div class="wizard-field">
+					<label>Anthropic API Key</label>
+					<input type="password" class="brain-input" placeholder="sk-ant-..." bind:value={wizardApiKey} autocomplete="off" />
+					<a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener" class="wizard-link">Get a key at console.anthropic.com →</a>
+				</div>
+			{:else}
+				<p class="wizard-sub">Brain will use your OpenRouter API key. Free credits at signup; pay-as-you-go after.</p>
+				<div class="wizard-field">
+					<label>OpenRouter API Key</label>
+					<input type="password" class="brain-input" placeholder="sk-or-v1-..." bind:value={wizardApiKey} autocomplete="off" />
+					<a href="https://openrouter.ai/keys" target="_blank" rel="noopener" class="wizard-link">Get a free key at openrouter.ai →</a>
+				</div>
+			{/if}
 			<button class="wizard-btn wizard-btn-primary" disabled={wizardSaving || !wizardApiKey.trim()} onclick={async () => {
 				wizardSaving = true;
 				try {
-					await updateBrainSettings(slug, { api_key: wizardApiKey.trim(), onboarding_complete: 'true' });
+					// engine save side-effects (in handleUpdateBrainSettings) also set
+					// brain_version + ollama_enabled — single field handles routing.
+					const updates: Record<string, string> = {
+						engine: wizardEngine,
+						onboarding_complete: 'true',
+					};
+					if (wizardEngine === 'claude') {
+						updates.anthropic_api_key = wizardApiKey.trim();
+					} else {
+						updates.api_key = wizardApiKey.trim();
+					}
+					await updateBrainSettings(slug, updates);
 					await loadBrainSettings();
 					wizardStep = 'done';
 				} catch (e) {
@@ -6210,7 +6269,7 @@ autonomy: reactive
 			}}>
 				{#if wizardSaving}Saving...{:else}Save & Continue{/if}
 			</button>
-			<button class="wizard-btn wizard-btn-skip" onclick={() => { showWizard = false; updateBrainSettings(slug, { onboarding_complete: 'true' }); }}>Skip for now</button>
+			<button class="wizard-btn wizard-btn-skip" onclick={() => wizardStep = 'engine'}>← Back to engine</button>
 		{:else if wizardStep === 'done'}
 			<div class="wizard-icon">
 				<svg width="48" height="48" viewBox="0 0 48 48" fill="none">
@@ -6219,7 +6278,8 @@ autonomy: reactive
 				</svg>
 			</div>
 			<h2 class="wizard-title">You're all set!</h2>
-			<p class="wizard-sub">Brain is ready. Start a conversation to see it in action.</p>
+			<p class="wizard-sub">Brain is running on <strong>{wizardEngine === 'claude' ? 'Claude' : 'OpenRouter'}</strong>. Start a conversation to see it in action.</p>
+			<p class="wizard-hint" style="margin: 8px 0 16px;">Want to add <strong>{wizardEngine === 'claude' ? 'OpenRouter' : 'Claude'}</strong> as a secondary engine? Brain Settings → engine cards anytime.</p>
 			<button class="wizard-btn wizard-btn-primary" onclick={async () => {
 				showWizard = false;
 				try {
@@ -13383,8 +13443,8 @@ autonomy: reactive
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-lg, 12px);
 		padding: 2.5rem 2rem;
-		max-width: 420px;
-		width: 90vw;
+		max-width: 640px;
+		width: 92vw;
 		text-align: center;
 		display: flex;
 		flex-direction: column;
@@ -13447,6 +13507,59 @@ autonomy: reactive
 		font-size: 0.75rem;
 	}
 	.wizard-btn-skip:hover { color: var(--text-secondary); }
+	.wizard-engine-grid {
+		display: grid;
+		grid-template-columns: repeat(2, 1fr);
+		gap: 12px;
+		margin: 16px 0;
+	}
+	@media (max-width: 600px) {
+		.wizard-engine-grid { grid-template-columns: 1fr; }
+	}
+	.wizard-engine-card {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding: 14px;
+		background: var(--bg-raised);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		text-align: left;
+		cursor: pointer;
+		transition: border-color 120ms ease, box-shadow 120ms ease;
+		font-family: inherit;
+		color: inherit;
+	}
+	.wizard-engine-card:hover { border-color: var(--border); }
+	.wizard-engine-card.selected {
+		border-color: var(--accent);
+		box-shadow: 0 0 0 1px var(--accent) inset;
+	}
+	.wizard-engine-header {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		justify-content: space-between;
+	}
+	.wizard-engine-header strong { font-size: 0.95rem; }
+	.wizard-engine-tagline {
+		font-size: 0.78rem;
+		color: var(--text-secondary);
+	}
+	.wizard-engine-bullets {
+		margin: 4px 0 0;
+		padding-left: 16px;
+		font-size: 0.75rem;
+		color: var(--text-primary);
+		line-height: 1.45;
+	}
+	.wizard-engine-bullets li { margin: 2px 0; }
+	.wizard-hint {
+		font-size: 0.72rem;
+		color: var(--text-tertiary);
+		text-align: center;
+		margin: 4px 0 0;
+	}
 
 	/* North Star sidebar badge */
 	.north-star-badge {
