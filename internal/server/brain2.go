@@ -94,6 +94,9 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 		// in the channel because that's the only "model" reference it sees in
 		// context. Naming the model explicitly anchors it.
 		systemPrompt += fmt.Sprintf("\n\n---\n\n## Runtime\n\nYou are Brain, running on `%s` via OpenRouter for this turn. When asked which model or LLM you are, name this exactly. Do not quote earlier turns — Brain's underlying model can change between messages.\n", resolvedModel)
+		// Capabilities — engine + service + MCP awareness, code-generated
+		// per turn. Brain self-describes accurately instead of guessing.
+		systemPrompt += s.BuildCapabilitiesSection(slug, "openrouter", resolvedModel)
 
 		// Get all tools (reuses v1)
 		allTools := s.getAllTools(slug)

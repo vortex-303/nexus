@@ -232,6 +232,10 @@ func (s *Server) handleBrainMention(slug, channelID, senderName, content string)
 		// parrot earlier turns when the user has switched models. Same fix
 		// applied to v2 in brain2.go.
 		systemPrompt += fmt.Sprintf("\n\n---\n\n## Runtime\n\nYou are Brain, running on `%s` via OpenRouter for this turn. When asked which model or LLM you are, name this exactly. Do not quote earlier turns — Brain's underlying model can change between messages.\n", resolvedModel)
+		// Capabilities — engine + service + MCP awareness, code-generated
+		// from current settings. So Brain answers "what can you do here?"
+		// with truth instead of training-data guesses.
+		systemPrompt += s.BuildCapabilitiesSection(slug, "openrouter", resolvedModel)
 		response, usage, err := client.Complete(systemPrompt, messages)
 		if err != nil {
 			logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("LLM error")
@@ -1370,4 +1374,96 @@ func (s *Server) handleWebLLMContext(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"prompt": prompt})
+}
+
+// BuildCapabilitiesSection returns a markdown block describing what Brain
+// can do in this workspace right now, based on the active engine + the
+// services that are actually configured + attached MCP servers. Pure
+// code-generation; no LLM calls. Appended to the system prompt at turn
+// time so Brain answers "what can you do?" with current truth.
+//
+// activeModel is the current model string (e.g. "deepseek/deepseek-v4-flash"
+// or "claude-sonnet-4-6") — passed in to avoid the helper having to know
+// which engine resolves it.
+func (s *Server) BuildCapabilitiesSection(slug, engine, activeModel string) string {
+	var b strings.Builder
+	b.WriteString("\n\n---\n\n## What I have here (auto-generated)\n\n")
+
+	// Engine-specific intro
+	if engine == "claude" {
+		b.WriteString("Running on **Claude** via managed-agents (")
+		b.WriteString(activeModel)
+		b.WriteString("). Persistent sessions per (channel, thread); workspace memory_store mounted at /mnt/memory; on-demand skill loader.\n\n")
+	} else {
+		b.WriteString("Running on **OpenRouter** (")
+		b.WriteString(activeModel)
+		b.WriteString(") with self-correcting tool loop. Stateless turns; no persistent sessions.\n\n")
+	}
+
+	// Built-in workspace tools (always available — these are product features)
+	b.WriteString("**Workspace tools (always on):** create / list / update / delete tasks · create documents · search workspace · search knowledge base · recall workspace memory · create / list / update / delete calendar events · send email · send Telegram message.\n\n")
+
+	// Configured services (only list ones with keys present)
+	var services []string
+	if s.getGeminiAPIKey(slug) != "" {
+		services = append(services, "**Gemini** → image generation (`generate_image`)")
+	}
+	if s.getXAIKey(slug) != "" {
+		services = append(services, "**Grok** → X/Twitter search (`search_x`) + Social Pulse (`list_social_pulses`, `get_social_pulse`)")
+	}
+	if s.getBrainSetting(slug, "brave_api_key") != "" {
+		services = append(services, "**Brave** → web search (`web_search`, `fetch_url`)")
+	}
+	if s.getOpenAIKey(slug) != "" {
+		services = append(services, "**OpenAI** → memory extraction (configurable)")
+	}
+	if len(services) > 0 {
+		b.WriteString("**Services configured:**\n")
+		for _, svc := range services {
+			b.WriteString("- " + svc + "\n")
+		}
+		b.WriteString("\n")
+	} else {
+		b.WriteString("**Services:** none configured. (Add Gemini key for images, Grok for X/social, Brave for web search.)\n\n")
+	}
+
+	// MCP integrations (curated set)
+	if mgr := s.getMCPManager(slug); mgr != nil {
+		mcpTools := mgr.AllTools()
+		if len(mcpTools) > 0 {
+			servers := make(map[string]int)
+			for _, t := range mcpTools {
+				prefix := strings.SplitN(t.QualName, "__", 2)
+				if len(prefix) > 0 {
+					servers[prefix[0]]++
+				}
+			}
+			b.WriteString("**MCP integrations:** ")
+			first := true
+			for name, count := range servers {
+				if !first {
+					b.WriteString(", ")
+				}
+				first = false
+				fmt.Fprintf(&b, "%s (%d tools)", name, count)
+			}
+			b.WriteString("\n\n")
+		}
+	}
+
+	// Engine-specific extras
+	if engine == "claude" {
+		b.WriteString("**Claude-only capabilities:**\n")
+		b.WriteString("- File ops on memory_store: read · write · edit · glob · grep — for `/decisions/`, `/people/`, `/projects/`, `/feedback/`, `/self/` files\n")
+		b.WriteString("- 4 native Anthropic skills: `docx`, `xlsx`, `pdf`, `pptx`\n")
+		b.WriteString("- 5 workspace skills loaded on demand: `writing-plans`, `executing-plans`, `verification-before-completion`, `task-conventions`, `decision-log`\n")
+		b.WriteString("- 2 personas (load via `[skill:Workflow]` tag): **Creative Director** (Ad Creative, Campaign Ideation, Brand Review) · **Researcher** (Quick Research, Comparison Brief, Source-Cited Memo, Social Pulse)\n\n")
+	} else {
+		b.WriteString("**OpenRouter behavior:**\n")
+		b.WriteString("- Self-correction loop on tool failures (configurable depth)\n")
+		b.WriteString("- Workspace skills inlined in the prompt when their trigger keywords match\n")
+		b.WriteString("- No persistent agent state between turns\n\n")
+	}
+
+	return b.String()
 }

@@ -62,6 +62,13 @@ type PipelineConfig struct {
 	DB           *sql.DB            // workspace DB for brain_managed_sessions
 	ExecuteTool  func(slug, channelID, senderMemberID string, call brain.ToolCall) string
 	Trace        TraceRecorder      // optional; pipeline substitutes a noop if nil
+	// Capabilities is the markdown block describing what Brain can do in
+	// this workspace right now (engine + services + MCP). Computed by
+	// the server-side handler via Server.BuildCapabilitiesSection so this
+	// package doesn't depend on internal/server. Injected into the per-
+	// turn pre-injected context block alongside Model + Pinned + sender
+	// profile.
+	Capabilities string
 	// OnTextDelta is called for every agent.message text block as it arrives
 	// on the SSE stream. Optional — if nil, streaming is disabled and the
 	// caller gets only the final aggregated text in Result.Response.
@@ -156,6 +163,9 @@ func Run(ctx context.Context, cfg PipelineConfig) Result {
 	// when the model has changed (drift detection auto-bumps agent versions
 	// faster than the agent can notice from its own internals).
 	preload.Model = resolveModel(cfg.Settings, cfg.Slug)
+	// Capabilities — engine + service + MCP awareness, computed by the
+	// server-side handler (since this package can't depend on internal/server).
+	preload.Capabilities = cfg.Capabilities
 
 	userMessage := buildUserMessage(preload, cfg.SenderName, cfg.Content)
 

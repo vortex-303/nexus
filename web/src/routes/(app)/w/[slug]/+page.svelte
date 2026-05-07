@@ -6403,6 +6403,29 @@ autonomy: reactive
 
 			{#if brainTab === 'settings'}
 			{#if isAdmin}
+			<!-- Engine summary at the top — quick at-a-glance for what Brain has -->
+			<div class="brain-section settings-summary">
+				<div class="settings-summary-row">
+					<div class="settings-summary-engine">
+						<span class="settings-summary-label">Active engine</span>
+						<strong>{brainEngine === 'claude' ? 'Claude' : 'OpenRouter'}</strong>
+						<span class="settings-summary-model">
+							{brainEngine === 'claude'
+								? (brainAnthropicModel || 'claude-sonnet-4-6').replace('claude-', '').replace(/-/g, ' ')
+								: (brainModel === 'nexus/free-auto' ? 'Free Auto' : (brainModel || '').split('/').pop() || 'no model')}
+						</span>
+					</div>
+					<div class="settings-summary-stats">
+						{#if brainSettings.gemini_api_key_set === 'true'}<span class="summary-chip">Images</span>{/if}
+						{#if brainSettings.xai_api_key_set === 'true'}<span class="summary-chip">Grok</span>{/if}
+						{#if brainSettings.brave_api_key_set === 'true'}<span class="summary-chip">Web</span>{/if}
+						{#if brainSettings.openai_api_key_set === 'true'}<span class="summary-chip">OpenAI</span>{/if}
+						<span class="summary-chip">{brainSkills.length} skills</span>
+						<span class="summary-chip">{mcpServers.length} MCP</span>
+						<button class="btn btn-ghost btn-xs" onclick={() => { brainTab = 'extensions'; loadSkills(); loadMCPServersData(); }} style="margin-left: 8px;">View Extensions →</button>
+					</div>
+				</div>
+			</div>
 			{#if SHOW_LOCAL_AI}
 			{#if brainVersion === 'v3'}
 			<div class="brain-section">
@@ -10542,6 +10565,52 @@ autonomy: reactive
 	.extensions-summary-meta {
 		font-size: 0.7rem;
 		color: var(--text-tertiary);
+	}
+	.settings-summary {
+		background: linear-gradient(180deg, var(--bg-raised), var(--bg-base));
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-lg);
+		padding: 12px 16px;
+	}
+	.settings-summary-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 16px;
+		flex-wrap: wrap;
+	}
+	.settings-summary-engine {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+	}
+	.settings-summary-label {
+		font-size: 0.7rem;
+		color: var(--text-tertiary);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+	.settings-summary-engine strong {
+		font-size: 1rem;
+	}
+	.settings-summary-model {
+		font-size: 0.8rem;
+		color: var(--text-secondary);
+		font-family: var(--font-mono, monospace);
+	}
+	.settings-summary-stats {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		flex-wrap: wrap;
+	}
+	.summary-chip {
+		font-size: 0.7rem;
+		padding: 2px 8px;
+		border-radius: 10px;
+		background: var(--bg-base);
+		border: 1px solid var(--border-subtle);
+		color: var(--text-secondary);
 	}
 	.engine-key-row {
 		display: flex;

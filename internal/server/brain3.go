@@ -157,6 +157,12 @@ func (s *Server) handleBrainV3(slug, channelID, parentID, senderName, content st
 		// Re-enable when/if Anthropic ships token-level deltas in managed
 		// session events. The OnTextDelta callback in PipelineConfig is left
 		// in the surface for tests + future use; just unwired here.
+		// Capabilities — code-generated per turn from current engine + service
+		// + MCP state so Brain self-describes accurately. Goes into the per-
+		// turn <context> block in PreloadedContext (no drift dance needed).
+		mgaModel := s.getBrainSetting(slug, "mga_model", "claude-sonnet-4-6")
+		capabilities := s.BuildCapabilitiesSection(slug, "claude", mgaModel)
+
 		result := brain3.Run(ctx, brain3.PipelineConfig{
 			Slug:         slug,
 			ChannelID:    channelID,
@@ -170,6 +176,7 @@ func (s *Server) handleBrainV3(slug, channelID, parentID, senderName, content st
 			DB:           wdb.DB,
 			ExecuteTool:  s.executeTool,
 			Trace:        trace,
+			Capabilities: capabilities,
 			// Surface tool calls in the chat UI as Brain runs them — flips
 			// the agent-state indicator to "tool_executing" with the tool's
 			// name (e.g. "Brain is generating an image..."), then back to
