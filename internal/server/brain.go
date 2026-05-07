@@ -687,17 +687,23 @@ func (s *Server) makeBrainClient(slug, apiKey, resolvedModel string, fallbacks [
 		return brain.NewOllamaClient(ollamaURL, ollamaModel)
 	}
 
-	// If Grok engine is enabled (or key exists) with its own model, use xAI directly
-	xaiKey := s.getXAIKey(slug)
-	if xaiKey != "" {
-		enabled := s.getBrainSetting(slug, "xai_enabled")
-		if enabled == "true" || enabled == "" { // auto-enable if key exists
-			if xaiModel := s.getBrainSetting(slug, "xai_model"); xaiModel != "" {
-				return brain.NewXAIClient(xaiKey, xaiModel)
-			}
-		}
-	}
-	// Also route grok-* models selected in OpenRouter picker to xAI if key exists
+	// LEGACY behavior removed (2026-05-06): the v2 router used to override
+	// the user's model choice and silently route every call through xAI/Grok
+	// whenever an xai_api_key was present (even when xai_enabled was unset —
+	// the auto-enable branch). That made OpenRouter usage invisible: you'd
+	// pick deepseek/deepseek-v4-flash in the dropdown, the activity log
+	// would show "deepseek/deepseek-v4-flash", but the actual completion
+	// came from Grok and OpenRouter never saw the request.
+	//
+	// In the new two-engine product framing (OpenRouter / Claude), Grok is
+	// a *service* (search_x, social_pulse, Researcher persona's Social
+	// Pulse workflow) — not a brain engine. So the override is removed.
+	//
+	// One narrow xAI route is preserved: if the user explicitly picks a
+	// grok-* model in the OpenRouter dropdown (or the platform-pinned
+	// list), we route through xAI directly when their xAI key is present.
+	// That's a cost optimization for grok-* models, gated on the user's
+	// explicit model choice.
 	if brain.IsGrokModel(resolvedModel) {
 		if xaiKey := s.getXAIKey(slug); xaiKey != "" {
 			return brain.NewXAIClient(xaiKey, resolvedModel)
