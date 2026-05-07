@@ -4851,7 +4851,7 @@ autonomy: reactive
 </div>
 
 {#if showModelBrowser}
-<div class="modal-overlay" onclick={() => showModelBrowser = false}>
+<div class="modal-overlay model-browser-overlay" onclick={() => showModelBrowser = false}>
 	<div class="modal-content model-browser" onclick={(e) => e.stopPropagation()}>
 		<div class="modal-header">
 			<h3>Browse Models</h3>
@@ -4921,24 +4921,37 @@ autonomy: reactive
 							<button class="btn btn-ghost btn-xs" disabled={modelTestResults[model.id]?.running} onclick={() => runModelTest(model.id)} title="Run a quick completion test against this model">
 								{modelTestResults[model.id]?.running ? '…' : 'Test'}
 							</button>
-							{#if addedModels.some(m => m.id === model.id) || pinnedModels.some(m => m.id === model.id)}
-								<span style="font-size: 0.75rem; color: var(--text-dim);">Added</span>
+							{#if brainModel === model.id}
+								<span class="model-badge" style="background: rgba(34,197,94,0.15); color: #4ade80;">Active</span>
 							{:else}
-								<button class="btn btn-ghost btn-xs" onclick={async () => {
-									addedModels = [...addedModels, { id: model.id, display_name: model.name || model.id }];
+								<button class="btn btn-primary btn-xs" onclick={async () => {
+									// Make sure the model is in the workspace catalog.
+									if (!addedModels.some(m => m.id === model.id) && !pinnedModels.some(m => m.id === model.id)) {
+										addedModels = [...addedModels, { id: model.id, display_name: model.name || model.id }];
+										try {
+											await addWorkspaceModel(slug, {
+												id: model.id,
+												display_name: model.name || model.id,
+												provider: model.provider || '',
+												context_length: model.context_length || 0,
+												supports_tools: model.supports_tools || false,
+												pricing_prompt: model.pricing?.prompt || '0',
+												pricing_completion: model.pricing?.completion || '0',
+											});
+										} catch {}
+									}
+									// Make this the active model — drives the OpenRouter dropdown
+									// and the sidebar label (modelStatusLabel is reactive on
+									// brainModel). Persist immediately so the runtime picks it
+									// up on the next @Brain message; we send only the model
+									// field to avoid clobbering any in-flight settings edits.
+									brainModel = model.id;
 									try {
-										await addWorkspaceModel(slug, {
-											id: model.id,
-											display_name: model.name || model.id,
-											provider: model.provider || '',
-											context_length: model.context_length || 0,
-											supports_tools: model.supports_tools || false,
-											pricing_prompt: model.pricing?.prompt || '0',
-											pricing_completion: model.pricing?.completion || '0',
-										});
+										await updateBrainSettings(slug, { model: model.id });
+										await loadBrainSettings();
 									} catch {}
 								}}>
-									Add
+									Use
 								</button>
 							{/if}
 						</div>
@@ -11076,6 +11089,11 @@ autonomy: reactive
 		display: flex;
 		align-items: center;
 		justify-content: center;
+	}
+	/* Model browser is opened from inside Brain Settings (which is itself
+	   a modal at z-index 200), so the browser must sit above it. */
+	.modal-overlay.model-browser-overlay {
+		z-index: 400;
 	}
 	.modal-content {
 		background: var(--bg-surface);
