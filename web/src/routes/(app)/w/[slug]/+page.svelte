@@ -306,7 +306,7 @@
 
 	// User preferences modal
 	let showPreferences = $state(false);
-	let prefsTab = $state<'profile' | 'security' | 'appearance'>('profile');
+	let prefsTab = $state<'profile' | 'security' | 'calendar' | 'appearance'>('profile');
 	let prefsDisplayName = $state('');
 	let prefsEmail = $state('');
 	let prefsOrigEmail = $state('');
@@ -316,6 +316,84 @@
 	let prefsConfirmPw = $state('');
 	let prefsMsg = $state('');
 	let prefsLoading = $state(false);
+
+	// Personal calendar (ICS subscription, both directions)
+	let calStatus = $state<any>(null);
+	let calIcsUrl = $state('');
+	let calShareDetails = $state(false);
+	let calBusy = $state(false);
+	let calMsg = $state('');
+	let calCopied = $state(false);
+
+	async function loadPersonalCalendar() {
+		try {
+			calStatus = await (await import('$lib/api')).getPersonalCalendar(slug);
+			calIcsUrl = calStatus?.ics_url || '';
+			calShareDetails = !!calStatus?.share_details;
+		} catch (e) {
+			console.error('load personal cal', e);
+		}
+	}
+
+	async function handleSavePersonalCalendar() {
+		const url = calIcsUrl.trim();
+		if (!url) {
+			calMsg = 'Paste your calendar ICS URL first.';
+			return;
+		}
+		calBusy = true;
+		calMsg = '';
+		try {
+			const api = await import('$lib/api');
+			calStatus = await api.setPersonalCalendar(slug, url, calShareDetails);
+			calIcsUrl = calStatus.ics_url || url;
+			calMsg = calStatus.last_sync_error
+				? `Saved, but sync failed: ${calStatus.last_sync_error}`
+				: `Synced ${calStatus.event_count} event${calStatus.event_count === 1 ? '' : 's'}.`;
+		} catch (e: any) {
+			calMsg = e?.message || 'Failed to save.';
+		}
+		calBusy = false;
+	}
+
+	async function handleSyncPersonalCalendar() {
+		calBusy = true;
+		calMsg = '';
+		try {
+			const api = await import('$lib/api');
+			calStatus = await api.syncPersonalCalendar(slug);
+			calMsg = calStatus.last_sync_error
+				? `Sync failed: ${calStatus.last_sync_error}`
+				: `Synced ${calStatus.event_count} event${calStatus.event_count === 1 ? '' : 's'}.`;
+		} catch (e: any) {
+			calMsg = e?.message || 'Sync failed.';
+		}
+		calBusy = false;
+	}
+
+	async function handleDisconnectPersonalCalendar() {
+		if (!confirm('Disconnect your personal calendar? Brain will lose your busy/free signal.')) return;
+		calBusy = true;
+		try {
+			const api = await import('$lib/api');
+			await api.disconnectPersonalCalendar(slug);
+			calStatus = null;
+			calIcsUrl = '';
+			calShareDetails = false;
+			calMsg = 'Disconnected.';
+		} catch (e: any) {
+			calMsg = e?.message || 'Failed.';
+		}
+		calBusy = false;
+	}
+
+	function handleCopyCalSubscription() {
+		const u = calStatus?.subscription_url;
+		if (!u) return;
+		navigator.clipboard.writeText(u);
+		calCopied = true;
+		setTimeout(() => (calCopied = false), 1500);
+	}
 
 	// Notifications
 	let notificationCount = $state(0);
@@ -5677,6 +5755,7 @@ autonomy: reactive
 		<div class="brain-tabs" style="margin-bottom: 1rem">
 			<button class="brain-tab" class:active={prefsTab === 'profile'} onclick={() => prefsTab = 'profile'}>Profile</button>
 			<button class="brain-tab" class:active={prefsTab === 'security'} onclick={() => prefsTab = 'security'}>Security</button>
+			<button class="brain-tab" class:active={prefsTab === 'calendar'} onclick={() => { prefsTab = 'calendar'; loadPersonalCalendar(); }}>Calendar</button>
 			<button class="brain-tab" class:active={prefsTab === 'appearance'} onclick={() => prefsTab = 'appearance'}>Appearance</button>
 		</div>
 
@@ -5718,6 +5797,56 @@ autonomy: reactive
 			<button class="btn btn-primary" onclick={handleChangePassword} disabled={prefsLoading}>
 				{prefsLoading ? 'Changing...' : 'Change Password'}
 			</button>
+		{:else if prefsTab === 'calendar'}
+			<div class="brain-section">
+				<h4 style="margin-top:0">Connect your personal calendar</h4>
+				<p class="brain-hint" style="margin-bottom:1rem">
+					Paste a public ICS subscription URL from Google Calendar, iCloud, or Outlook.
+					Brain reads it to avoid scheduling conflicts. Nothing else can see it.
+				</p>
+				<div class="brain-field">
+					<label>Personal ICS URL</label>
+					<input class="brain-input" type="url" bind:value={calIcsUrl} placeholder="https://calendar.google.com/calendar/ical/.../basic.ics" autocomplete="off" />
+				</div>
+				<div class="brain-field" style="display:flex;align-items:center;gap:0.5rem">
+					<input id="cal-share" type="checkbox" bind:checked={calShareDetails} />
+					<label for="cal-share" style="margin:0">Show event titles to teammates (otherwise they only see "busy")</label>
+				</div>
+				<div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap">
+					<button class="btn btn-primary" onclick={handleSavePersonalCalendar} disabled={calBusy}>
+						{calBusy ? 'Saving…' : (calStatus?.connected ? 'Update' : 'Connect')}
+					</button>
+					{#if calStatus?.connected}
+						<button class="btn btn-ghost" onclick={handleSyncPersonalCalendar} disabled={calBusy}>
+							{calBusy ? '…' : 'Resync now'}
+						</button>
+						<button class="btn btn-ghost" onclick={handleDisconnectPersonalCalendar} disabled={calBusy}>
+							Disconnect
+						</button>
+					{/if}
+				</div>
+				{#if calMsg}<div class="brain-hint" style="margin-top:0.5rem;color:var(--accent)">{calMsg}</div>{/if}
+				{#if calStatus?.connected && calStatus?.last_synced_at}
+					<div class="brain-hint" style="margin-top:0.5rem">
+						{calStatus.event_count} event{calStatus.event_count === 1 ? '' : 's'} cached · last sync {new Date(calStatus.last_synced_at).toLocaleString()}
+					</div>
+				{/if}
+			</div>
+
+			<div class="brain-section" style="margin-top:1.5rem">
+				<h4 style="margin-top:0">Subscribe to the workspace calendar</h4>
+				<p class="brain-hint" style="margin-bottom:1rem">
+					Add this URL to Google Calendar / iCal / Outlook as a "calendar by URL" to see workspace events alongside your own.
+				</p>
+				{#if calStatus?.subscription_url}
+					<div style="display:flex;gap:0.5rem;align-items:center">
+						<input class="brain-input" type="text" value={calStatus.subscription_url} readonly onclick={(e) => (e.target as HTMLInputElement).select()} style="font-size:0.75rem" />
+						<button class="btn btn-ghost btn-sm" onclick={handleCopyCalSubscription}>{calCopied ? 'Copied!' : 'Copy'}</button>
+					</div>
+				{:else}
+					<button class="btn btn-ghost" onclick={loadPersonalCalendar}>Generate subscription URL</button>
+				{/if}
+			</div>
 		{:else if prefsTab === 'appearance'}
 			<div class="brain-section">
 				<p class="brain-hint">Theme settings coming soon.</p>

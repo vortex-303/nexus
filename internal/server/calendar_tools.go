@@ -308,6 +308,57 @@ func (s *Server) toolDeleteCalendarEvent(slug, argsJSON string) string {
 	return fmt.Sprintf("Event deleted: \"%s\"", title)
 }
 
+// toolGetMyAvailability reports the requesting user's busy windows from their
+// connected personal calendar (ICS). Returns a tight summary so Brain can
+// reason about conflicts without a wall of JSON.
+func (s *Server) toolGetMyAvailability(slug, senderMemberID, argsJSON string) string {
+	if senderMemberID == "" || senderMemberID == brain.BrainMemberID {
+		return "Availability lookup requires a sender. Brain itself doesn't have a calendar."
+	}
+	var args struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	json.Unmarshal([]byte(argsJSON), &args)
+	now := time.Now().UTC()
+	if args.From == "" {
+		args.From = now.Format(time.RFC3339)
+	}
+	if args.To == "" {
+		args.To = now.Add(7 * 24 * time.Hour).Format(time.RFC3339)
+	}
+
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return "Error opening workspace"
+	}
+
+	var icsURL string
+	wdb.DB.QueryRow("SELECT ics_url FROM personal_calendars WHERE user_id = ?", senderMemberID).Scan(&icsURL)
+	if icsURL == "" {
+		return "No personal calendar connected. Tell the user they can connect one in Settings → Personal calendar by pasting their Google/iCloud/Outlook ICS subscription URL."
+	}
+
+	blocks, err := s.GetUserAvailability(wdb, senderMemberID, args.From, args.To)
+	if err != nil {
+		return "Error reading availability: " + err.Error()
+	}
+	if len(blocks) == 0 {
+		return fmt.Sprintf("No conflicts between %s and %s — fully open.", args.From, args.To)
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d busy block(s) between %s and %s:\n", len(blocks), args.From, args.To)
+	for _, blk := range blocks {
+		title := blk.Title
+		if title == "" {
+			title = "(busy)"
+		}
+		fmt.Fprintf(&b, "- %s — %s · %s\n", blk.StartAt, blk.EndAt, title)
+	}
+	return b.String()
+}
+
 // creatorID returns the sender's member ID, falling back to Brain if empty.
 func creatorID(senderMemberID string) string {
 	if senderMemberID != "" {

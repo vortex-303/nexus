@@ -373,6 +373,20 @@ var Tools = []ToolDef{
 	{
 		Type: "function",
 		Function: ToolFuncDef{
+			Name:        "get_my_availability",
+			Description: "Read the requesting user's busy blocks (from their connected personal calendar) within a time range. Use when scheduling — to avoid proposing times when the user already has a conflict — or when the user explicitly asks 'am I free at X' / 'what does my day look like'. Returns busy windows; gaps between them are free time.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"from": {"type": "string", "description": "Range start (ISO 8601). Defaults to now."},
+					"to":   {"type": "string", "description": "Range end (ISO 8601). Defaults to 7 days from now."}
+				}
+			}`),
+		},
+	},
+	{
+		Type: "function",
+		Function: ToolFuncDef{
 			Name:           "web_search",
 			Description:    "Search the INTERNET/WEB for real-time information. Use this whenever someone asks to search the web, look something up online, find current prices, news, or any information not in the workspace. This searches the public internet, NOT workspace messages.",
 			ResultAsAnswer: true,

@@ -71,6 +71,8 @@ func (s *Server) executeToolInner(slug, channelID, senderMemberID string, call b
 		return s.toolUpdateCalendarEvent(slug, call.Function.Arguments)
 	case "delete_calendar_event":
 		return s.toolDeleteCalendarEvent(slug, call.Function.Arguments)
+	case "get_my_availability":
+		return s.toolGetMyAvailability(slug, senderMemberID, call.Function.Arguments)
 	case "send_email":
 		return s.toolSendEmail(slug, call.Function.Arguments)
 	case "send_telegram":

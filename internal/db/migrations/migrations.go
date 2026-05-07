@@ -1153,8 +1153,52 @@ var workspaceMigrations60 = migration{
 	`,
 }
 
+// Personal-calendar integration via ICS subscription.
+//   - personal_calendars: each member's pasted personal-calendar ICS URL +
+//     privacy preference (share titles vs busy/free only)
+//   - personal_busy_blocks: parsed VEVENTs cached per user, queried by Brain
+//     for availability lookups
+//   - workspace_calendar_subscriptions: per-user subscription token so we
+//     can serve the workspace's events as an outbound ICS feed at a stable
+//     signed URL (user pastes that into Google Cal / iCal / Outlook and
+//     the team calendar shows up in their personal app).
+var workspaceMigrations61 = migration{
+	version: 61,
+	name:    "personal calendar integration (ICS subscriptions)",
+	sql: `
+		CREATE TABLE IF NOT EXISTS personal_calendars (
+			user_id TEXT PRIMARY KEY,
+			ics_url TEXT NOT NULL,
+			share_details INTEGER NOT NULL DEFAULT 0,
+			last_synced_at TEXT NOT NULL DEFAULT '',
+			last_sync_error TEXT NOT NULL DEFAULT '',
+			event_count INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+		);
+		CREATE TABLE IF NOT EXISTS personal_busy_blocks (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			starts_at TEXT NOT NULL,
+			ends_at TEXT NOT NULL,
+			title TEXT NOT NULL DEFAULT '',
+			source_uid TEXT NOT NULL DEFAULT '',
+			fetched_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_busy_user_time ON personal_busy_blocks(user_id, starts_at);
+		CREATE INDEX IF NOT EXISTS idx_busy_user_uid  ON personal_busy_blocks(user_id, source_uid);
+
+		CREATE TABLE IF NOT EXISTS workspace_calendar_subscriptions (
+			user_id TEXT PRIMARY KEY,
+			token TEXT NOT NULL,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_ws_cal_sub_token ON workspace_calendar_subscriptions(token);
+	`,
+}
+
 func init() {
-	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55, workspaceMigrations58, workspaceMigrations59, workspaceMigrations60)
+	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55, workspaceMigrations58, workspaceMigrations59, workspaceMigrations60, workspaceMigrations61)
 }
 
 func RunGlobal(db *sql.DB) error {

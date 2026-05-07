@@ -878,6 +878,42 @@ export async function clearPastAgentEvents(slug: string, mode: 'past' | 'all' = 
 	return request('DELETE', `/api/workspaces/${slug}/calendar/events/clear-past-agent?mode=${mode}`);
 }
 
+// Personal calendar (ICS subscription, both directions)
+export interface PersonalCalendarStatus {
+	ics_url: string;
+	share_details: boolean;
+	last_synced_at?: string;
+	last_sync_error?: string;
+	event_count: number;
+	connected: boolean;
+	subscription_url?: string;
+}
+
+export async function getPersonalCalendar(slug: string): Promise<PersonalCalendarStatus> {
+	return request('GET', `/api/workspaces/${slug}/me/calendar`);
+}
+
+export async function setPersonalCalendar(slug: string, ics_url: string, share_details: boolean): Promise<PersonalCalendarStatus> {
+	return request('PUT', `/api/workspaces/${slug}/me/calendar`, { ics_url, share_details });
+}
+
+export async function disconnectPersonalCalendar(slug: string) {
+	return request('DELETE', `/api/workspaces/${slug}/me/calendar`);
+}
+
+export async function syncPersonalCalendar(slug: string): Promise<PersonalCalendarStatus> {
+	return request('POST', `/api/workspaces/${slug}/me/calendar/sync`, {});
+}
+
+export async function getAvailability(slug: string, member_ids: string[], from: string, to: string) {
+	const params = new URLSearchParams({ from, to, member_ids: member_ids.join(',') });
+	return request('GET', `/api/workspaces/${slug}/calendar/availability?${params}`);
+}
+
+export function eventICSDownloadURL(slug: string, eventId: string): string {
+	return `/api/workspaces/${slug}/calendar/events/${eventId}.ics`;
+}
+
 // Workspace Models
 export async function getWorkspaceModels(slug: string) {
 	return request('GET', `/api/workspaces/${slug}/models`);

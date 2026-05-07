@@ -66,7 +66,10 @@ import (
 //        stays blocked — v3 writes go to memory_store via file tools.
 //        Description sharpened to nudge Claude to call this for past-
 //        context questions instead of guessing from training data.
-const AgentToolsetRevision = "r8"
+//   r9 — get_my_availability added. Reads the requesting member's busy
+//        blocks from their connected personal calendar (ICS sync). Lets
+//        Brain avoid scheduling conflicts before proposing times.
+const AgentToolsetRevision = "r9"
 
 // FileToolNames are the agent_toolset tool names we keep enabled.
 // Everything else in the toolset is disabled by default_config.

@@ -463,6 +463,16 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/workspaces/{slug}/calendar/events/{eventID}/outcome", authed(http.HandlerFunc(s.handleEventOutcome)))
 	s.mux.Handle("DELETE /api/workspaces/{slug}/calendar/events/clear-past-agent", authed(http.HandlerFunc(s.handleClearPastAgentEvents)))
 
+	// Personal calendar (ICS subscription, both directions)
+	s.mux.Handle("GET /api/workspaces/{slug}/me/calendar", authed(http.HandlerFunc(s.handleGetPersonalCalendar)))
+	s.mux.Handle("PUT /api/workspaces/{slug}/me/calendar", authed(http.HandlerFunc(s.handlePutPersonalCalendar)))
+	s.mux.Handle("DELETE /api/workspaces/{slug}/me/calendar", authed(http.HandlerFunc(s.handleDeletePersonalCalendar)))
+	s.mux.Handle("POST /api/workspaces/{slug}/me/calendar/sync", authed(http.HandlerFunc(s.handleSyncPersonalCalendar)))
+	s.mux.Handle("GET /api/workspaces/{slug}/calendar/availability", authed(http.HandlerFunc(s.handleAvailability)))
+	s.mux.Handle("GET /api/workspaces/{slug}/calendar/events/{eventID}.ics", authed(http.HandlerFunc(s.handleEventICSDownload)))
+	// Outbound subscription feed: public, auth via per-user token query param.
+	s.mux.HandleFunc("GET /api/calendar/{slug}/{userID}.ics", s.handleCalendarSubscription)
+
 	// Activity
 	s.mux.Handle("GET /api/workspaces/{slug}/activity", authed(http.HandlerFunc(s.handleListActivity)))
 	s.mux.Handle("GET /api/workspaces/{slug}/activity/stats", authed(http.HandlerFunc(s.handleActivityStats)))
