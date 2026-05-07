@@ -1,8 +1,9 @@
 # Brain v3 — Status
 
-> **Snapshot: 2026-05-06.** Branch: `brain-v3-claude-managed-agents`.
-> Live at `nexusteams.dev` (test workspace `u0nsas` only — `brain_version='v3'`).
+> **Snapshot: 2026-05-07.** Branch: `brain-v3-claude-managed-agents`.
+> Live at `nexusteams.dev` (test workspace `u0nsas` only).
 > **Tagged `v3.0.0-beta.1`** + [PR #1](https://github.com/vortex-303/nexus/pull/1) open to `main`.
+> Brain product framing reorganized into **two engines** (OpenRouter + Claude) with a unified Settings UX.
 
 ## Headline
 
@@ -124,6 +125,49 @@ Each drift fires at most once per change; subsequent turns are no-ops. Adds ~200
 Each Nexus workspace (with v3 enabled) owns a single Anthropic Agent + Environment + memory_store, lazy-created on first use. Brain v3 is per-(channel, parent_id) sessions referencing that agent. Every turn, the v3 server handler builds the system prompt (workspace SOUL.md + INSTRUCTIONS.md + the v3 Operating Guide + a memory addendum), pre-injects pinned context + the sender's profile into the user message, opens an SSE stream, sends the user message, consumes events (`agent.message` for text → broadcast as streaming chunks; `agent.custom_tool_use` for Nexus tools → dispatch via `s.executeTool`; `agent.tool_use` for built-in file tools → counted in trace), and writes a final brain message + trace + cost record when the session goes idle. Decision-flavored writes to `/decisions/*.md` are dual-written to `brain_memories` for UI parity.
 
 ---
+
+### Phase 5 — Product framing + UX consolidation (2026-05-07)
+
+A focused day reorganizing Brain Settings around two engines instead of `v1/v2/v3` internal jargon, then unifying the surfaces so config has one source of truth per engine.
+
+**Engine restructure (2 engines now):**
+- `engine` brain_setting (`openrouter` | `claude`) — user-facing primary choice. `brain_version` + `ollama_enabled` derived as side-effects when engine is saved.
+- `resolveEngine(slug)` server helper; ws.go routing switches on engine instead of brain_version.
+- Two big engine cards at top of Settings; selected card expands inline with API key + model + advanced.
+- Local AI components hidden behind `SHOW_LOCAL_AI=false` flag (kept in code for the future Pro/enterprise tier).
+- Default for new workspaces: `openrouter`.
+
+**Live OpenRouter model browser** (`internal/server/models.go`):
+- `is_moe` detection on patterns (DeepSeek V4, Mixtral, Qwen3 a22b, DBRX, Jamba, Grok 2)
+- Cache window 1h → 5m so newly-launched models surface fast
+- `POST /api/workspaces/{slug}/models/test` — one-shot completion with latency + tokens
+- Modal filters: Free / New / MoE / Tools / Vision; per-row Test button with inline result panel
+- Curated quick-pick dropdown in OpenRouter engine card: DeepSeek V4 Pro, V4 Flash, Gemma 4, Qwen3 235B, Mixtral 8x22B, Llama 3.3
+
+**Bug fix: xAI was hijacking model choice** (huge silent bug). `makeBrainClient` had a legacy override that routed every brain call through `xai_model` whenever an xAI key was present (auto-enable branch fired even when `xai_enabled` was empty). Removed. Brain now respects the user's model selection. Grok stays a *service* (search_x, social pulse, Researcher persona's Social Pulse workflow).
+
+**Runtime ground truth in prompt** — every pipeline (v1/v2/v3) injects a "Runtime" block naming the actual model in effect for that turn, so the LLM doesn't parrot earlier turns when models switch.
+
+**Auto-CAPABILITIES section** — pure code-gen `Server.BuildCapabilitiesSection(slug, engine, model)`. Reads engine + service keys + attached MCP, returns markdown describing what Brain has *right now*. Wired into all three pipelines (system prompt for v1/v2; PreloadedContext for v3 via per-turn `<context>` block). Brain answers "what can you do here?" with current truth instead of training-data guesses.
+
+**Settings tab top summary chip row** — active engine + abbreviated model + service chips (Images / Grok / Web / OpenAI) + skills/MCP counts + "View Extensions →" button.
+
+**Tools + Skills → "Extensions" tab** — single nav item replaces the two separate tabs. Inside: engine matrix (Claude vs OpenRouter side-by-side), workspace skills summary, MCP integrations summary. Legacy Skills + Tools tabs reachable via "Manage →" buttons within Extensions.
+
+**MCP catalog curated to 4** — only GitHub, Notion, Slack, Google Drive offered as new options. 14 redundant/niche templates dropped from discovery (existing connected servers untouched).
+
+**Engine Keys section unified into engine cards** — one source of truth per engine. Free Auto router moved into OpenRouter card's Advanced disclosure; system prompt template + provisioning info + skills attached + Reset Agent moved into Claude card's Advanced disclosure. Old Engine Keys section gated behind `{#if false}`.
+
+**Manual triggers in Automations section:**
+- "Run reflection now" → POST /brain/reflect (skips automations gate)
+- "Extract memories now" → scoped to active channel
+- Both use the active model (no more silent GPT-4o-mini fallback): `memory_model` default changed from `openai/gpt-4o-mini` to empty so `memoryComplete` falls back to brain `model`
+
+**Reflection date hallucination fix** — the prompt template had a literal `{current date}` placeholder that was never substituted, so the LLM filled it with a training-cutoff guess (October 4, 2023). Now: actual date string injected, system prompt names today's date, explicit "do not invent dates from training data" instruction.
+
+**v3 .md edits propagate live** — `handleUpdateBrainDefinition` clears `mga_provisioned_tools_hash` when engine is Claude. Next turn fires drift detection → re-resolves system prompt → auto-invalidate clears in-flight session → new prompt applies. No more Reset Agent click for SOUL/INSTRUCTIONS/etc. edits.
+
+**Slash menu engine context header** — typing `/` in any channel shows the active engine + abbreviated capability summary at the top of the slash command popup.
 
 ## Test verification
 
