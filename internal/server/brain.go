@@ -1145,6 +1145,28 @@ func (s *Server) handleUpdateBrainDefinition(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// v3 propagation: v1/v2 read these files fresh on every turn, so edits
+	// are immediate. v3 (Claude Managed Agents) captures the system prompt
+	// at agent-provision time and only re-sends it on drift. Without an
+	// explicit signal, .md edits would silently stay invisible to existing
+	// Claude sessions until the user clicked "Reset Agent".
+	//
+	// Fix: clear the cached tools hash so the next turn's drift detector
+	// (applyToolsDriftIfNeeded in internal/brain3) sees a mismatch and
+	// re-sends System with the freshly-resolved prompt. Auto-invalidate
+	// (already shipped) clears the in-flight session so the new prompt
+	// applies on the same turn.
+	if s.resolveEngine(slug) == "claude" {
+		wdb, err := s.ws.Open(slug)
+		if err == nil {
+			_, _ = wdb.DB.Exec("DELETE FROM brain_settings WHERE key = 'mga_provisioned_tools_hash'")
+			logger.WithCategory(logger.CatBrain).Info().
+				Str("workspace", slug).
+				Str("file", fileName).
+				Msg("v3: cleared tools hash to force system-prompt re-resolution on next @Brain message")
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

@@ -4457,6 +4457,16 @@ autonomy: reactive
 			<!-- / slash-command popup -->
 			{#if slashActive && slashResults.length > 0}
 				<div class="mention-popup slash-popup">
+					<div class="slash-engine-header">
+						<span>Engine: <strong>{brainEngine === 'claude' ? 'Claude' : 'OpenRouter'}</strong></span>
+						<span class="slash-engine-detail">
+							{#if brainEngine === 'claude'}
+								Sessions, memory_store, native skills + personas
+							{:else}
+								{(brainModel === 'nexus/free-auto' ? 'Free Auto' : (brainModel || '').split('/').pop()) || 'no model'} · self-correcting tool loop
+							{/if}
+						</span>
+					</div>
 					{#each slashResults as cmd, i}
 						{#if i === 0 || cmd.category !== slashResults[i-1]?.category}
 							<div class="slash-category">{cmd.category}</div>
@@ -11560,6 +11570,23 @@ autonomy: reactive
 		padding: 6px 12px 2px;
 	}
 	.slash-category:first-child { padding-top: 4px; }
+	.slash-engine-header {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		padding: 8px 12px;
+		font-size: 0.72rem;
+		color: var(--text-secondary);
+		background: var(--bg-base);
+		border-bottom: 1px solid var(--border-subtle);
+	}
+	.slash-engine-header strong {
+		color: var(--text-primary);
+	}
+	.slash-engine-detail {
+		font-size: 0.68rem;
+		color: var(--text-tertiary);
+	}
 	.tools-used {
 		display: flex; align-items: flex-start; gap: 0.35rem;
 		font-size: 0.7rem; color: var(--text-tertiary); margin-top: 0.35rem;
