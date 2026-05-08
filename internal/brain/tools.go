@@ -1,6 +1,11 @@
 package brain
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+)
 
 // APIError handles both object {"message":"..."} and plain string error responses.
 type APIError struct {
@@ -34,10 +39,17 @@ type ToolDef struct {
 }
 
 type ToolFuncDef struct {
-	Name           string          `json:"name"`
-	Description    string          `json:"description"`
-	Parameters     json.RawMessage `json:"parameters"`
-	ResultAsAnswer bool            `json:"-"` // Not sent to LLM, internal only
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
+	// Strict turns on OpenAI-style strict-schema enforcement. OpenRouter
+	// forwards this to upstream providers; DeepSeek-direct (api.deepseek.com)
+	// honors it when wired through their /beta endpoint, others ignore
+	// silently. The schema must satisfy additionalProperties=false +
+	// required-includes-all-properties for strict mode to accept it —
+	// PrepareStrictTools() patches that automatically before send.
+	Strict         bool `json:"strict,omitempty"`
+	ResultAsAnswer bool `json:"-"` // Not sent to LLM, internal only
 }
 
 type ToolCall struct {
@@ -72,6 +84,123 @@ type ToolCompletionResponse struct {
 	Choices []ToolCompletionChoice `json:"choices"`
 	Usage   *CompletionUsage       `json:"usage,omitempty"`
 	Error   *APIError              `json:"error,omitempty"`
+}
+
+// BuildToolCheatsheet returns a compact, scannable summary of the tool
+// catalog for inclusion in the system prompt. Cheap MoE models grok a
+// short list of "name(args) — what it does" lines much better than a
+// dozen JSON-schema objects (which they still receive separately via
+// the standard tools field — the cheatsheet is an aid, not a replacement).
+//
+// Format mirrors a TypeScript interface block, which Codebuff found to
+// be the highest-adherence shape across DeepSeek / MiniMax / Kimi.
+//
+// Output is bounded — descriptions are cut to ~80 chars and the whole
+// block stays under ~1.5KB even for a catalog of 40+ tools.
+func BuildToolCheatsheet(tools []ToolDef) string {
+	if len(tools) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Tools available\n\n")
+	b.WriteString("Call any of these via the standard function-calling interface. ")
+	b.WriteString("Don't paraphrase parameter names. Skip a tool if your turn doesn't need one — chat replies without tool calls are fine.\n\n")
+	b.WriteString("```\n")
+	for _, t := range tools {
+		params := summarizeToolParams(t.Function.Parameters)
+		desc := t.Function.Description
+		if len(desc) > 100 {
+			desc = desc[:97] + "…"
+		}
+		fmt.Fprintf(&b, "%s(%s) — %s\n", t.Function.Name, params, desc)
+	}
+	b.WriteString("```\n")
+	return b.String()
+}
+
+// summarizeToolParams turns the Parameters JSON schema into a one-line
+// arg list like "query, limit?" — required first, optional with `?`.
+func summarizeToolParams(params json.RawMessage) string {
+	if len(params) == 0 {
+		return ""
+	}
+	var schema struct {
+		Properties map[string]any `json:"properties"`
+		Required   []string       `json:"required"`
+	}
+	if err := json.Unmarshal(params, &schema); err != nil {
+		return ""
+	}
+	if len(schema.Properties) == 0 {
+		return ""
+	}
+	required := make(map[string]bool, len(schema.Required))
+	for _, r := range schema.Required {
+		required[r] = true
+	}
+	var req, opt []string
+	for name := range schema.Properties {
+		if required[name] {
+			req = append(req, name)
+		} else {
+			opt = append(opt, name+"?")
+		}
+	}
+	// Stable order so the cheatsheet is byte-identical between turns
+	// (preserves OpenRouter prompt cache hits where applicable).
+	sort.Strings(req)
+	sort.Strings(opt)
+	return strings.Join(append(req, opt...), ", ")
+}
+
+// PrepareStrictTools returns a copy of the given tool list with strict-mode
+// flags + schema constraints applied:
+//
+//   - Function.Strict = true so OpenRouter / OpenAI / DeepSeek-direct
+//     forward the flag to the upstream
+//   - Parameters JSON has "additionalProperties": false injected (strict
+//     mode requires this — without it the upstream rejects the request)
+//   - Original tools list (the package-level `Tools`) is not mutated
+//
+// Schemas that already declare additionalProperties (true or false) are
+// left alone. Schemas without a top-level "type":"object" are passed
+// through unchanged — strict mode only governs object schemas.
+//
+// We don't enforce the "required must include every property" rule here
+// because most Nexus tools have meaningful optional fields (e.g.
+// list_calendar_events.calendar). When upstream rejects strict because
+// of that, the request falls back to the non-strict path on retry —
+// the Strict flag is best-effort, not load-bearing.
+func PrepareStrictTools(tools []ToolDef) []ToolDef {
+	out := make([]ToolDef, 0, len(tools))
+	for _, t := range tools {
+		t.Function.Strict = true
+		t.Function.Parameters = injectAdditionalPropertiesFalse(t.Function.Parameters)
+		out = append(out, t)
+	}
+	return out
+}
+
+func injectAdditionalPropertiesFalse(schema json.RawMessage) json.RawMessage {
+	if len(schema) == 0 {
+		return schema
+	}
+	var m map[string]any
+	if err := json.Unmarshal(schema, &m); err != nil {
+		return schema
+	}
+	if t, _ := m["type"].(string); t != "object" {
+		return schema
+	}
+	if _, present := m["additionalProperties"]; present {
+		return schema
+	}
+	m["additionalProperties"] = false
+	patched, err := json.Marshal(m)
+	if err != nil {
+		return schema
+	}
+	return patched
 }
 
 // Available tools for the Brain.

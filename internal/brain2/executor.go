@@ -204,6 +204,32 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []s
 		})
 	}
 
+	// Loop-detection sliding window. DeepSeek V3/V4's #1 failure mode is
+	// over-retry on tool errors — upstream evals show 7-8 rounds where
+	// Qwen finishes in 2. Hash (tool_name, args) for every tool the model
+	// decides to call and break out early if the same signature appears
+	// twice within the last loopWindow attempts. Seeded from round 1 so
+	// round-1 → round-2 repeats are caught immediately.
+	const loopWindow = 4
+	recentSigs := make([]string, 0, 8)
+	seenRecently := func(sig string) bool {
+		for _, s := range recentSigs {
+			if s == sig {
+				return true
+			}
+		}
+		return false
+	}
+	rememberSig := func(sig string) {
+		recentSigs = append(recentSigs, sig)
+		if len(recentSigs) > loopWindow {
+			recentSigs = recentSigs[len(recentSigs)-loopWindow:]
+		}
+	}
+	for _, c := range toolCalls {
+		rememberSig(c.Function.Name + "::" + c.Function.Arguments)
+	}
+
 	// Round 2+: self-correction loop (v2 improvement over v1's fixed 2 rounds)
 	for depth := 1; depth < cfg.MaxDepth; depth++ {
 		// Compress old tool results to save context (keep last 6 full)
@@ -222,6 +248,26 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []s
 			}
 			break
 		}
+		// Detect call-loop BEFORE executing — if the model wants to repeat
+		// a call we already ran in the last loopWindow attempts, force-close
+		// the turn instead of running it again.
+		looped := false
+		for _, call := range roundCalls {
+			sig := call.Function.Name + "::" + call.Function.Arguments
+			if seenRecently(sig) {
+				looped = true
+				break
+			}
+		}
+		if looped {
+			fmt.Printf("[brain2] loop-detection: model is repeating a tool call within %d-call window; force-closing depth=%d\n", loopWindow, depth)
+			allResults = append(allResults, StepResult{
+				StepID: fmt.Sprintf("loop_break_%d", depth),
+				Tool:   "_response",
+				Result: "I tried that approach a couple of times without progress. Could you give me more detail on what you'd like me to do, or try rephrasing?",
+			})
+			break
+		}
 		// More tool calls — execute them
 		followUp = append(followUp, brain.Message{Role: "assistant", Content: roundResp, ToolCalls: roundCalls})
 		for _, call := range roundCalls {
@@ -236,6 +282,7 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []s
 			allResults = append(allResults, StepResult{
 				StepID: call.ID, Tool: call.Function.Name, Result: result,
 			})
+			rememberSig(call.Function.Name + "::" + call.Function.Arguments)
 
 			// Inject budget pressure warning if running low
 			budgetWarning := InjectBudgetWarning(depth, cfg.MaxDepth)

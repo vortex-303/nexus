@@ -229,8 +229,24 @@ type CompletionRequest struct {
 	Stream      bool      `json:"stream"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
 	Temperature float64   `json:"temperature,omitempty"`
-	Tools       []ToolDef `json:"tools,omitempty"`
-	Modalities  []string  `json:"modalities,omitempty"`
+	// TopP is the nucleus-sampling parameter. We let it stay zero (omitted)
+	// for most models so the upstream default applies, but DeepSeek's docs
+	// recommend temperature=1.0, top_p=1.0 for V3+ and especially for
+	// agentic tool-calling — counter-intuitive but documented. Set per
+	// request via samplingForModel().
+	TopP       float64   `json:"top_p,omitempty"`
+	Tools      []ToolDef `json:"tools,omitempty"`
+	Modalities []string  `json:"modalities,omitempty"`
+}
+
+// samplingForModel returns the (temperature, top_p) the request should
+// carry for a given model. DeepSeek's published recommendation is 1.0/1.0;
+// the rest of the catalog keeps Nexus's historical 0.7 / unset.
+func samplingForModel(model string) (temperature, topP float64) {
+	if strings.Contains(model, "deepseek") {
+		return 1.0, 1.0
+	}
+	return 0.7, 0
 }
 
 // CompletionChoice is a single choice in the response.
@@ -375,12 +391,14 @@ func (c *Client) Complete(systemPrompt string, messages []Message) (string, *Com
 	var lastErr error
 	for i := 0; i < maxAttempts; i++ {
 		model := models[i]
+		temp, topP := samplingForModel(model)
 		req := CompletionRequest{
 			Model:       model,
 			Messages:    msgs,
 			Stream:      false,
 			MaxTokens:   2048,
-			Temperature: 0.7,
+			Temperature: temp,
+			TopP:        topP,
 		}
 
 		body, err := json.Marshal(req)
@@ -453,12 +471,14 @@ func (c *Client) CompleteMultimodal(systemPrompt string, messages []Message) (st
 	var lastErr error
 	for i := 0; i < maxAttempts; i++ {
 		model := models[i]
+		temp, topP := samplingForModel(model)
 		req := CompletionRequest{
 			Model:       model,
 			Messages:    msgs,
 			Stream:      false,
 			MaxTokens:   4096,
-			Temperature: 0.7,
+			Temperature: temp,
+			TopP:        topP,
 			Modalities:  []string{"text", "image"},
 		}
 
@@ -532,16 +552,25 @@ func (c *Client) CompleteWithTools(systemPrompt string, messages []Message, tool
 		maxAttempts = len(models)
 	}
 
+	// PrepareStrictTools patches each tool's parameters so the schema is
+	// strict-mode compatible (additionalProperties: false, required-list
+	// covers every defined property), then sets Strict=true on the
+	// function. OpenRouter forwards strict to the upstream — DeepSeek
+	// honors it, others ignore.
+	strictTools := PrepareStrictTools(tools)
+
 	var lastErr error
 	for i := 0; i < maxAttempts; i++ {
 		model := models[i]
+		temp, topP := samplingForModel(model)
 		req := CompletionRequest{
 			Model:       model,
 			Messages:    msgs,
 			Stream:      false,
 			MaxTokens:   2048,
-			Temperature: 0.7,
-			Tools:       tools,
+			Temperature: temp,
+			TopP:        topP,
+			Tools:       strictTools,
 		}
 
 		body, err := json.Marshal(req)
@@ -612,12 +641,14 @@ func (c *Client) CompleteStream(systemPrompt string, messages []Message, cb Stre
 	msgs = append(msgs, Message{Role: "system", Content: systemPrompt})
 	msgs = append(msgs, messages...)
 
+	temp, topP := samplingForModel(c.Model)
 	req := CompletionRequest{
 		Model:       c.Model,
 		Messages:    msgs,
 		Stream:      true,
 		MaxTokens:   2048,
-		Temperature: 0.7,
+		Temperature: temp,
+		TopP:        topP,
 	}
 
 	body, err := json.Marshal(req)

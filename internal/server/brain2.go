@@ -101,6 +101,17 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 		// Get all tools (reuses v1)
 		allTools := s.getAllTools(slug)
 
+		// Tool cheatsheet — Codebuff-style compact name(args) — desc list of
+		// the available tools, in addition to the structured schemas the
+		// model already sees via the OpenAI tools field. Cheap MoE models
+		// (DeepSeek V4 Flash, Qwen, Gemma) follow a readable cheatsheet
+		// noticeably better than parsing 18+ JSON-schema objects in
+		// isolation. The OpenAI tools field stays the formal contract;
+		// this is just the menu.
+		if cheatsheet := brain.BuildToolCheatsheet(allTools); cheatsheet != "" {
+			systemPrompt += "\n\n---\n\n" + cheatsheet
+		}
+
 		// Read max depth setting
 		maxDepth := 5
 		if v := s.getBrainSetting(slug, "tool_max_depth"); v != "" {
