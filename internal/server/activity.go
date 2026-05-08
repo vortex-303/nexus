@@ -8,6 +8,31 @@ import (
 	"github.com/nexus-chat/nexus/internal/auth"
 )
 
+// narrativeActivityTypes is the allowlist of pulse_types surfaced to all
+// workspace members in the sidebar Activity feed. The goal is "what
+// happened in the workspace this week" — so we exclude per-message
+// chatter (`message.sent`, `agent.responded`) and admin-internal events.
+//
+// Admins can override by passing ?audience=admin to see the firehose
+// (used by Brain Settings → Console → Diagnostics).
+var narrativeActivityTypes = map[string]bool{
+	"task.created":          true,
+	"task.updated":          true,
+	"task.completed":        true,
+	"event.created":         true,
+	"event.updated":         true,
+	"document.created":      true,
+	"document.updated":      true,
+	"file.uploaded":         true,
+	"channel.created":       true,
+	"integration.received":  true,
+	"integration.connected": true,
+	"member.joined":         true,
+	"member.left":           true,
+	"role.changed":          true,
+	"decision.captured":     true,
+}
+
 func (s *Server) handleListActivity(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	claims := auth.GetClaims(r)
@@ -29,12 +54,24 @@ func (s *Server) handleListActivity(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Resolve audience scope. ?audience=admin gates on real admin role —
+	// silently downgrades non-admins to the user feed to avoid leaking
+	// raw chatter to invited members.
+	audience := r.URL.Query().Get("audience")
+	if audience == "admin" && claims.Role != "admin" {
+		audience = "user"
+	}
+
 	query := `SELECT id, pulse_type, actor_id, actor_name, channel_id, entity_id, summary, detail, source, created_at
 		FROM activity_stream`
 	var conditions []string
 	var args []any
 
-	if typeFilter := r.URL.Query().Get("type"); typeFilter != "" {
+	// Narrative allowlist for the default user-facing feed. Admin audience
+	// bypasses this — they get every pulse. Explicit ?type=… still wins
+	// over the default allowlist so callers can target a single feed.
+	typeFilter := r.URL.Query().Get("type")
+	if typeFilter != "" {
 		if strings.HasSuffix(typeFilter, ".*") {
 			prefix := strings.TrimSuffix(typeFilter, "*")
 			conditions = append(conditions, "pulse_type LIKE ?")
@@ -43,6 +80,13 @@ func (s *Server) handleListActivity(w http.ResponseWriter, r *http.Request) {
 			conditions = append(conditions, "pulse_type = ?")
 			args = append(args, typeFilter)
 		}
+	} else if audience != "admin" {
+		allowed := make([]string, 0, len(narrativeActivityTypes))
+		for t := range narrativeActivityTypes {
+			allowed = append(allowed, "?")
+			args = append(args, t)
+		}
+		conditions = append(conditions, "pulse_type IN ("+strings.Join(allowed, ",")+")")
 	}
 
 	if before := r.URL.Query().Get("before"); before != "" {

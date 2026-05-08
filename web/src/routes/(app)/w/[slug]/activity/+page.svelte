@@ -14,16 +14,33 @@
 	let activeFilter = $state('all');
 	let unsubWS: (() => void) | null = null;
 
+	// Sidebar Activity is the team-timeline view (everyone sees) — narrative
+	// events only. Per-message chatter and agent replies are filtered server
+	// side via the audience=user default, and the matching filter pills are
+	// removed here so the feed never feels broken/empty.
 	const FILTERS = [
 		{ key: 'all', label: 'All' },
-		{ key: 'message', label: 'Messages' },
 		{ key: 'task', label: 'Tasks' },
 		{ key: 'document', label: 'Docs' },
 		{ key: 'file', label: 'Files' },
 		{ key: 'event', label: 'Events' },
-		{ key: 'agent', label: 'Agents' },
 		{ key: 'integration', label: 'Integrations' },
 	];
+
+	// Mirrors internal/server/activity.go:narrativeActivityTypes. Live pulses
+	// arriving over the websocket bypass the server's audience filter (the
+	// hub broadcasts every pulse), so we re-apply the allowlist here so
+	// `message.sent` etc. don't sneak into the timeline live.
+	const NARRATIVE_TYPES = new Set([
+		'task.created', 'task.updated', 'task.completed',
+		'event.created', 'event.updated',
+		'document.created', 'document.updated',
+		'file.uploaded',
+		'channel.created',
+		'integration.received', 'integration.connected',
+		'member.joined', 'member.left', 'role.changed',
+		'decision.captured',
+	]);
 
 	const ICONS: Record<string, string> = {
 		'message.sent': '\u{1F4AC}',
@@ -176,6 +193,8 @@
 		connect();
 		unsubWS = onMessage((type: string, payload: any) => {
 			if (type === 'activity.new') {
+				// Drop chatter the server-side default would have filtered.
+				if (!NARRATIVE_TYPES.has(payload.pulse_type)) return;
 				// Check if it matches current filter
 				if (activeFilter === 'all' || payload.pulse_type.startsWith(activeFilter + '.')) {
 					// Check if this is an update to an existing batched entry

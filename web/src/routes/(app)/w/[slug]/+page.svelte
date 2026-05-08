@@ -4306,13 +4306,6 @@ autonomy: reactive
 							</svg>
 							Brain Settings
 						</button>
-						<button class="user-menu-item" onclick={() => { showSystemLogs = true; fetchLogs(); showUserMenu = false; }}>
-							<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-								<rect x="2" y="2" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
-								<path d="M4.5 5h5M4.5 7h3.5M4.5 9h4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-							</svg>
-							System Logs
-						</button>
 					{/if}
 					<div class="user-menu-divider"></div>
 					<button class="user-menu-item user-menu-danger" onclick={() => { handleLeave(); showUserMenu = false; }}>
@@ -6643,7 +6636,7 @@ autonomy: reactive
 					<button class="brain-nav-item" class:active={brainTab === 'north_star'} onclick={() => brainTab = 'north_star'}>North Star</button>
 					<button class="brain-nav-item" class:active={brainTab === 'definitions'} onclick={() => brainTab = 'definitions'}>Personality</button>
 					<button class="brain-nav-item" class:active={brainTab === 'memory'} onclick={() => { brainTab = 'memory'; loadMemories(); loadV3Memory(); }}>Memory</button>
-					<button class="brain-nav-item" class:active={brainTab === 'activity'} onclick={() => { brainTab = 'activity'; loadActions(); }}>Activity</button>
+					<button class="brain-nav-item" class:active={brainTab === 'activity'} onclick={() => { brainTab = 'activity'; loadActions(); }}>Console</button>
 					<button class="brain-nav-item" class:active={brainTab === 'extensions'} onclick={() => { brainTab = 'extensions'; loadSkills(); loadMCPServersData(); loadMCPTemplates(); loadSkillProposals(); }}>Extensions</button>
 					<button class="brain-nav-item" class:active={brainTab === 'knowledge'} onclick={() => { brainTab = 'knowledge'; loadKnowledge(); }}>Knowledge</button>
 					<button class="brain-nav-item" class:active={brainTab === 'integrations'} onclick={() => { brainTab = 'integrations'; loadIntegrations(); }}>Integrations</button>
@@ -8030,14 +8023,25 @@ autonomy: reactive
 			</div>
 
 			{:else if brainTab === 'activity'}
+			{@const consoleNoise = new Set(['mention', 'heartbeat', 'extraction'])}
+			{@const consoleChanges = brainActions.filter((a: any) => !consoleNoise.has(a.action_type))}
 			<div class="brain-section">
-				<p class="brain-hint" style="margin-bottom: 0.75rem">{brainActionsTotal} total actions logged</p>
+				<h3 class="brain-section-title">Diagnostics</h3>
+				<p class="brain-section-desc">Raw server logs — request traces, MCP server output, error categories. Admin-only. Helpful for debugging integration failures.</p>
+				<button type="button" class="btn btn-secondary btn-sm" onclick={() => { showSystemLogs = true; fetchLogs(); }}>
+					Open system logs
+				</button>
+			</div>
 
-				{#if brainActions.length === 0}
-					<p class="brain-hint">No activity yet. Brain logs actions when responding to mentions.</p>
+			<div class="brain-section" style="margin-top: 1.25rem">
+				<h3 class="brain-section-title">Recent changes</h3>
+				<p class="brain-section-desc">Configuration changes, agent provisioning events, skill distillation runs. Per-message Brain replies live in the chat — they're not surfaced here. Retention: 60 days.</p>
+
+				{#if consoleChanges.length === 0}
+					<p class="brain-hint">Nothing notable yet. Settings changes, agent updates, and skill events show up here.</p>
 				{:else}
 					<div class="action-list">
-						{#each brainActions as action}
+						{#each consoleChanges as action}
 							<div class="action-item">
 								<div class="action-header">
 									<span class="action-type-badge" data-type={action.action_type}>{action.action_type}</span>

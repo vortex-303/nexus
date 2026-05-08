@@ -123,6 +123,7 @@ func Run(cfg *config.Config) error {
 	s.scheduleHeartbeats()
 	s.scheduleReflections()
 	s.scheduleCalendarReminders()
+	s.scheduleRetention()
 	s.cron.Start()
 	go s.startSMTPServer()
 
