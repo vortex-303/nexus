@@ -7357,25 +7357,17 @@ autonomy: reactive
 					</div>
 				{/if}
 			</div>
-			{:else}
-			<div class="brain-section">
-				<h3 class="brain-section-title">Engine</h3>
-				<div class="engine-status">
-					Workspace engine: <strong>{engineMode === 'cloud' ? 'OpenRouter' : engineMode === 'grok' ? 'Grok / xAI' : engineMode === 'ollama' ? 'Ollama' : engineMode === 'local' ? 'Local LLM' : 'Standard Chat'}</strong>
-				</div>
-				{#if typeof navigator !== 'undefined' && (navigator as any).gpu}
-					<label class="brain-toggle-row" style="margin-top: 8px;">
-						<input type="checkbox" checked={userWebLLMEnabled} onchange={(e: Event) => {
-							userWebLLMEnabled = (e.target as HTMLInputElement).checked;
-							try { localStorage.setItem('nexus_user_webllm_' + slug, String(userWebLLMEnabled)); } catch {}
-						}} />
-						<div>
-							<strong>Use Local Model</strong>
-							<span class="brain-hint" style="display: block; margin-top: 2px;">Run AI in your browser instead of using the workspace engine</span>
-						</div>
-					</label>
-				{/if}
-			</div>
+			{:else if false}
+			<!-- The {:else}-branch that used to live here ("Engine / Workspace
+			     engine: X / Use Local Model toggle") attached to the surrounding
+			     {#if brainTab === 'engines'} after the engines/services/general
+			     split, so the fallback fired on every non-engines tab. Gated
+			     to {:else if false} on 2026-05-08 — the engine summary chip
+			     at the top of Brain Settings covers the read-only view, and
+			     admins do engine config via the cards above. Keeping the
+			     {:else if}/{/if} structure intact is the safest way to
+			     preserve the rest of the conditional balance. -->
+			<div class="brain-section" hidden></div>
 			{/if}
 
 			{#if isAdmin && SHOW_LOCAL_AI}
@@ -8065,31 +8057,10 @@ autonomy: reactive
 
 			{/if}
 
-			<div class="brain-section">
-				<h3 class="brain-section-title">Usage</h3>
-				<p class="brain-hint">Mention <strong>@Brain</strong> in any channel to get a response. Brain can create tasks, search messages, and write documents. It reads the last 20 messages plus stored memories for context.</p>
-			</div>
-
-			{#if isAdmin}
-			<div class="brain-section">
-				<h3 class="brain-section-title">Built-in Agents</h3>
-				<p class="brain-hint" style="margin-bottom: 0.75rem">Toggle built-in agents on or off. Brain is always active.</p>
-				{#each agentsList.filter((a: any) => a.is_system && a.id !== 'brain') as agent}
-					<label class="brain-toggle-row">
-						<input type="checkbox" checked={agent.is_active}
-							onchange={(e) => {
-								const enabled = (e.target as HTMLInputElement).checked;
-								updateBrainSettings(slug, { [`builtin_agent_${agent.id}_enabled`]: enabled ? 'true' : 'false' })
-									.then(() => loadAgents())
-									.catch(() => {});
-							}}
-						/>
-						<span>{agent.avatar} {agent.name}</span>
-						<span class="brain-hint" style="margin-left: auto; font-size: 0.75rem">{agent.role}</span>
-					</label>
-				{/each}
-			</div>
-			{/if}
+			<!-- Usage explainer + Built-in Agents toggle removed 2026-05-08:
+			     Welcome v2 already covers @Brain usage; built-in agents
+			     (Caly, Creative Director) are absorbed by the persona skills
+			     and hidden by shouldHideLegacyAgents. The toggle was cruft. -->
 
 			<!-- General-tab Save: writes only the keys this tab owns (memory + automations + reflection + tool depth + cost cap). Engine + service keys saved on their own tabs. -->
 			<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveGeneralSettings} disabled={brainSaving}>
