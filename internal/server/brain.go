@@ -1068,7 +1068,7 @@ func (s *Server) handleUpdateBrainSettings(w http.ResponseWriter, r *http.Reques
 		"standard_chat_enabled": true, "llm_enabled": true,
 		"webllm_enabled": true, "webllm_model": true, "webllm_system_prompt": true,
 		"ollama_enabled": true, "ollama_model": true, "ollama_url": true,
-		"brain_version": true, "tool_max_depth": true, "automations_enabled": true,
+		"brain_version": true, "tool_max_depth": true, "tool_max_cost_usd": true, "automations_enabled": true,
 		// engine is the user-facing pipeline selector: openrouter | claude | local.
 		// Derived from brain_version + ollama_enabled when unset; persisted directly
 		// when the user picks an engine card in Brain Settings.

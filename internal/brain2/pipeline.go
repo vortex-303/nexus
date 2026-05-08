@@ -76,7 +76,13 @@ type PipelineConfig struct {
 	Client        LLMClient // main model (synthesizer)
 	PlannerClient LLMClient // fast model (planner) — nil means use Client
 	MaxDepth      int       // max tool-calling iterations (default 5)
-	ExecuteTool   ToolExecutor
+	// MaxCostUSD aborts the tool loop once cumulative LLM spend on this
+	// turn (sum of every CompleteWithTools / Complete usage.cost) crosses
+	// this threshold. Zero (the default) disables the cap. Inspired by the
+	// OpenRouter Agent SDK's `maxCost` stop condition — vendor-neutral
+	// because we read .cost off the standard CompletionUsage already.
+	MaxCostUSD  float64
+	ExecuteTool ToolExecutor
 }
 
 // PipelineResult holds the output of a complete pipeline run.
@@ -90,6 +96,16 @@ type PipelineResult struct {
 	// via FriendlyError so users see "your key isn't working" instead of a
 	// silent "I processed your request but couldn't generate a response."
 	LastError string
+	// CostUSD is the cumulative LLM spend across every round of this turn,
+	// including completions, follow-up rounds, and the synthesizer. Used
+	// by the MaxCostUSD stop condition and surfaced to the observatory.
+	CostUSD float64
+	// Items is the typed-event stream for this turn — a sequence of
+	// {text, reasoning, tool_call, tool_result} entries the UI can render
+	// distinctly (collapsible reasoning blocks, tool-call chips, etc).
+	// Same shape works for both engines (v3's `thinking` blocks map to
+	// `reasoning` cleanly). Populated even without active streaming.
+	Items []brain.StreamItem
 }
 
 // Run executes the Brain v2 pipeline with self-correcting tool loop.
@@ -106,35 +122,48 @@ func Run(cfg PipelineConfig) PipelineResult {
 	// This is the core v2 improvement over v1's fixed 2-round loop.
 	execStart := time.Now()
 	plan := Plan{ScopedTools: nil} // no scoping — model sees all tools
-	results, toolsUsed, lastErr := RunExecutor(cfg, plan)
+	exec := RunExecutor(cfg, plan)
 	m.ExecLatency = time.Since(execStart)
-	m.ToolCalls = len(results)
+	m.ToolCalls = len(exec.Results)
+	costUSD := exec.CostUSD
+	items := exec.Items
 
 	// Extract response
 	var response string
 	synthStart := time.Now()
 
 	// Check if executor produced a direct text response (no tools called)
-	for _, r := range results {
+	for _, r := range exec.Results {
 		if r.Tool == "_response" && r.Result != "" {
 			response = r.Result
 			break
 		}
 	}
 
-	// If tools were called, synthesize a final response from the results
-	if response == "" && len(toolsUsed) > 0 {
-		response = RunSynthesizer(cfg, plan, results)
+	// If tools were called, synthesize a final response from the results.
+	// Skip when the cost cap broke us out — the budget-break message in
+	// exec.Results is already the right reply, no point burning more spend.
+	if response == "" && len(exec.ToolsUsed) > 0 && !exec.BudgetExceeded {
+		response = RunSynthesizer(cfg, plan, exec.Results)
 		m.LLMCalls++
+		if response != "" {
+			items = append(items, brain.StreamItem{Kind: brain.ItemKindText, Text: response})
+		}
 	}
+
+	lastErr := exec.LastErr
 
 	// Last resort: if still empty, do a plain completion
 	if response == "" {
 		fmt.Printf("[brain2] pipeline: no response from executor, trying plain Complete\n")
-		plainResp, _, err := cfg.Client.Complete(cfg.SystemPrompt, cfg.Messages)
+		plainResp, plainUsage, err := cfg.Client.Complete(cfg.SystemPrompt, cfg.Messages)
+		if plainUsage != nil {
+			costUSD += plainUsage.Cost
+		}
 		fmt.Printf("[brain2] pipeline fallback: err=%v len=%d\n", err, len(plainResp))
 		if err == nil && plainResp != "" {
 			response = plainResp
+			items = append(items, brain.StreamItem{Kind: brain.ItemKindText, Text: plainResp})
 		} else if err != nil {
 			lastErr = err.Error()
 		}
@@ -145,7 +174,14 @@ func Run(cfg PipelineConfig) PipelineResult {
 
 	m.Success = response != ""
 	m.TotalLatency = time.Since(start)
-	return PipelineResult{Response: response, Metrics: m, ToolsUsed: toolsUsed, LastError: lastErr}
+	return PipelineResult{
+		Response:  response,
+		Metrics:   m,
+		ToolsUsed: exec.ToolsUsed,
+		LastError: lastErr,
+		CostUSD:   costUSD,
+		Items:     items,
+	}
 }
 
 // FriendlyError converts a captured LLM-client error string from a v2 turn

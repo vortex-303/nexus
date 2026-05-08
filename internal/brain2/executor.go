@@ -9,18 +9,25 @@ import (
 	"github.com/nexus-chat/nexus/internal/brain"
 )
 
+// ExecutorOutput is the rich return shape from RunExecutor /
+// executeSelfCorrectingLoop. The pipeline used to extract these from a
+// 3-tuple but added fields (CostUSD, Items, BudgetExceeded) made that
+// awkward; this struct keeps the surface tidy.
+type ExecutorOutput struct {
+	Results         []StepResult
+	ToolsUsed       []string
+	LastErr         string
+	CostUSD         float64
+	Items           []brain.StreamItem
+	BudgetExceeded  bool // true if MaxCostUSD aborted the loop early
+}
+
 // RunExecutor executes the planned steps with parallel execution, validation,
 // and a self-correction loop (up to MaxDepth iterations).
-//
-// Returns (results, toolsUsed, lastErr) where lastErr is the underlying
-// LLM-client error string when the executor's call failed (e.g. an
-// OpenRouter auth failure). The pipeline propagates this up to PipelineResult
-// so the server handler can render a friendly message instead of an empty
-// "couldn't generate a response" bubble.
-func RunExecutor(cfg PipelineConfig, plan Plan) ([]StepResult, []string, string) {
+func RunExecutor(cfg PipelineConfig, plan Plan) ExecutorOutput {
 	if len(plan.Steps) > 0 {
 		results, used := executePlan(cfg, plan)
-		return results, used, ""
+		return ExecutorOutput{Results: results, ToolsUsed: used}
 	}
 	// No pre-planned steps — use self-correction loop with LLM tool calling
 	return executeSelfCorrectingLoop(cfg, plan)
@@ -134,30 +141,40 @@ func executeStep(cfg PipelineConfig, step Step) StepResult {
 }
 
 // executeSelfCorrectingLoop mirrors v1's proven tool-calling pattern but adds
-// validation, timeouts, and multi-round self-correction.
+// validation, timeouts, multi-round self-correction, loop-detection, and a
+// cumulative-cost stop condition driven by cfg.MaxCostUSD.
 //
-// Returns (results, toolsUsed, lastErr) — lastErr captures the final
-// LLM-client error string when both the tool-call path AND the plain-text
-// fallback failed (typical: bad API key, no credits, upstream 5xx). Empty
-// when the model produced any usable output.
-func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []string, string) {
+// Returns ExecutorOutput.LastErr when both the tool-call path AND the
+// plain-text fallback failed (typical: bad API key, no credits, upstream
+// 5xx). Empty LastErr means the model produced usable output.
+func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ExecutorOutput {
 	scopedTools := ScopeTools(cfg.AllTools, plan.ScopedTools)
 
-	var allResults []StepResult
-	var toolsUsed []string
+	out := ExecutorOutput{}
+	addUsage := func(u *brain.CompletionUsage) {
+		if u != nil {
+			out.CostUSD += u.Cost
+		}
+	}
+	overBudget := func() bool {
+		return cfg.MaxCostUSD > 0 && out.CostUSD >= cfg.MaxCostUSD
+	}
 
 	// Round 1: CompleteWithTools (same as v1)
-	responseContent, toolCalls, _, err := cfg.Client.CompleteWithTools(cfg.SystemPrompt, cfg.Messages, scopedTools)
+	responseContent, toolCalls, usage, err := cfg.Client.CompleteWithTools(cfg.SystemPrompt, cfg.Messages, scopedTools)
+	addUsage(usage)
 	if err != nil {
 		fmt.Printf("[brain2] executor CompleteWithTools error: %v\n", err)
 		// Fallback: plain completion
-		plainResp, _, plainErr := cfg.Client.Complete(cfg.SystemPrompt, cfg.Messages)
+		plainResp, plainUsage, plainErr := cfg.Client.Complete(cfg.SystemPrompt, cfg.Messages)
+		addUsage(plainUsage)
 		fmt.Printf("[brain2] fallback Complete: err=%v len=%d\n", plainErr, len(plainResp))
 		if plainErr == nil && plainResp != "" {
-			allResults = append(allResults, StepResult{
+			out.Results = append(out.Results, StepResult{
 				StepID: "fallback_0", Tool: "_response", Result: plainResp,
 			})
-			return allResults, toolsUsed, ""
+			out.Items = append(out.Items, brain.StreamItem{Kind: brain.ItemKindText, Text: plainResp})
+			return out
 		}
 		// Both calls failed — surface whichever error has a message; prefer
 		// the plain-completion one because that's the most recent attempt.
@@ -165,17 +182,19 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []s
 		if plainErr != nil {
 			errMsg = plainErr.Error()
 		}
-		return allResults, toolsUsed, errMsg
+		out.LastErr = errMsg
+		return out
 	}
 
 	// No tool calls — model answered directly (this is fine, same as v1)
 	if len(toolCalls) == 0 {
 		if responseContent != "" {
-			allResults = append(allResults, StepResult{
+			out.Results = append(out.Results, StepResult{
 				StepID: "direct_0", Tool: "_response", Result: responseContent,
 			})
+			out.Items = append(out.Items, brain.StreamItem{Kind: brain.ItemKindText, Text: responseContent})
 		}
-		return allResults, toolsUsed, ""
+		return out
 	}
 
 	// Execute tool calls with validation and timeout
@@ -195,9 +214,16 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []s
 		}
 
 		result := executeWithTimeout(cfg, call)
-		toolsUsed = append(toolsUsed, call.Function.Name)
-		allResults = append(allResults, StepResult{
+		out.ToolsUsed = append(out.ToolsUsed, call.Function.Name)
+		out.Results = append(out.Results, StepResult{
 			StepID: call.ID, Tool: call.Function.Name, Result: result,
+		})
+		out.Items = append(out.Items, brain.StreamItem{
+			Kind: brain.ItemKindToolCall, Tool: call.Function.Name,
+			Args: call.Function.Arguments, CallID: call.ID,
+		}, brain.StreamItem{
+			Kind: brain.ItemKindToolResult, Tool: call.Function.Name,
+			Result: result, CallID: call.ID,
 		})
 		followUp = append(followUp, brain.Message{
 			Role: "tool", Content: result, ToolCallID: call.ID,
@@ -232,19 +258,36 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []s
 
 	// Round 2+: self-correction loop (v2 improvement over v1's fixed 2 rounds)
 	for depth := 1; depth < cfg.MaxDepth; depth++ {
+		// Cost-cap stop condition (Codebuff/OpenRouter Agent SDK pattern):
+		// abort before the next completion if cumulative spend has crossed
+		// MaxCostUSD. Prevents a runaway loop on a model whose token cost
+		// jumped (e.g. someone switched from V4 Flash to Opus mid-day).
+		if overBudget() {
+			fmt.Printf("[brain2] cost-cap reached: cost=%.4f cap=%.4f depth=%d\n", out.CostUSD, cfg.MaxCostUSD, depth)
+			out.BudgetExceeded = true
+			out.Results = append(out.Results, StepResult{
+				StepID: fmt.Sprintf("budget_break_%d", depth),
+				Tool:   "_response",
+				Result: fmt.Sprintf("I've hit this turn's spend cap (~$%.2f). Let me know if you want me to keep going — an admin can raise the cap in **Settings → Brain → Console** or simplify the request.", cfg.MaxCostUSD),
+			})
+			break
+		}
+
 		// Compress old tool results to save context (keep last 6 full)
 		compressedFollowUp := CompressOldToolResults(followUp, 6)
 
-		roundResp, roundCalls, _, err := cfg.Client.CompleteWithTools(cfg.SystemPrompt, compressedFollowUp, scopedTools)
+		roundResp, roundCalls, roundUsage, err := cfg.Client.CompleteWithTools(cfg.SystemPrompt, compressedFollowUp, scopedTools)
+		addUsage(roundUsage)
 		if err != nil {
 			break
 		}
 		if len(roundCalls) == 0 {
 			// Model is done — save final synthesis response
 			if roundResp != "" {
-				allResults = append(allResults, StepResult{
+				out.Results = append(out.Results, StepResult{
 					StepID: fmt.Sprintf("synth_%d", depth), Tool: "_response", Result: roundResp,
 				})
+				out.Items = append(out.Items, brain.StreamItem{Kind: brain.ItemKindText, Text: roundResp})
 			}
 			break
 		}
@@ -261,7 +304,7 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []s
 		}
 		if looped {
 			fmt.Printf("[brain2] loop-detection: model is repeating a tool call within %d-call window; force-closing depth=%d\n", loopWindow, depth)
-			allResults = append(allResults, StepResult{
+			out.Results = append(out.Results, StepResult{
 				StepID: fmt.Sprintf("loop_break_%d", depth),
 				Tool:   "_response",
 				Result: "I tried that approach a couple of times without progress. Could you give me more detail on what you'd like me to do, or try rephrasing?",
@@ -278,9 +321,16 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []s
 				continue
 			}
 			result := executeWithTimeout(cfg, call)
-			toolsUsed = append(toolsUsed, call.Function.Name)
-			allResults = append(allResults, StepResult{
+			out.ToolsUsed = append(out.ToolsUsed, call.Function.Name)
+			out.Results = append(out.Results, StepResult{
 				StepID: call.ID, Tool: call.Function.Name, Result: result,
+			})
+			out.Items = append(out.Items, brain.StreamItem{
+				Kind: brain.ItemKindToolCall, Tool: call.Function.Name,
+				Args: call.Function.Arguments, CallID: call.ID,
+			}, brain.StreamItem{
+				Kind: brain.ItemKindToolResult, Tool: call.Function.Name,
+				Result: result, CallID: call.ID,
 			})
 			rememberSig(call.Function.Name + "::" + call.Function.Arguments)
 
@@ -293,7 +343,7 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ([]StepResult, []s
 		}
 	}
 
-	return allResults, toolsUsed, ""
+	return out
 }
 
 func executeWithTimeout(cfg PipelineConfig, call brain.ToolCall) string {

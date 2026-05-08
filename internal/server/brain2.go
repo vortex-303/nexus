@@ -120,6 +120,18 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 			}
 		}
 
+		// Per-turn cost cap. Default $1.00 — tuned for the V4 Flash default
+		// where a normal multi-tool turn rings in well under $0.05; the cap
+		// is a runaway-loop guardrail, not a typical-turn limit. Admins can
+		// override via brain_settings.tool_max_cost_usd. Setting to 0
+		// disables the cap entirely.
+		maxCostUSD := 1.00
+		if v := s.getBrainSetting(slug, "tool_max_cost_usd"); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+				maxCostUSD = f
+			}
+		}
+
 		// Run the v2 pipeline
 		result := brain2.Run(brain2.PipelineConfig{
 			Slug:         slug,
@@ -132,6 +144,7 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 			AllTools:     allTools,
 			Client:       client,
 			MaxDepth:     maxDepth,
+			MaxCostUSD:   maxCostUSD,
 			ExecuteTool:  s.executeTool,
 		})
 
@@ -145,6 +158,11 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 
 		// Send the response (reuses v1)
 		msgID := s.sendBrainMessage(slug, channelID, parentID, result.Response)
+
+		// Track per-turn LLM spend so the Console → Cost subsection shows
+		// v2 turns alongside v3. The pipeline already accumulates cost from
+		// each round's CompletionUsage; we just stamp it into llm_usage.
+		s.trackUsage(slug, &brain.CompletionUsage{Cost: result.CostUSD}, resolvedModel, "brain_v2", channelID, senderName)
 
 		// Log the action (reuses v1 action log)
 		brain.LogAction(wdb.DB, id.New(), "brain_v2", channelID,

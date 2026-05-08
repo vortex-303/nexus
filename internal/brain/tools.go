@@ -69,6 +69,43 @@ type ToolMessage struct {
 	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
+// StreamItem is one element of the typed-event stream a Brain turn
+// produces. The chat UI can render each kind distinctly — reasoning
+// blocks collapse by default, tool calls become inline chips, tool
+// results render as compact cards under the chip.
+//
+// Shape mirrors OpenRouter's Agent SDK getItemsStream() typed-item model
+// so the same serialization works whether we proxy that SDK in the
+// future or keep our hand-rolled loop. Anthropic Managed Agents
+// "thinking" blocks map cleanly to ItemKindReasoning, so the same items
+// list works across both engines.
+type StreamItem struct {
+	Kind StreamItemKind `json:"kind"`
+	// Text — message / reasoning content. Empty for tool_call / tool_result.
+	Text string `json:"text,omitempty"`
+	// Tool — populated for ItemKindToolCall / ItemKindToolResult.
+	Tool string `json:"tool,omitempty"`
+	// Args — JSON-encoded arguments the model passed to the tool. Only
+	// populated for ItemKindToolCall.
+	Args string `json:"args,omitempty"`
+	// Result — string result the tool returned. Only populated for
+	// ItemKindToolResult.
+	Result string `json:"result,omitempty"`
+	// CallID — links a tool_result item back to its tool_call. Same value
+	// as ToolCall.ID on the wire.
+	CallID string `json:"call_id,omitempty"`
+}
+
+// StreamItemKind enumerates the typed-item categories. Stable wire format.
+type StreamItemKind string
+
+const (
+	ItemKindText       StreamItemKind = "text"
+	ItemKindReasoning  StreamItemKind = "reasoning"
+	ItemKindToolCall   StreamItemKind = "tool_call"
+	ItemKindToolResult StreamItemKind = "tool_result"
+)
+
 // ToolCompletionChoice extends CompletionChoice with tool calls.
 type ToolCompletionChoice struct {
 	Message struct {
