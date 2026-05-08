@@ -418,13 +418,33 @@ func (s *Server) handleResetV3Agent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Clear the persisted agent IDs so EnsureProvisioned rebuilds.
+	// Clear the persisted agent IDs so EnsureProvisioned rebuilds. Also
+	// clear the "skills API unavailable" sticky flag — the user may have
+	// rotated to a Claude API key that DOES have Skills/Managed Agents
+	// beta access, and a reset is the natural place to retry.
 	keysToClear := []string{
 		"mga_agent_id",
 		"mga_agent_version",
+		"mga_environment_id",         // env is per-account too — drop if key rotated
+		"mga_memory_store_id",        // stale store IDs after a key rotation 404 forever
 		"mga_provisioned_model",
 		"mga_provisioned_template",
 		"mga_provisioned_tools_hash", // populated once tool-drift detection lands
+		"mga_skills_unavailable",     // retry skills upload after admin's reset
+		"mga_members_seeded",         // re-seed people/<slug>.md into the new memory_store
+	}
+	// Plus all the per-skill cache entries — they reference skill IDs in
+	// the previous Anthropic account and would 404 against a new one.
+	if rows, err := wdb.DB.Query("SELECT key FROM brain_settings WHERE key LIKE 'mga_skill_%'"); err == nil {
+		var skillKeys []string
+		for rows.Next() {
+			var k string
+			if rows.Scan(&k) == nil {
+				skillKeys = append(skillKeys, k)
+			}
+		}
+		rows.Close()
+		keysToClear = append(keysToClear, skillKeys...)
 	}
 	for _, k := range keysToClear {
 		if _, err := wdb.DB.Exec("DELETE FROM brain_settings WHERE key = ?", k); err != nil {

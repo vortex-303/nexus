@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"time"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
@@ -371,8 +372,22 @@ func (sk CustomSkill) contentHash() string {
 // multiple Nexus workspaces sharing the same Claude API key don't collide
 // on Anthropic's "display_title must be unique within an API workspace"
 // constraint — early failure mode that bricked second-workspace bootstraps.
+//
+// Graceful degradation: when the Skills API itself isn't available on the
+// workspace's Anthropic account (404 from /v1/skills — beta not enabled
+// per-account), we mark the workspace via mga_skills_unavailable=true and
+// return whatever was uploaded so far (possibly empty). Callers attach
+// only the skills that did upload; the agent runs fine without custom
+// skills (system prompt + agent_toolset + Nexus tools are unaffected).
 func EnsureCustomSkills(ctx context.Context, client *anthropic.Client, settings SettingsStore, slug string) (map[string]string, error) {
 	out := make(map[string]string, len(CustomSkills))
+
+	// Fast path — workspace already confirmed the Skills API isn't reachable
+	// on its Anthropic account; skip every upload attempt.
+	if settings.Get(slug, "mga_skills_unavailable") == "true" {
+		return out, nil
+	}
+
 	for _, sk := range CustomSkills {
 		idKey := skillSettingKey(sk.Name)
 		hashKey := skillHashSettingKey(sk.Name)
@@ -385,6 +400,10 @@ func EnsureCustomSkills(ctx context.Context, client *anthropic.Client, settings 
 		if cachedID == "" {
 			id, err := uploadCustomSkill(ctx, client, sk, slug)
 			if err != nil {
+				if isSkillsAPIUnavailable(err) {
+					_ = settings.Set(slug, "mga_skills_unavailable", "true")
+					return out, nil
+				}
 				return out, fmt.Errorf("upload skill %q: %w", sk.Name, err)
 			}
 			if err := settings.Set(slug, idKey, id); err != nil {
@@ -405,6 +424,10 @@ func EnsureCustomSkills(ctx context.Context, client *anthropic.Client, settings 
 
 		// State 3 — cached id, content changed. Upload a new version.
 		if err := uploadCustomSkillVersion(ctx, client, cachedID, sk); err != nil {
+			if isSkillsAPIUnavailable(err) {
+				_ = settings.Set(slug, "mga_skills_unavailable", "true")
+				return out, nil
+			}
 			return out, fmt.Errorf("upload new version of %q: %w", sk.Name, err)
 		}
 		if err := settings.Set(slug, hashKey, desiredHash); err != nil {
@@ -413,6 +436,25 @@ func EnsureCustomSkills(ctx context.Context, client *anthropic.Client, settings 
 		out[sk.Name] = cachedID
 	}
 	return out, nil
+}
+
+// isSkillsAPIUnavailable reports whether an upload error means the
+// Anthropic account behind the API key doesn't expose the Skills API
+// (typical: the Skills + Managed Agents beta hasn't been enabled yet for
+// that workspace). Both /v1/skills and the version subroute return 404
+// with {"type":"not_found_error"} in that case. We pattern-match on the
+// SDK's error string rather than relying on a typed error because the
+// SDK wraps HTTP failures in a generic *anthropic.Error with the URL +
+// status code rendered into the .Error() output.
+func isSkillsAPIUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "404") {
+		return false
+	}
+	return strings.Contains(msg, "/v1/skills")
 }
 
 // skillHashSettingKey returns the brain_settings key for the cached

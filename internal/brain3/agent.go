@@ -206,23 +206,30 @@ func createAgent(ctx context.Context, client *anthropic.Client, settings Setting
 
 	model := anthropic.BetaManagedAgentsModel(resolveModel(settings, slug))
 
-	// Pre-built Anthropic skills. Set Type explicitly because the SDK helper
-	// doesn't (same pattern as the user.message Type discriminator bug).
-	skills := make([]anthropic.BetaManagedAgentsSkillParamsUnion, 0, len(DefaultAnthropicSkills)+len(CustomSkills))
-	for _, id := range DefaultAnthropicSkills {
-		skills = append(skills, anthropic.BetaManagedAgentsSkillParamsUnion{
-			OfAnthropic: &anthropic.BetaManagedAgentsAnthropicSkillParams{
-				SkillID: id,
-				Type:    anthropic.BetaManagedAgentsAnthropicSkillParamsTypeAnthropic,
-			},
-		})
-	}
-	// Custom skills uploaded to this workspace's Anthropic org. Idempotent —
-	// EnsureCustomSkills only uploads skills not already cached in
-	// brain_settings.
+	// Custom skills first — uploads will set mga_skills_unavailable=true
+	// if the Anthropic account behind the API key doesn't have the Skills
+	// + Managed Agents beta enabled. We then know to also skip the
+	// prebuilt skills (attaching their IDs would 404 the agent.New call
+	// itself, since referencing a Skills resource requires Skills access).
 	customIDs, err := EnsureCustomSkills(ctx, client, settings, slug)
 	if err != nil {
 		return nil, fmt.Errorf("ensure custom skills: %w", err)
+	}
+	skillsAvailable := settings.Get(slug, "mga_skills_unavailable") != "true"
+
+	skills := make([]anthropic.BetaManagedAgentsSkillParamsUnion, 0, len(DefaultAnthropicSkills)+len(CustomSkills))
+	if skillsAvailable {
+		// Pre-built Anthropic skills. Set Type explicitly because the SDK
+		// helper doesn't (same pattern as the user.message Type discriminator
+		// bug).
+		for _, id := range DefaultAnthropicSkills {
+			skills = append(skills, anthropic.BetaManagedAgentsSkillParamsUnion{
+				OfAnthropic: &anthropic.BetaManagedAgentsAnthropicSkillParams{
+					SkillID: id,
+					Type:    anthropic.BetaManagedAgentsAnthropicSkillParamsTypeAnthropic,
+				},
+			})
+		}
 	}
 	for _, name := range CustomSkillNamesSorted() {
 		id, ok := customIDs[name]
@@ -321,14 +328,20 @@ func applyToolsDriftIfNeeded(ctx context.Context, client *anthropic.Client, sett
 
 	// Compose the full Skills list (Anthropic pre-built + custom). Update is
 	// a full replacement, so we need to send everything we want attached.
+	// Skip the entire skills block when the Anthropic account doesn't expose
+	// Skills + Managed Agents (sticky flag set by EnsureCustomSkills) —
+	// attaching prebuilt skill IDs would 404 the Update call.
 	skills := make([]anthropic.BetaManagedAgentsSkillParamsUnion, 0, len(DefaultAnthropicSkills)+len(customIDs))
-	for _, id := range DefaultAnthropicSkills {
-		skills = append(skills, anthropic.BetaManagedAgentsSkillParamsUnion{
-			OfAnthropic: &anthropic.BetaManagedAgentsAnthropicSkillParams{
-				SkillID: id,
-				Type:    anthropic.BetaManagedAgentsAnthropicSkillParamsTypeAnthropic,
-			},
-		})
+	skillsAvailable := settings.Get(slug, "mga_skills_unavailable") != "true"
+	if skillsAvailable {
+		for _, id := range DefaultAnthropicSkills {
+			skills = append(skills, anthropic.BetaManagedAgentsSkillParamsUnion{
+				OfAnthropic: &anthropic.BetaManagedAgentsAnthropicSkillParams{
+					SkillID: id,
+					Type:    anthropic.BetaManagedAgentsAnthropicSkillParamsTypeAnthropic,
+				},
+			})
+		}
 	}
 	for _, name := range CustomSkillNamesSorted() {
 		id, ok := customIDs[name]
