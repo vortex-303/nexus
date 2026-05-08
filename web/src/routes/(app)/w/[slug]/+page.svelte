@@ -151,7 +151,7 @@
 
 	// Onboarding wizard state
 	let showWizard = $state(false);
-	let wizardStep = $state<'welcome' | 'engine' | 'apikey' | 'gemini' | 'done'>('welcome');
+	let wizardStep = $state<'welcome' | 'engine' | 'apikey' | 'services' | 'done'>('welcome');
 	// wizardEngine is the engine the admin picked in the engine step. Drives
 	// which API key field is shown in the apikey step + which engine setting
 	// gets persisted on save. Default 'claude' since it's the recommended
@@ -159,6 +159,39 @@
 	let wizardEngine = $state<'claude' | 'openrouter'>('openrouter');
 	let wizardApiKey = $state('');
 	let wizardGeminiKey = $state('');
+	let wizardBraveKey = $state('');
+	let wizardXAIKey = $state('');
+	let wizardOpenAIKey = $state('');
+	let wizardServiceSaving = $state<'gemini' | 'brave' | 'xai' | 'openai' | null>(null);
+
+	// Per-service connect helpers used inside the wizard "services" step.
+	// Each one saves a single key, reloads brain settings so the connected
+	// badge flips, then clears the input. Errors surface inline via alert
+	// for now — can move to a per-card hint when we polish the wizard CSS.
+	async function wizardSaveService(provider: 'gemini' | 'brave' | 'xai' | 'openai', key: string) {
+		const trimmed = key.trim();
+		if (!trimmed) return;
+		const settingKey = ({
+			gemini: 'gemini_api_key',
+			brave: 'brave_api_key',
+			xai: 'xai_api_key',
+			openai: 'openai_api_key',
+		} as const)[provider];
+		wizardServiceSaving = provider;
+		try {
+			const updates: Record<string, string> = { [settingKey]: trimmed };
+			if (provider === 'xai') updates.xai_enabled = 'true';
+			await updateBrainSettings(slug, updates);
+			await loadBrainSettings();
+			if (provider === 'gemini') wizardGeminiKey = '';
+			if (provider === 'brave') wizardBraveKey = '';
+			if (provider === 'xai') wizardXAIKey = '';
+			if (provider === 'openai') wizardOpenAIKey = '';
+		} catch (e: any) {
+			alert(`Failed to save ${provider} key: ${e?.message || 'unknown error'}`);
+		}
+		wizardServiceSaving = null;
+	}
 	let wizardReplaceKey = $state(false); // true = user wants to replace an already-set key
 	let wizardSaving = $state(false);
 
@@ -686,7 +719,16 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 	let brainActiveFile = $state('');
 	let brainFileContent = $state('');
 	let brainSaving = $state(false);
-	let brainTab = $state<'settings' | 'north_star' | 'definitions' | 'memory' | 'activity' | 'skills' | 'knowledge' | 'integrations' | 'roles' | 'tools' | 'info' | 'network' | 'portability' | 'costs' | 'bridge'>('settings');
+	// Brain Settings tabs.
+	//   engines  — engine choice + per-engine API key + per-engine model/depth (own Save)
+	//   services — Gemini, Brave, X/Grok, OpenAI (per-card Save)
+	//   settings — "General": automations, memory, reflection, usage, built-in agents (own Save)
+	//   north_star — kept separate (workspace-strategic, not chrome)
+	// The other tabs are unchanged.
+	let brainTab = $state<'settings' | 'engines' | 'services' | 'north_star' | 'definitions' | 'memory' | 'activity' | 'skills' | 'knowledge' | 'integrations' | 'roles' | 'tools' | 'info' | 'network' | 'portability' | 'costs' | 'bridge'>('engines');
+	// Default lands on Engines because picking the engine + setting a key is
+	// the highest-traffic admin path on a fresh workspace; the onboarding
+	// wizard handles brand-new workspaces directly so this default is fine.
 	let usageData = $state<any>(null);
 	let usagePeriod = $state('month');
 	async function loadUsage() {
@@ -2622,6 +2664,91 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			brainOpenAIKey = '';
 			brainBraveKey = '';
 			brainAnthropicKey = '';
+		} catch (e: any) {
+			alert(e.message);
+		}
+		brainSaving = false;
+	}
+
+	// Per-tab save handlers — Brain Settings split into Engines / Services /
+	// General (+ North Star as a sibling tab). Each handler writes ONLY the
+	// keys that tab owns so saving one section can't accidentally clobber
+	// another. saveBrainSettings stays as the legacy do-everything path
+	// (still called by the old single-button paths I haven't migrated yet).
+
+	async function saveEnginesSettings() {
+		brainSaving = true;
+		try {
+			const updates: Record<string, string> = {
+				engine: brainEngine,
+				brain_version: brainVersion,
+				model: brainModel,
+				tool_max_depth: brainToolMaxDepth,
+				ollama_enabled: String(brainOllamaEnabled),
+				ollama_model: brainOllamaModel,
+				ollama_url: brainOllamaURL,
+				webllm_enabled: String(brainWebLLMEnabled),
+				webllm_model: brainWebLLMModel,
+				webllm_system_prompt: brainWebLLMPrompt,
+				standard_chat_enabled: String(brainStandardChatEnabled),
+				llm_enabled: String(brainLLMEnabled),
+				mga_model: brainAnthropicModel,
+				mga_system_prompt_template: brainSystemPromptTemplate,
+			};
+			if (brainApiKey) updates.api_key = brainApiKey;
+			if (brainAnthropicKey) updates.anthropic_api_key = brainAnthropicKey;
+			await updateBrainSettings(slug, updates);
+			await loadBrainSettings();
+			brainApiKey = '';
+			brainAnthropicKey = '';
+		} catch (e: any) {
+			alert(e.message);
+		}
+		brainSaving = false;
+	}
+
+	async function saveServicesSettings() {
+		brainSaving = true;
+		try {
+			const updates: Record<string, string> = {
+				image_model: brainImageModel,
+				xai_model: brainXAIModel,
+				xai_enabled: String(brainXAIEnabled),
+			};
+			if (brainGeminiKey) updates.gemini_api_key = brainGeminiKey;
+			if (brainXAIKey) {
+				updates.xai_api_key = brainXAIKey;
+				brainXAIEnabled = true;
+				updates.xai_enabled = 'true';
+			}
+			if (brainOpenAIKey) updates.openai_api_key = brainOpenAIKey;
+			if (brainBraveKey) updates.brave_api_key = brainBraveKey;
+			await updateBrainSettings(slug, updates);
+			await loadBrainSettings();
+			brainGeminiKey = '';
+			brainXAIKey = '';
+			brainOpenAIKey = '';
+			brainBraveKey = '';
+		} catch (e: any) {
+			alert(e.message);
+		}
+		brainSaving = false;
+	}
+
+	async function saveGeneralSettings() {
+		brainSaving = true;
+		try {
+			const updates: Record<string, string> = {
+				automations_enabled: String(brainAutomationsEnabled),
+				system_memory_enabled: String(brainSystemMemoryEnabled),
+				memory_engine: brainMemoryEngine,
+				memory_model: brainMemoryModel,
+				memory_enabled: String(brainMemoryEnabled),
+				extraction_frequency: String(brainExtractFreq),
+				tool_max_depth: brainToolMaxDepth,
+			};
+			await updateBrainSettings(slug, updates);
+			await loadBrainSettings();
 		} catch (e: any) {
 			alert(e.message);
 		}
@@ -6448,7 +6575,7 @@ autonomy: reactive
 						// Just persist the engine choice + onboarding_complete; key already set.
 						await updateBrainSettings(slug, { engine: wizardEngine, onboarding_complete: 'true' });
 						await loadBrainSettings();
-						wizardStep = 'gemini';
+						wizardStep = 'services';
 					} catch { alert('Failed to save engine choice'); }
 					wizardSaving = false;
 				}}>{wizardSaving ? 'Saving...' : 'Continue with existing key →'}</button>
@@ -6511,7 +6638,7 @@ autonomy: reactive
 						await updateBrainSettings(slug, updates);
 						await loadBrainSettings();
 						wizardReplaceKey = false;
-						wizardStep = 'gemini';
+						wizardStep = 'services';
 					} catch (e) {
 						alert('Failed to save API key');
 					}
@@ -6523,34 +6650,88 @@ autonomy: reactive
 					<button class="wizard-btn wizard-btn-skip" onclick={() => wizardStep = 'engine'}>← Back to engine</button>
 				{/if}
 			{/if}
-		{:else if wizardStep === 'gemini'}
+		{:else if wizardStep === 'services'}
 			{@const geminiSet = brainSettings.gemini_api_key_set === 'true'}
-			<h2 class="wizard-title">Image generation (optional)</h2>
-			<p class="wizard-sub">Add a Google Gemini key to enable <code>generate_image</code> — for banners, ad creative, mockups, social posts. Powers the Creative Director persona's visual workflow.</p>
-			{#if geminiSet}
-				<p class="wizard-sub">
-					✓ <strong>Gemini API key</strong> is already configured —
-					<code style="font-size: 0.78rem;">{brainSettings.gemini_api_key_masked}</code>.
-				</p>
-				<button class="wizard-btn wizard-btn-primary" onclick={() => wizardStep = 'done'}>Continue →</button>
-				<button class="wizard-btn wizard-btn-skip" onclick={() => { wizardGeminiKey = ''; }}>Replace Gemini key</button>
-			{:else}
-				<div class="wizard-field">
-					<label>Gemini API Key (optional)</label>
-					<input type="password" class="brain-input" placeholder="AIza..." bind:value={wizardGeminiKey} autocomplete="off" />
-					<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" class="wizard-link">Get a free key at aistudio.google.com →</a>
+			{@const braveSet = brainSettings.brave_api_key_set === 'true'}
+			{@const xaiSet = brainSettings.xai_api_key_set === 'true'}
+			{@const openaiSet = brainSettings.openai_api_key_set === 'true'}
+			<h2 class="wizard-title">Connect services (optional)</h2>
+			<p class="wizard-sub">Add-on capabilities Brain calls during a turn. All optional — you can connect any of these now, later in Settings → Services, or skip entirely.</p>
+
+			<!-- Gemini -->
+			<div class="wizard-service-card">
+				<div class="wizard-service-head">
+					<strong>Google Gemini</strong>
+					<span class="wizard-service-badge" class:active={geminiSet}>{geminiSet ? '✓ Connected' : 'Not connected'}</span>
 				</div>
-				<button class="wizard-btn wizard-btn-primary" disabled={wizardSaving || !wizardGeminiKey.trim()} onclick={async () => {
-					wizardSaving = true;
-					try {
-						await updateBrainSettings(slug, { gemini_api_key: wizardGeminiKey.trim() });
-						await loadBrainSettings();
-						wizardStep = 'done';
-					} catch { alert('Failed to save Gemini key'); }
-					wizardSaving = false;
-				}}>{wizardSaving ? 'Saving...' : 'Save & Continue →'}</button>
-				<button class="wizard-btn wizard-btn-skip" onclick={() => wizardStep = 'done'}>Skip — add later in Settings → Services</button>
-			{/if}
+				<p class="wizard-service-desc">Image generation — banners, ad creative, mockups, social posts. Powers the Creative Director persona.</p>
+				{#if !geminiSet}
+					<div style="display:flex; gap:6px;">
+						<input type="password" class="brain-input" placeholder="AIza…" bind:value={wizardGeminiKey} autocomplete="off" style="flex:1;" />
+						<button class="btn btn-primary btn-sm" disabled={wizardServiceSaving === 'gemini' || !wizardGeminiKey.trim()} onclick={() => wizardSaveService('gemini', wizardGeminiKey)}>
+							{wizardServiceSaving === 'gemini' ? '…' : 'Connect'}
+						</button>
+					</div>
+					<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" class="wizard-link">Free key at aistudio.google.com →</a>
+				{/if}
+			</div>
+
+			<!-- Brave Search -->
+			<div class="wizard-service-card">
+				<div class="wizard-service-head">
+					<strong>Brave Search</strong>
+					<span class="wizard-service-badge" class:active={braveSet}>{braveSet ? '✓ Connected' : 'Not connected'}</span>
+				</div>
+				<p class="wizard-service-desc">Web search — better grounding than fetch alone. Used by <code>web_search</code> and the Researcher persona.</p>
+				{#if !braveSet}
+					<div style="display:flex; gap:6px;">
+						<input type="password" class="brain-input" placeholder="BSA…" bind:value={wizardBraveKey} autocomplete="off" style="flex:1;" />
+						<button class="btn btn-primary btn-sm" disabled={wizardServiceSaving === 'brave' || !wizardBraveKey.trim()} onclick={() => wizardSaveService('brave', wizardBraveKey)}>
+							{wizardServiceSaving === 'brave' ? '…' : 'Connect'}
+						</button>
+					</div>
+					<a href="https://api.search.brave.com/app/keys" target="_blank" rel="noopener" class="wizard-link">Get a key at api.search.brave.com →</a>
+				{/if}
+			</div>
+
+			<!-- X (Grok) -->
+			<div class="wizard-service-card">
+				<div class="wizard-service-head">
+					<strong>X / Grok</strong>
+					<span class="wizard-service-badge" class:active={xaiSet}>{xaiSet ? '✓ Connected' : 'Not connected'}</span>
+				</div>
+				<p class="wizard-service-desc">Live social signal — <code>search_x</code> and Researcher's "social pulse" workflow. Hits xAI directly.</p>
+				{#if !xaiSet}
+					<div style="display:flex; gap:6px;">
+						<input type="password" class="brain-input" placeholder="xai-…" bind:value={wizardXAIKey} autocomplete="off" style="flex:1;" />
+						<button class="btn btn-primary btn-sm" disabled={wizardServiceSaving === 'xai' || !wizardXAIKey.trim()} onclick={() => wizardSaveService('xai', wizardXAIKey)}>
+							{wizardServiceSaving === 'xai' ? '…' : 'Connect'}
+						</button>
+					</div>
+					<a href="https://console.x.ai" target="_blank" rel="noopener" class="wizard-link">Get a key at console.x.ai →</a>
+				{/if}
+			</div>
+
+			<!-- OpenAI -->
+			<div class="wizard-service-card">
+				<div class="wizard-service-head">
+					<strong>OpenAI</strong>
+					<span class="wizard-service-badge" class:active={openaiSet}>{openaiSet ? '✓ Connected' : 'Not connected'}</span>
+				</div>
+				<p class="wizard-service-desc">Optional fallback model + voice/vision — used by services that prefer OpenAI directly. Skip if you only want Brain via the engine.</p>
+				{#if !openaiSet}
+					<div style="display:flex; gap:6px;">
+						<input type="password" class="brain-input" placeholder="sk-…" bind:value={wizardOpenAIKey} autocomplete="off" style="flex:1;" />
+						<button class="btn btn-primary btn-sm" disabled={wizardServiceSaving === 'openai' || !wizardOpenAIKey.trim()} onclick={() => wizardSaveService('openai', wizardOpenAIKey)}>
+							{wizardServiceSaving === 'openai' ? '…' : 'Connect'}
+						</button>
+					</div>
+					<a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener" class="wizard-link">Get a key at platform.openai.com →</a>
+				{/if}
+			</div>
+
+			<button class="wizard-btn wizard-btn-primary" onclick={() => wizardStep = 'done'}>Continue →</button>
+			<button class="wizard-btn wizard-btn-skip" onclick={() => wizardStep = 'done'}>Skip all — add later in Settings → Services</button>
 		{:else if wizardStep === 'done'}
 			<div class="wizard-icon">
 				<svg width="48" height="48" viewBox="0 0 48 48" fill="none">
@@ -6672,7 +6853,9 @@ autonomy: reactive
 		</div>
 		<div class="brain-settings-layout">
 			<div class="brain-settings-nav">
-				<button class="brain-nav-item" class:active={brainTab === 'settings'} onclick={() => brainTab = 'settings'}>Settings</button>
+				<button class="brain-nav-item" class:active={brainTab === 'engines'} onclick={() => brainTab = 'engines'}>Engines</button>
+				<button class="brain-nav-item" class:active={brainTab === 'services'} onclick={() => brainTab = 'services'}>Services</button>
+				<button class="brain-nav-item" class:active={brainTab === 'settings'} onclick={() => brainTab = 'settings'}>General</button>
 				{#if isAdmin}
 					<button class="brain-nav-item" class:active={brainTab === 'north_star'} onclick={() => brainTab = 'north_star'}>North Star</button>
 					<button class="brain-nav-item" class:active={brainTab === 'definitions'} onclick={() => brainTab = 'definitions'}>Personality</button>
@@ -6755,7 +6938,7 @@ autonomy: reactive
 			{/if}
 			{/if}
 
-			{#if brainTab === 'settings'}
+			{#if brainTab === 'settings' || brainTab === 'engines' || brainTab === 'services'}
 			{#if isAdmin}
 			<!-- Engine summary at the top — quick at-a-glance for what Brain has -->
 			<div class="brain-section settings-summary">
@@ -6777,11 +6960,11 @@ autonomy: reactive
 						<span class="summary-chip">{brainSkills.length} skills</span>
 						<span class="summary-chip">{mcpServers.length} MCP</span>
 						<button class="btn btn-ghost btn-xs" onclick={() => { brainTab = 'extensions'; loadSkills(); loadMCPServersData(); }} style="margin-left: 8px;">View Extensions →</button>
-						<button class="btn btn-ghost btn-xs" title="Re-open the engine + API key setup wizard" onclick={() => { wizardStep = 'welcome'; wizardApiKey = ''; wizardGeminiKey = ''; wizardReplaceKey = false; wizardEngine = (brainEngine || 'claude'); showWizard = true; }}>↺ Setup wizard</button>
+						<button class="btn btn-ghost btn-xs" title="Re-open the engine + API key setup wizard" onclick={() => { wizardStep = 'welcome'; wizardApiKey = ''; wizardGeminiKey = ''; wizardBraveKey = ''; wizardXAIKey = ''; wizardOpenAIKey = ''; wizardReplaceKey = false; wizardEngine = (brainEngine || 'claude'); showWizard = true; }}>↺ Setup wizard</button>
 					</div>
 				</div>
 			</div>
-			{#if SHOW_LOCAL_AI}
+			{#if brainTab === 'engines' && SHOW_LOCAL_AI}
 			{#if brainVersion === 'v3'}
 			<div class="brain-section">
 				<h3 class="brain-section-title">Engine Mode</h3>
@@ -6875,6 +7058,7 @@ autonomy: reactive
 			</div>
 			{/if}
 			{/if}
+			{#if brainTab === 'settings'}
 			<div class="brain-section">
 				<h3 class="brain-section-title">Automations</h3>
 				<label class="brain-toggle-row">
@@ -6921,6 +7105,8 @@ autonomy: reactive
 					</span>
 				</div>
 			</div>
+			{/if}
+			{#if brainTab === 'engines'}
 			<div class="brain-section engine-section">
 				<h3 class="brain-section-title">Choose your engine</h3>
 				<p class="brain-section-desc">Brain runs on the engine you select. Pick the one that matches your priorities — model flexibility and cost, or capability and managed infrastructure.</p>
@@ -7580,12 +7766,15 @@ autonomy: reactive
 
 				</div>
 
-				<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveBrainSettings} disabled={brainSaving}>
-					{brainSaving ? 'Saving...' : 'Save Settings'}
+				<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveEnginesSettings} disabled={brainSaving}>
+					{brainSaving ? 'Saving…' : 'Save engine settings'}
 				</button>
 			</div>
 			{/if}
+			{/if}
+			<!-- end engines tab -->
 
+			{#if brainTab === 'services'}
 			<div class="brain-section">
 				<h3 class="brain-section-title">Services</h3>
 				<p class="brain-section-desc">Add-on capabilities that work with any engine. Each one is optional — Brain works without them, but they unlock specific tools and workflows.</p>
@@ -7751,11 +7940,14 @@ autonomy: reactive
 					</div>
 				</div>
 
-				<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveBrainSettings} disabled={brainSaving}>
-					{brainSaving ? 'Saving...' : 'Save Settings'}
+				<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveServicesSettings} disabled={brainSaving}>
+					{brainSaving ? 'Saving…' : 'Save services'}
 				</button>
 			</div>
+			{/if}
+			<!-- end services tab -->
 
+			{#if brainTab === 'settings'}
 			<div class="brain-section">
 				<h3 class="brain-section-title">Organizational Memory</h3>
 				{#if brainMemoryTotal > 0}
@@ -7898,6 +8090,13 @@ autonomy: reactive
 				{/each}
 			</div>
 			{/if}
+
+			<!-- General-tab Save: writes only the keys this tab owns (memory + automations + reflection + tool depth + cost cap). Engine + service keys saved on their own tabs. -->
+			<button class="btn btn-primary btn-sm" style="margin-top: var(--space-md);" onclick={saveGeneralSettings} disabled={brainSaving}>
+				{brainSaving ? 'Saving…' : 'Save general settings'}
+			</button>
+			{/if}
+			<!-- end settings (General) tab -->
 
 			{:else if brainTab === 'definitions'}
 			<div class="brain-section">
@@ -13934,6 +14133,41 @@ autonomy: reactive
 		text-decoration: none;
 	}
 	.wizard-link:hover { text-decoration: underline; }
+	/* Wizard "services" step — compact card per provider with status pill +
+	   inline connect form, replacing the single-step Gemini-only flow. */
+	.wizard-service-card {
+		padding: 10px 12px;
+		margin-bottom: 10px;
+		background: var(--bg-secondary, rgba(255, 255, 255, 0.04));
+		border: 1px solid var(--border-subtle);
+		border-radius: 6px;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+	.wizard-service-head {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+	}
+	.wizard-service-badge {
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-tertiary);
+		padding: 2px 6px;
+		border-radius: 4px;
+		background: rgba(255, 255, 255, 0.04);
+	}
+	.wizard-service-badge.active {
+		color: var(--success, #4ade80);
+		background: rgba(74, 222, 128, 0.1);
+	}
+	.wizard-service-desc {
+		font-size: 0.78rem;
+		color: var(--text-secondary);
+		margin: 0;
+	}
 	.wizard-btn {
 		border: none;
 		border-radius: var(--radius-md, 6px);
