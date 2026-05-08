@@ -156,7 +156,7 @@
 	// which API key field is shown in the apikey step + which engine setting
 	// gets persisted on save. Default 'claude' since it's the recommended
 	// path (managed agents + personas + memory store).
-	let wizardEngine = $state<'claude' | 'openrouter'>('claude');
+	let wizardEngine = $state<'claude' | 'openrouter'>('openrouter');
 	let wizardApiKey = $state('');
 	let wizardGeminiKey = $state('');
 	let wizardReplaceKey = $state(false); // true = user wants to replace an already-set key
@@ -519,7 +519,7 @@
 	const _cachedBrain = typeof localStorage !== 'undefined' ? JSON.parse(localStorage.getItem('nexus_brain_config') || 'null') : null;
 	let brainSettings = $state<any>({});
 	let brainApiKey = $state('');
-	let brainModel = $state(_cachedBrain?.model || 'nexus/free-auto');
+	let brainModel = $state(_cachedBrain?.model || 'deepseek/deepseek-v4-flash');
 	let brainImageModel = $state(_cachedBrain?.image_model || 'gemini-3.1-flash-image-preview');
 	let brainGeminiKey = $state('');
 	let brainXAIKey = $state('');
@@ -2439,7 +2439,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 	async function loadBrainSettings() {
 		try {
 			brainSettings = await getBrainSettings(slug);
-			brainModel = brainSettings.model || 'nexus/free-auto';
+			brainModel = brainSettings.model || 'deepseek/deepseek-v4-flash';
 			brainImageModel = brainSettings.image_model || 'gemini-3.1-flash-image-preview';
 			brainGeminiKey = '';
 			brainBraveKey = '';
@@ -6497,6 +6497,16 @@ autonomy: reactive
 							updates.anthropic_api_key = wizardApiKey.trim();
 						} else {
 							updates.api_key = wizardApiKey.trim();
+							// Cheap-by-default for OpenRouter: V4 Flash is the
+							// cheapest tool-capable MoE on OpenRouter today
+							// ($0.14/$0.28 per M). Skip the override if the
+							// admin has already chosen a different model.
+							if (!brainSettings.model) {
+								updates.model = 'deepseek/deepseek-v4-flash';
+							}
+							if (!brainSettings.tool_max_depth) {
+								updates.tool_max_depth = '3';
+							}
 						}
 						await updateBrainSettings(slug, updates);
 						await loadBrainSettings();

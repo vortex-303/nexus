@@ -193,6 +193,23 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	s.seedFreeMCPServers(slug)
 
+	// Seed Brain defaults — OpenRouter + DeepSeek V4 Flash, tool depth 3.
+	// V4 Flash is the cheapest tool-capable MoE on OpenRouter ($0.14/$0.28
+	// per M tokens). Tool depth 3 keeps cheap-model self-correction loops
+	// short — past 3 retries the next answer rarely improves. INSERT OR
+	// IGNORE so an admin who explicitly picks something else (then runs a
+	// re-create migration?) isn't overwritten — fresh workspaces only.
+	defaults := map[string]string{
+		"engine":         "openrouter",
+		"model":          "deepseek/deepseek-v4-flash",
+		"tool_max_depth": "3",
+	}
+	for k, v := range defaults {
+		_, _ = wdb.DB.Exec(
+			"INSERT OR IGNORE INTO brain_settings (key, value) VALUES (?, ?)", k, v,
+		)
+	}
+
 	// Welcome notification
 	go s.createNotification(wdb, slug, userID, "system",
 		"Welcome to Nexus!",
