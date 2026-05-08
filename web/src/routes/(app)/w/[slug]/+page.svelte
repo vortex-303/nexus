@@ -317,6 +317,48 @@
 	let prefsMsg = $state('');
 	let prefsLoading = $state(false);
 
+	// API key Test/Disable — per-provider state so each row has its own
+	// pending spinner + result message.
+	type ProviderKey = 'claude' | 'openrouter' | 'gemini';
+	let keyTesting = $state<Record<ProviderKey, boolean>>({ claude: false, openrouter: false, gemini: false });
+	let keyTestResult = $state<Record<ProviderKey, { ok?: boolean; msg?: string }>>({ claude: {}, openrouter: {}, gemini: {} });
+
+	async function testProviderKey(provider: ProviderKey, candidate: string) {
+		const key = (candidate || '').trim();
+		if (!key) {
+			keyTestResult[provider] = { ok: false, msg: 'Paste a key first' };
+			return;
+		}
+		keyTesting[provider] = true;
+		keyTestResult[provider] = {};
+		try {
+			const api = await import('$lib/api');
+			const r = await api.testBrainKey(slug, provider, key);
+			keyTestResult[provider] = {
+				ok: r.ok,
+				msg: r.ok ? `✓ Works${r.account ? ' — ' + r.account : ''}` : (r.message || 'Test failed'),
+			};
+		} catch (e: any) {
+			keyTestResult[provider] = { ok: false, msg: e?.message || 'Test failed' };
+		}
+		keyTesting[provider] = false;
+	}
+
+	async function disableProviderKey(provider: ProviderKey) {
+		const settingKey = provider === 'claude' ? 'anthropic_api_key' : provider === 'openrouter' ? 'api_key' : 'gemini_api_key';
+		const label = provider === 'claude' ? 'Anthropic' : provider === 'openrouter' ? 'OpenRouter' : 'Gemini';
+		if (!confirm(`Disable ${label} key? Brain will stop using it on the next message. You can paste a new one anytime.`)) return;
+		try {
+			await updateBrainSettings(slug, { [settingKey]: '' });
+			await loadBrainSettings();
+			keyTestResult[provider] = { ok: true, msg: `${label} key disabled.` };
+			if (provider === 'claude') brainAnthropicKey = '';
+			if (provider === 'openrouter') brainApiKey = '';
+		} catch (e: any) {
+			keyTestResult[provider] = { ok: false, msg: e?.message || 'Failed to disable' };
+		}
+	}
+
 	// Personal calendar (ICS subscription, both directions)
 	let calStatus = $state<any>(null);
 	let calIcsUrl = $state('');
@@ -6388,18 +6430,35 @@ autonomy: reactive
 				}}>{wizardSaving ? 'Saving...' : 'Continue with existing key →'}</button>
 				<button class="wizard-btn wizard-btn-skip" onclick={() => { wizardReplaceKey = true; wizardApiKey = ''; }}>Replace key</button>
 			{:else}
+				{@const wizardProvider = (wizardEngine === 'claude' ? 'claude' : 'openrouter') as ProviderKey}
 				{#if wizardEngine === 'claude'}
 					<p class="wizard-sub">Brain will use your Anthropic API key to talk to Claude. Stored encrypted, never logged.</p>
 					<div class="wizard-field">
 						<label>Anthropic API Key</label>
-						<input type="password" class="brain-input" placeholder="sk-ant-..." bind:value={wizardApiKey} autocomplete="off" />
+						<div style="display:flex;gap:0.5rem;align-items:center">
+							<input type="password" class="brain-input" placeholder="sk-ant-..." bind:value={wizardApiKey} autocomplete="off" style="flex:1" />
+							<button type="button" class="btn btn-ghost btn-sm" disabled={keyTesting[wizardProvider] || !wizardApiKey.trim()} onclick={() => testProviderKey(wizardProvider, wizardApiKey)}>
+								{keyTesting[wizardProvider] ? 'Testing…' : 'Test'}
+							</button>
+						</div>
+						{#if keyTestResult[wizardProvider].msg}
+							<span class="wizard-link" style="color: {keyTestResult[wizardProvider].ok ? 'var(--success, #4ade80)' : 'var(--error, #f87171)'};">{keyTestResult[wizardProvider].msg}</span>
+						{/if}
 						<a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener" class="wizard-link">Get a key at console.anthropic.com →</a>
 					</div>
 				{:else}
 					<p class="wizard-sub">Brain will use your OpenRouter API key. Free credits at signup; pay-as-you-go after.</p>
 					<div class="wizard-field">
 						<label>OpenRouter API Key</label>
-						<input type="password" class="brain-input" placeholder="sk-or-v1-..." bind:value={wizardApiKey} autocomplete="off" />
+						<div style="display:flex;gap:0.5rem;align-items:center">
+							<input type="password" class="brain-input" placeholder="sk-or-v1-..." bind:value={wizardApiKey} autocomplete="off" style="flex:1" />
+							<button type="button" class="btn btn-ghost btn-sm" disabled={keyTesting[wizardProvider] || !wizardApiKey.trim()} onclick={() => testProviderKey(wizardProvider, wizardApiKey)}>
+								{keyTesting[wizardProvider] ? 'Testing…' : 'Test'}
+							</button>
+						</div>
+						{#if keyTestResult[wizardProvider].msg}
+							<span class="wizard-link" style="color: {keyTestResult[wizardProvider].ok ? 'var(--success, #4ade80)' : 'var(--error, #f87171)'};">{keyTestResult[wizardProvider].msg}</span>
+						{/if}
 						<a href="https://openrouter.ai/keys" target="_blank" rel="noopener" class="wizard-link">Get a free key at openrouter.ai →</a>
 					</div>
 				{/if}
@@ -6877,11 +6936,22 @@ autonomy: reactive
 						<div class="engine-key-row">
 							<label class="engine-key-label">OpenRouter API key</label>
 							{#if brainSettings.api_key_set === 'true'}
-								<span class="engine-key-status">✓ Configured ({brainSettings.api_key_masked})</span>
+								<span class="engine-key-status">
+									✓ Configured ({brainSettings.api_key_masked})
+									<button type="button" class="btn btn-ghost btn-xs" style="margin-left:0.5rem" onclick={() => disableProviderKey('openrouter')}>Disable</button>
+								</span>
 							{/if}
-							<input type="password" class="brain-input engine-key-input" placeholder="sk-or-v1-..." bind:value={brainApiKey} />
+							<div style="display:flex;gap:0.5rem;align-items:center">
+								<input type="password" class="brain-input engine-key-input" placeholder="sk-or-v1-..." bind:value={brainApiKey} style="flex:1" />
+								<button type="button" class="btn btn-ghost btn-sm" disabled={keyTesting.openrouter || !brainApiKey.trim()} onclick={() => testProviderKey('openrouter', brainApiKey)}>
+									{keyTesting.openrouter ? 'Testing…' : 'Test'}
+								</button>
+							</div>
+							{#if keyTestResult.openrouter.msg}
+								<span class="brain-hint" style="color: {keyTestResult.openrouter.ok ? 'var(--success, #4ade80)' : 'var(--error, #f87171)'}; display:block; margin-top:4px">{keyTestResult.openrouter.msg}</span>
+							{/if}
 							<span class="brain-hint">
-								<a href="https://openrouter.ai/keys" target="_blank" rel="noopener">Get a key</a> · paste here, then click Save Settings below.
+								<a href="https://openrouter.ai/keys" target="_blank" rel="noopener">Get a key</a> · paste, click Test to verify, then Save Settings below.
 							</span>
 						</div>
 						<div style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem; flex-wrap: wrap; margin-bottom: 8px;">
@@ -6987,11 +7057,22 @@ autonomy: reactive
 						<div class="engine-key-row">
 							<label class="engine-key-label">Anthropic API key</label>
 							{#if brainSettings.anthropic_api_key_set === 'true'}
-								<span class="engine-key-status">✓ Configured ({brainSettings.anthropic_api_key_masked})</span>
+								<span class="engine-key-status">
+									✓ Configured ({brainSettings.anthropic_api_key_masked})
+									<button type="button" class="btn btn-ghost btn-xs" style="margin-left:0.5rem" onclick={() => disableProviderKey('claude')}>Disable</button>
+								</span>
 							{/if}
-							<input type="password" class="brain-input engine-key-input" placeholder="sk-ant-..." bind:value={brainAnthropicKey} />
+							<div style="display:flex;gap:0.5rem;align-items:center">
+								<input type="password" class="brain-input engine-key-input" placeholder="sk-ant-..." bind:value={brainAnthropicKey} style="flex:1" />
+								<button type="button" class="btn btn-ghost btn-sm" disabled={keyTesting.claude || !brainAnthropicKey.trim()} onclick={() => testProviderKey('claude', brainAnthropicKey)}>
+									{keyTesting.claude ? 'Testing…' : 'Test'}
+								</button>
+							</div>
+							{#if keyTestResult.claude.msg}
+								<span class="brain-hint" style="color: {keyTestResult.claude.ok ? 'var(--success, #4ade80)' : 'var(--error, #f87171)'}; display:block; margin-top:4px">{keyTestResult.claude.msg}</span>
+							{/if}
 							<span class="brain-hint">
-								<a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Get a key</a> · sessions are per (channel, thread); workspace memory lives in an Anthropic-managed memory_store.
+								<a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Get a key</a> · paste, click Test to verify, then Save Settings.
 							</span>
 						</div>
 						<div style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem; flex-wrap: wrap; margin-top: 8px;">

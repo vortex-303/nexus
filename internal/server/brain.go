@@ -964,41 +964,26 @@ func (s *Server) handleGetBrainSettings(w http.ResponseWriter, r *http.Request) 
 	}
 	defer rows.Close()
 
+	// Sensitive keys: surface only a masked tail and a `_set` flag, never the
+	// raw value. `_set` is gated on the value actually being non-empty so that
+	// "Disable key" (which writes "") immediately flips the UI to "Not
+	// configured". Without that check, clearing a key still reported it as set.
+	maskKey := func(name, v string) {
+		if v == "" {
+			return
+		}
+		if len(v) > 8 {
+			settings[name+"_masked"] = v[:4] + "..." + v[len(v)-4:]
+		}
+		settings[name+"_set"] = "true"
+	}
 	for rows.Next() {
 		var k, v string
 		if err := rows.Scan(&k, &v); err == nil {
-			if k == "api_key" {
-				// Mask API key
-				if len(v) > 8 {
-					settings["api_key_masked"] = v[:4] + "..." + v[len(v)-4:]
-				}
-				settings["api_key_set"] = "true"
-			} else if k == "gemini_api_key" {
-				if len(v) > 8 {
-					settings["gemini_api_key_masked"] = v[:4] + "..." + v[len(v)-4:]
-				}
-				settings["gemini_api_key_set"] = "true"
-			} else if k == "xai_api_key" {
-				if len(v) > 8 {
-					settings["xai_api_key_masked"] = v[:4] + "..." + v[len(v)-4:]
-				}
-				settings["xai_api_key_set"] = "true"
-			} else if k == "openai_api_key" {
-				if len(v) > 8 {
-					settings["openai_api_key_masked"] = v[:4] + "..." + v[len(v)-4:]
-				}
-				settings["openai_api_key_set"] = "true"
-			} else if k == "brave_api_key" {
-				if len(v) > 8 {
-					settings["brave_api_key_masked"] = v[:4] + "..." + v[len(v)-4:]
-				}
-				settings["brave_api_key_set"] = "true"
-			} else if k == "anthropic_api_key" {
-				if len(v) > 8 {
-					settings["anthropic_api_key_masked"] = v[:4] + "..." + v[len(v)-4:]
-				}
-				settings["anthropic_api_key_set"] = "true"
-			} else {
+			switch k {
+			case "api_key", "gemini_api_key", "xai_api_key", "openai_api_key", "brave_api_key", "anthropic_api_key":
+				maskKey(k, v)
+			default:
 				settings[k] = v
 			}
 		}

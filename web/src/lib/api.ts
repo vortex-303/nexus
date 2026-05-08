@@ -914,6 +914,20 @@ export function eventICSDownloadURL(slug: string, eventId: string): string {
 	return `/api/workspaces/${slug}/calendar/events/${eventId}/ics`;
 }
 
+// Brain API key validation — verifies a candidate key with the upstream
+// provider (Anthropic / OpenRouter / Google AI) before save. Returns
+// { ok, status, message, account } so the UI can show a clear pass/fail
+// instead of waiting for the next chat turn to surface an auth failure.
+export interface TestKeyResult {
+	ok: boolean;
+	status?: number;
+	message?: string;
+	account?: string;
+}
+export async function testBrainKey(slug: string, provider: 'claude' | 'openrouter' | 'gemini', key: string): Promise<TestKeyResult> {
+	return request('POST', `/api/workspaces/${slug}/brain/test-key`, { provider, key });
+}
+
 // Workspace Models
 export async function getWorkspaceModels(slug: string) {
 	return request('GET', `/api/workspaces/${slug}/models`);

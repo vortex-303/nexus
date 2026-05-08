@@ -293,6 +293,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/workspaces/{slug}/brain/welcome", authed(http.HandlerFunc(s.requireAdmin(s.handleBrainWelcome))))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/settings", authed(http.HandlerFunc(s.handleGetBrainSettings)))
 	s.mux.Handle("PUT /api/workspaces/{slug}/brain/settings", authed(http.HandlerFunc(s.handleUpdateBrainSettings)))
+	s.mux.Handle("POST /api/workspaces/{slug}/brain/test-key", authed(http.HandlerFunc(s.requireAdmin(s.handleBrainTestKey))))
 
 	// Ollama Bridge (WebSocket — auth via query param like /ws, no middleware wrapping)
 	s.mux.HandleFunc("GET /api/workspaces/{slug}/bridge", s.handleBridge)
