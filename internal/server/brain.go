@@ -881,72 +881,32 @@ func (s *Server) makeBrainClient(slug, apiKey, resolvedModel string, fallbacks [
 	return client
 }
 
-// resolveFreeAuto resolves the virtual free-auto model ID to a primary
-// model and a fallback chain. For any OpenRouter primary, it ALSO appends
-// a short free-tier safety net so transient 5xx / rate-limit / model-
-// withdrawn errors auto-retry on a working free model instead of bubbling
-// a broken-Brain message back to chat. The brain.Client retry loop already
-// honors fallbacks; this just hands it a sensible chain.
+// resolveFreeAuto resolves the virtual free-auto model ID to a primary model and fallback list.
+// If the model is not free-auto, returns the model unchanged with no fallbacks.
 //
-// The safety net is intentionally short (top 3 free models) — we don't
-// want a slow degradation cascade through 8 models, and the most common
-// failure mode (rate-limit on a single paid provider) is fixed by hop #1.
+// Auto-fallback to free models for paid primaries was deliberately removed
+// (2026-05-08): silently swapping a paid V4 Flash for free V3 on a 503
+// hides the actual problem (out of credits / rate limit / withdrawn model)
+// from the admin. brain2.FriendlyError already surfaces those failures as
+// clear chat-side messages — we'd rather show "you're out of credits, top
+// up or switch engine" than silently drop to a slower free model the
+// admin didn't ask for.
+//
+// nexus/free-auto is unchanged — that virtual model IS the chain, opting
+// the user into degradation by name.
 func (s *Server) resolveFreeAuto(model, slug string) (primaryModel string, fallbacks []string) {
-	if model == FreeAutoModelID {
-		freeModels := s.getWorkspaceFreeModels(slug)
-		if len(freeModels) == 0 {
-			return DefaultFreeModels[0].ID, nil
-		}
-		primary := freeModels[0].ID
-		for _, m := range freeModels[1:] {
-			fallbacks = append(fallbacks, m.ID)
-		}
-		return primary, fallbacks
-	}
-
-	// Skip the free-tier safety net for engines that don't run through the
-	// OpenRouter retry loop (Ollama, local, Anthropic-direct grok-* paths).
-	// makeBrainClient routes those before touching FreeModelFallbacks.
-	if !looksLikeOpenRouterModel(model) {
+	if model != FreeAutoModelID {
 		return model, nil
 	}
-
-	// Build a short free-tier safety net, skipping the primary if it's
-	// somehow in the free list (don't want the same model twice).
-	free := s.getWorkspaceFreeModels(slug)
-	if len(free) == 0 {
-		free = DefaultFreeModels
+	freeModels := s.getWorkspaceFreeModels(slug)
+	if len(freeModels) == 0 {
+		return DefaultFreeModels[0].ID, nil
 	}
-	for _, fm := range free {
-		if fm.ID == model {
-			continue
-		}
-		fallbacks = append(fallbacks, fm.ID)
-		if len(fallbacks) >= 3 {
-			break
-		}
+	primary := freeModels[0].ID
+	for _, m := range freeModels[1:] {
+		fallbacks = append(fallbacks, m.ID)
 	}
-	return model, fallbacks
-}
-
-// looksLikeOpenRouterModel returns true for model IDs that go through
-// OpenRouter's chat-completions endpoint. Used to gate the free-tier
-// safety net so Ollama / xAI / Gemini / Anthropic-direct paths don't get
-// surprised by a fallback list they can't honor.
-func looksLikeOpenRouterModel(model string) bool {
-	switch {
-	case model == "":
-		return false
-	case strings.HasPrefix(model, "claude-"):
-		return false
-	case brain.IsGrokModel(model):
-		return false
-	case brain.IsGeminiModel(model):
-		return false
-	}
-	// OpenRouter model IDs are all "<provider>/<model>" — anything without
-	// a slash is something else (local, raw model name, etc).
-	return strings.Contains(model, "/")
+	return primary, fallbacks
 }
 
 // getGeminiAPIKey reads the Gemini API key from workspace settings.
