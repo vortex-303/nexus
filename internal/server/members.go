@@ -69,6 +69,18 @@ func (s *Server) handleUpdateRole(w http.ResponseWriter, r *http.Request) {
 	checker := roles.NewChecker(wdb.DB)
 	checker.ClearAllOverrides(req.MemberID)
 
+	// Surface in the team timeline so the workspace can see governance
+	// changes without an audit log spelunk.
+	var targetName string
+	_ = wdb.DB.QueryRow("SELECT display_name FROM members WHERE id = ?", req.MemberID).Scan(&targetName)
+	s.onPulse(slug, Pulse{
+		Type:      "role.changed",
+		ActorID:   claims.UserID,
+		ActorName: claims.DisplayName,
+		EntityID:  req.MemberID,
+		Summary:   targetName + " is now " + req.Role + " (was " + currentRole + ")",
+	})
+
 	writeJSON(w, http.StatusOK, map[string]string{
 		"member_id": req.MemberID,
 		"role":      req.Role,
@@ -286,6 +298,15 @@ func (s *Server) handleKickMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Capture the target's display name BEFORE delete so we can name them
+	// in the audit pulse. Best-effort — pulse falls back to the ID if the
+	// member row is somehow already gone.
+	var targetName string
+	_ = wdb.DB.QueryRow("SELECT display_name FROM members WHERE id = ?", memberID).Scan(&targetName)
+	if targetName == "" {
+		targetName = memberID
+	}
+
 	// Clean up overrides and guest channels first (FK constraints)
 	wdb.DB.Exec("DELETE FROM permission_overrides WHERE member_id = ?", memberID)
 	wdb.DB.Exec("DELETE FROM guest_channels WHERE member_id = ?", memberID)
@@ -299,6 +320,14 @@ func (s *Server) handleKickMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "member not found")
 		return
 	}
+
+	s.onPulse(slug, Pulse{
+		Type:      "member.left",
+		ActorID:   claims.UserID,
+		ActorName: claims.DisplayName,
+		EntityID:  memberID,
+		Summary:   targetName + " was removed by " + claims.DisplayName,
+	})
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }

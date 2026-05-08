@@ -330,6 +330,10 @@ export async function getUsage(slug: string, period: string = 'month') {
 	return request('GET', `/api/workspaces/${slug}/usage?period=${period}`);
 }
 
+export async function getBrainHealth(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/brain/health`);
+}
+
 export async function getBrainDefinition(slug: string, file: string) {
 	return request('GET', `/api/workspaces/${slug}/brain/definitions/${file}`);
 }

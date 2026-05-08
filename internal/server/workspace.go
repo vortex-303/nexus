@@ -291,6 +291,17 @@ func (s *Server) handleJoinWorkspace(w http.ResponseWriter, r *http.Request) {
 		"/w/"+slug,
 		"", "Nexus", "")
 
+	// Surface the join in the team timeline so admins (and members
+	// watching the sidebar Activity feed) see workspace churn without
+	// digging into Members admin views.
+	s.onPulse(slug, Pulse{
+		Type:      "member.joined",
+		ActorID:   userID,
+		ActorName: req.DisplayName,
+		EntityID:  userID,
+		Summary:   req.DisplayName + " joined the workspace",
+	})
+
 	// Issue JWT
 	token, err := s.jwt.Issue(userID, req.DisplayName, slug, "member", "")
 	if err != nil {
@@ -492,6 +503,14 @@ func (s *Server) handleJoinByCode(w http.ResponseWriter, r *http.Request) {
 		"Say hi in #general, try @Brain, and explore the workspace.",
 		"/w/"+wsSlug,
 		"", "Nexus", "")
+
+	s.onPulse(wsSlug, Pulse{
+		Type:      "member.joined",
+		ActorID:   userID,
+		ActorName: req.DisplayName,
+		EntityID:  userID,
+		Summary:   req.DisplayName + " joined the workspace",
+	})
 
 	// Issue JWT
 	token, err := s.jwt.Issue(userID, req.DisplayName, wsSlug, "member", accountID)

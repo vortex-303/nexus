@@ -2779,6 +2779,36 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 		} catch {}
 	}
 
+	// Console → Cost subsection. Period switch reloads the same /usage
+	// endpoint that Brain Settings used before — now wired into Console
+	// so admins have a single place to look.
+	let consoleCostPeriod = $state<'day' | 'week' | 'month' | 'all'>('week');
+	let consoleCost = $state<any>(null);
+	let consoleHealth = $state<any>(null);
+	let consoleLoading = $state(false);
+
+	async function loadConsoleData() {
+		consoleLoading = true;
+		try {
+			const api = await import('$lib/api');
+			const [cost, health] = await Promise.all([
+				api.getUsage(slug, consoleCostPeriod),
+				api.getBrainHealth(slug),
+			]);
+			consoleCost = cost;
+			consoleHealth = health;
+		} catch (e) {
+			console.error('console load', e);
+		}
+		consoleLoading = false;
+	}
+
+	function fmtCost(v: number): string {
+		if (!v || v < 0.01) return '<$0.01';
+		if (v < 1) return '$' + v.toFixed(3);
+		return '$' + v.toFixed(2);
+	}
+
 	async function loadSkills() {
 		try {
 			const data = await listSkills(slug);
@@ -6636,7 +6666,7 @@ autonomy: reactive
 					<button class="brain-nav-item" class:active={brainTab === 'north_star'} onclick={() => brainTab = 'north_star'}>North Star</button>
 					<button class="brain-nav-item" class:active={brainTab === 'definitions'} onclick={() => brainTab = 'definitions'}>Personality</button>
 					<button class="brain-nav-item" class:active={brainTab === 'memory'} onclick={() => { brainTab = 'memory'; loadMemories(); loadV3Memory(); }}>Memory</button>
-					<button class="brain-nav-item" class:active={brainTab === 'activity'} onclick={() => { brainTab = 'activity'; loadActions(); }}>Console</button>
+					<button class="brain-nav-item" class:active={brainTab === 'activity'} onclick={() => { brainTab = 'activity'; loadActions(); loadConsoleData(); }}>Console</button>
 					<button class="brain-nav-item" class:active={brainTab === 'extensions'} onclick={() => { brainTab = 'extensions'; loadSkills(); loadMCPServersData(); loadMCPTemplates(); loadSkillProposals(); }}>Extensions</button>
 					<button class="brain-nav-item" class:active={brainTab === 'knowledge'} onclick={() => { brainTab = 'knowledge'; loadKnowledge(); }}>Knowledge</button>
 					<button class="brain-nav-item" class:active={brainTab === 'integrations'} onclick={() => { brainTab = 'integrations'; loadIntegrations(); }}>Integrations</button>
@@ -8025,7 +8055,100 @@ autonomy: reactive
 			{:else if brainTab === 'activity'}
 			{@const consoleNoise = new Set(['mention', 'heartbeat', 'extraction'])}
 			{@const consoleChanges = brainActions.filter((a: any) => !consoleNoise.has(a.action_type))}
+
+			<!-- Cost — period totals, by-model, by-member, daily trend -->
 			<div class="brain-section">
+				<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:0.5rem">
+					<h3 class="brain-section-title" style="margin:0">Cost</h3>
+					<div style="display:flex;gap:0.25rem">
+						{#each ['day', 'week', 'month', 'all'] as period (period)}
+							<button class="btn btn-ghost btn-xs" class:active={consoleCostPeriod === period} onclick={() => { consoleCostPeriod = period as any; loadConsoleData(); }}>{period}</button>
+						{/each}
+					</div>
+				</div>
+				<p class="brain-section-desc">LLM spend in the selected window — totals, per-model, per-member. Cost is computed from token counts × per-model rates and stored per turn.</p>
+				{#if consoleCost}
+					<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:0.75rem;margin-bottom:0.75rem">
+						<div class="cost-stat"><span class="cost-stat-label">Total</span><span class="cost-stat-value">{fmtCost(consoleCost.total_cost)}</span></div>
+						<div class="cost-stat"><span class="cost-stat-label">Calls</span><span class="cost-stat-value">{consoleCost.call_count?.toLocaleString() || 0}</span></div>
+						<div class="cost-stat"><span class="cost-stat-label">Input tok</span><span class="cost-stat-value">{((consoleCost.total_input_tokens || 0) / 1000).toFixed(1)}k</span></div>
+						<div class="cost-stat"><span class="cost-stat-label">Output tok</span><span class="cost-stat-value">{((consoleCost.total_output_tokens || 0) / 1000).toFixed(1)}k</span></div>
+					</div>
+					{#if consoleCost.by_model && consoleCost.by_model.length > 0}
+						<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:0.5rem">
+							<div>
+								<div class="brain-hint" style="font-weight:600;margin-bottom:0.25rem">By model</div>
+								{#each consoleCost.by_model.slice(0, 5) as m}
+									<div style="display:flex;justify-content:space-between;font-size:0.78rem;padding:2px 0;border-bottom:1px solid var(--border-subtle)">
+										<span style="font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis">{m.model}</span>
+										<span style="color:var(--text-secondary)">{fmtCost(m.cost)} · {m.calls}×</span>
+									</div>
+								{/each}
+							</div>
+							<div>
+								<div class="brain-hint" style="font-weight:600;margin-bottom:0.25rem">By member</div>
+								{#if consoleCost.by_member && consoleCost.by_member.length > 0}
+									{#each consoleCost.by_member.slice(0, 5) as m}
+										<div style="display:flex;justify-content:space-between;font-size:0.78rem;padding:2px 0;border-bottom:1px solid var(--border-subtle)">
+											<span style="overflow:hidden;text-overflow:ellipsis">{m.member}</span>
+											<span style="color:var(--text-secondary)">{fmtCost(m.cost)} · {m.calls}×</span>
+										</div>
+									{/each}
+								{:else}
+									<span class="brain-hint" style="font-size:0.75rem">No member-attributed turns yet.</span>
+								{/if}
+							</div>
+						</div>
+					{:else}
+						<p class="brain-hint">No spend recorded in this window.</p>
+					{/if}
+				{:else if consoleLoading}
+					<p class="brain-hint">Loading…</p>
+				{/if}
+			</div>
+
+			<!-- Health — engine, MCP, recent v3 errors -->
+			<div class="brain-section" style="margin-top:1.25rem">
+				<h3 class="brain-section-title">Health</h3>
+				<p class="brain-section-desc">Snapshot of Brain's runtime state — which engine is wired, whether the upstream key is set, MCP server count, and recent v3 turn failures.</p>
+				{#if consoleHealth}
+					<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0.5rem">
+						<div class="health-card">
+							<div class="health-card-label">Engine</div>
+							<div class="health-card-value">
+								<span style="font-family:var(--font-mono);font-size:0.78rem">{consoleHealth.engine.active}</span>
+								{#if consoleHealth.engine.key_configured}
+									<span style="color:var(--success, #4ade80);font-size:0.75rem">● ready</span>
+								{:else}
+									<span style="color:var(--error, #f87171);font-size:0.75rem">● no key</span>
+								{/if}
+							</div>
+							<div class="brain-hint" style="font-size:0.72rem;margin-top:0.25rem">{consoleHealth.engine.detail}</div>
+						</div>
+						<div class="health-card">
+							<div class="health-card-label">MCP servers</div>
+							<div class="health-card-value">
+								<strong>{consoleHealth.mcp.enabled}</strong>
+								<span style="color:var(--text-tertiary);font-size:0.75rem">/ {consoleHealth.mcp.total} configured</span>
+							</div>
+						</div>
+						<div class="health-card">
+							<div class="health-card-label">Errors (24h)</div>
+							<div class="health-card-value">
+								<strong style="color: {consoleHealth.errors.v3_errors_24h > 0 ? 'var(--error, #f87171)' : 'var(--text-primary)'}">{consoleHealth.errors.v3_errors_24h}</strong>
+								<span style="color:var(--text-tertiary);font-size:0.75rem">v3 turns failed</span>
+							</div>
+							{#if consoleHealth.errors.last_error}
+								<div class="brain-hint" style="font-size:0.72rem;margin-top:0.25rem;font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title={consoleHealth.errors.last_error}>{consoleHealth.errors.last_error}</div>
+							{/if}
+						</div>
+					</div>
+				{:else if consoleLoading}
+					<p class="brain-hint">Loading…</p>
+				{/if}
+			</div>
+
+			<div class="brain-section" style="margin-top:1.25rem">
 				<h3 class="brain-section-title">Diagnostics</h3>
 				<p class="brain-section-desc">Raw server logs — request traces, MCP server output, error categories. Admin-only. Helpful for debugging integration failures.</p>
 				<button type="button" class="btn btn-secondary btn-sm" onclick={() => { showSystemLogs = true; fetchLogs(); }}>
@@ -10926,6 +11049,46 @@ autonomy: reactive
 		font-size: 0.85rem;
 		color: var(--text-secondary);
 		margin: 0 0 var(--space-md) 0;
+	}
+	/* Brain Settings → Console: Cost + Health summary cards. */
+	.cost-stat {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		padding: 8px 10px;
+		background: var(--bg-secondary, rgba(255, 255, 255, 0.04));
+		border: 1px solid var(--border-subtle);
+		border-radius: 6px;
+	}
+	.cost-stat-label {
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-tertiary);
+	}
+	.cost-stat-value {
+		font-size: 0.95rem;
+		font-weight: 600;
+		font-family: var(--font-mono);
+	}
+	.health-card {
+		padding: 8px 10px;
+		background: var(--bg-secondary, rgba(255, 255, 255, 0.04));
+		border: 1px solid var(--border-subtle);
+		border-radius: 6px;
+	}
+	.health-card-label {
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-tertiary);
+		margin-bottom: 2px;
+	}
+	.health-card-value {
+		display: flex;
+		gap: 0.4rem;
+		align-items: baseline;
+		font-size: 0.9rem;
 	}
 	.engine-grid {
 		display: grid;

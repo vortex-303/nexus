@@ -117,6 +117,32 @@ func (s *Server) handleGetUsage(w http.ResponseWriter, r *http.Request) {
 		byAction = []actionBreakdown{}
 	}
 
+	// By member (member_name is logged on every brain/agent turn).
+	type memberBreakdown struct {
+		Member string  `json:"member"`
+		Cost   float64 `json:"cost"`
+		Calls  int     `json:"calls"`
+	}
+	rows4, err := wdb.DB.Query(`
+		SELECT COALESCE(NULLIF(member_name, ''), '(system)'), COALESCE(SUM(cost_usd), 0), COUNT(*)
+		FROM llm_usage WHERE created_at >= ?
+		GROUP BY member_name ORDER BY SUM(cost_usd) DESC
+	`, since)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error")
+		return
+	}
+	defer rows4.Close()
+	var byMember []memberBreakdown
+	for rows4.Next() {
+		var m memberBreakdown
+		rows4.Scan(&m.Member, &m.Cost, &m.Calls)
+		byMember = append(byMember, m)
+	}
+	if byMember == nil {
+		byMember = []memberBreakdown{}
+	}
+
 	// Daily breakdown (last 30 days)
 	type dailyBreakdown struct {
 		Date  string  `json:"date"`
@@ -149,6 +175,7 @@ func (s *Server) handleGetUsage(w http.ResponseWriter, r *http.Request) {
 		"call_count":          callCount,
 		"by_model":            byModel,
 		"by_action":           byAction,
+		"by_member":           byMember,
 		"daily":               daily,
 	})
 }
