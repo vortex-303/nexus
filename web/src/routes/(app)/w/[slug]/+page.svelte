@@ -4,6 +4,7 @@
 	import { onMount } from 'svelte';
 	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, testModel, distillSkills, listSkillProposals, approveSkillProposal, rejectSkillProposal, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, joinChannel, leaveChannel, browseChannels, inviteToChannel, listChannelMembers, pinMessage, unpinMessage, listPinnedMessages, getMemoryPinnedMessageIds, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, resetV3Agent, getV3Memory, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings, listNotifications, markNotificationRead, markAllNotificationsRead, getNotificationCount } from '$lib/api';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
+	import { AGENT_CREATION_ENABLED } from '$lib/flags';
 	import { connect, disconnect, onMessage, sendMessage, sendTyping, sendReaction, removeReaction, clearChannel, markChannelRead, connectionStatus, generateClientId } from '$lib/ws';
 	import { channels, members, messages, activeChannel, typingUsers, onlineUsers } from '$lib/stores/workspace';
 	import type { Channel } from '$lib/stores/workspace';
@@ -4316,7 +4317,7 @@ autonomy: reactive
 						</svg>
 						Team
 					</button>
-					{#if isAdmin}
+					{#if isAdmin && AGENT_CREATION_ENABLED}
 					<button class="user-menu-item" onclick={() => { openAgentLibrary(); showUserMenu = false; }}>
 						<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
 							<rect x="1" y="1" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/>
@@ -5169,7 +5170,7 @@ autonomy: reactive
 				<p class="agent-lib-subtitle">Browse, create, and manage your AI agents</p>
 			</div>
 			<div class="agent-lib-header-actions">
-				{#if isAdmin}
+				{#if isAdmin && AGENT_CREATION_ENABLED}
 					<button class="btn btn-primary btn-sm" onclick={() => { showAgentLibrary = false; showTeamModal = true; teamModalTab = 'agents'; openNewAgent(); }}>+ Create Agent</button>
 				{/if}
 				<button class="modal-close" onclick={() => showAgentLibrary = false}>&times;</button>
@@ -5415,7 +5416,7 @@ autonomy: reactive
 			{:else if teamModalTab === 'agents'}
 				<div class="team-agents">
 					{#if !showAgentForm && !showTemplateGallery}
-						{#if isAdmin}
+						{#if isAdmin && AGENT_CREATION_ENABLED}
 							<div class="agents-toolbar">
 								<button class="btn btn-primary" onclick={openNewAgent}>Create Agent</button>
 								<button class="btn btn-ghost" onclick={() => { loadTemplates(); showTemplateGallery = true; }}>From Template</button>

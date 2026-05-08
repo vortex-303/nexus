@@ -6,6 +6,7 @@
 	import { connect, disconnect, onMessage } from '$lib/ws';
 	import { channels, members } from '$lib/stores/workspace';
 	import OrgChart from '$lib/components/OrgChart.svelte';
+	import { AGENT_CREATION_ENABLED } from '$lib/flags';
 
 	const ROLES = ['admin', 'member', 'guest'];
 	const ROLE_LABELS: Record<string, string> = {
@@ -585,7 +586,7 @@ autonomy: reactive
 		<div class="team-agents">
 			{#if !showAgentForm && !showTemplateGallery}
 				<div class="agents-toolbar">
-					{#if isAdmin}
+					{#if isAdmin && AGENT_CREATION_ENABLED}
 						<button class="btn btn-primary" onclick={openNewAgent}>Create Agent</button>
 						<button class="btn btn-ghost" onclick={() => { loadTemplates(); showTemplateGallery = true; }}>From Template</button>
 						<button class="btn btn-ghost" onclick={handleGenerateAgent} disabled={agentGenerating}>
@@ -1113,7 +1114,9 @@ autonomy: reactive
 									<option value={a.id}>{a.name}</option>
 								{/each}
 							</select>
-							<button class="btn btn-sm btn-primary" style="margin-top:8px" onclick={() => handleCreateAgentForRole(selectedNodeForPanel.id, selectedNodeForPanel.name, selectedNodeForPanel.role)}>Create Agent for Role</button>
+							{#if AGENT_CREATION_ENABLED}
+								<button class="btn btn-sm btn-primary" style="margin-top:8px" onclick={() => handleCreateAgentForRole(selectedNodeForPanel.id, selectedNodeForPanel.name, selectedNodeForPanel.role)}>Create Agent for Role</button>
+							{/if}
 							<button class="btn btn-danger btn-sm" style="margin-top:4px" onclick={() => handleDeleteOrgRoleAction(selectedNodeForPanel.id)}>Delete Role</button>
 						</div>
 					{/if}
