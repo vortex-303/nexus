@@ -210,6 +210,35 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
+	// Seed the three foundational Living Briefs every workspace starts with.
+	// Schedule = manual so we don't burn LLM tokens on auto-generation for
+	// workspaces that may never visit the Briefs page; admins click Generate
+	// when they want one. Idempotent via "no row of this template yet" —
+	// the table has no unique constraint on template, so we check first.
+	seedBriefs := []struct {
+		Template string
+		Title    string
+	}{
+		{"workspace_pulse", "Workspace Pulse"},
+		{"north_star_status", "North Star Status"},
+		{"team_health", "Team Health"},
+	}
+	for _, b := range seedBriefs {
+		var existing int
+		_ = wdb.DB.QueryRow("SELECT COUNT(*) FROM living_briefs WHERE template = ?", b.Template).Scan(&existing)
+		if existing > 0 {
+			continue
+		}
+		if _, err := wdb.DB.Exec(
+			`INSERT INTO living_briefs (id, title, template, schedule) VALUES (?, ?, ?, 'manual')`,
+			id.New(), b.Title, b.Template,
+		); err != nil {
+			logger.WithCategory(logger.CatBrain).Warn().
+				Str("workspace", slug).Str("template", b.Template).Err(err).
+				Msg("seed brief failed (best-effort)")
+		}
+	}
+
 	// Welcome notification
 	go s.createNotification(wdb, slug, userID, "system",
 		"Welcome to Nexus!",

@@ -378,6 +378,40 @@
 		keyTesting[provider] = false;
 	}
 
+	// saveAndVerifyProviderKey is the per-card save action used by the
+	// Engines tab. Verifies the candidate key against the upstream provider
+	// FIRST, then persists it only on success — so admins can't end up
+	// with a saved-but-broken key. On failure the input stays populated so
+	// they can edit and retry without re-typing. The bottom "Save engine
+	// settings" button still owns model/depth/template; this owns the key.
+	async function saveAndVerifyProviderKey(provider: ProviderKey, candidate: string) {
+		const key = (candidate || '').trim();
+		if (!key) {
+			keyTestResult[provider] = { ok: false, msg: 'Paste a key first' };
+			return;
+		}
+		keyTesting[provider] = true;
+		keyTestResult[provider] = {};
+		try {
+			const api = await import('$lib/api');
+			const r = await api.testBrainKey(slug, provider, key);
+			if (!r.ok) {
+				keyTestResult[provider] = { ok: false, msg: r.message || 'Verify failed — key not saved' };
+				keyTesting[provider] = false;
+				return;
+			}
+			const settingKey = provider === 'claude' ? 'anthropic_api_key' : provider === 'openrouter' ? 'api_key' : 'gemini_api_key';
+			await updateBrainSettings(slug, { [settingKey]: key });
+			await loadBrainSettings();
+			if (provider === 'claude') brainAnthropicKey = '';
+			if (provider === 'openrouter') brainApiKey = '';
+			keyTestResult[provider] = { ok: true, msg: `✓ Saved & verified${r.account ? ' — ' + r.account : ''}` };
+		} catch (e: any) {
+			keyTestResult[provider] = { ok: false, msg: e?.message || 'Save failed' };
+		}
+		keyTesting[provider] = false;
+	}
+
 	async function disableProviderKey(provider: ProviderKey) {
 		const settingKey = provider === 'claude' ? 'anthropic_api_key' : provider === 'openrouter' ? 'api_key' : 'gemini_api_key';
 		const label = provider === 'claude' ? 'Anthropic' : provider === 'openrouter' ? 'OpenRouter' : 'Gemini';
@@ -7163,8 +7197,8 @@ autonomy: reactive
 							{/if}
 							<div style="display:flex;gap:0.5rem;align-items:center">
 								<input type="password" class="brain-input engine-key-input" placeholder="sk-or-v1-..." bind:value={brainApiKey} style="flex:1" />
-								<button type="button" class="btn btn-ghost btn-sm" disabled={keyTesting.openrouter || !brainApiKey.trim()} onclick={() => testProviderKey('openrouter', brainApiKey)}>
-									{keyTesting.openrouter ? 'Testing…' : 'Test'}
+								<button type="button" class="btn btn-primary btn-sm" disabled={keyTesting.openrouter || !brainApiKey.trim()} onclick={() => saveAndVerifyProviderKey('openrouter', brainApiKey)}>
+									{keyTesting.openrouter ? 'Saving…' : 'Save & verify'}
 								</button>
 							</div>
 							{#if keyTestResult.openrouter.msg}
@@ -7284,8 +7318,8 @@ autonomy: reactive
 							{/if}
 							<div style="display:flex;gap:0.5rem;align-items:center">
 								<input type="password" class="brain-input engine-key-input" placeholder="sk-ant-..." bind:value={brainAnthropicKey} style="flex:1" />
-								<button type="button" class="btn btn-ghost btn-sm" disabled={keyTesting.claude || !brainAnthropicKey.trim()} onclick={() => testProviderKey('claude', brainAnthropicKey)}>
-									{keyTesting.claude ? 'Testing…' : 'Test'}
+								<button type="button" class="btn btn-primary btn-sm" disabled={keyTesting.claude || !brainAnthropicKey.trim()} onclick={() => saveAndVerifyProviderKey('claude', brainAnthropicKey)}>
+									{keyTesting.claude ? 'Saving…' : 'Save & verify'}
 								</button>
 							</div>
 							{#if keyTestResult.claude.msg}
