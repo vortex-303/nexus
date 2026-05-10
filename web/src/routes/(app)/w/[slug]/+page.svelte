@@ -151,7 +151,12 @@
 
 	// Onboarding wizard state
 	let showWizard = $state(false);
-	let wizardStep = $state<'welcome' | 'engine' | 'apikey' | 'services' | 'done'>('welcome');
+	// Onboarding flow trimmed to OpenRouter-only as of 2026-05-09.
+	// The 'engine' step (Claude vs OpenRouter cards) was dropped — fresh
+	// workspaces are seeded with engine=openrouter + DeepSeek V4 Flash
+	// already, and the engine fork was a redundant pick. Claude is still
+	// available in Settings → Engines for admins who want it.
+	let wizardStep = $state<'welcome' | 'apikey' | 'services' | 'done'>('welcome');
 	// wizardEngine is the engine the admin picked in the engine step. Drives
 	// which API key field is shown in the apikey step + which engine setting
 	// gets persisted on save. Default 'claude' since it's the recommended
@@ -6550,48 +6555,8 @@ autonomy: reactive
 			</div>
 			<h2 class="wizard-title">Welcome to Nexus</h2>
 			<p class="wizard-sub">Brain is your AI teammate. Let's pick the engine that powers it — you can add the other one later as a secondary.</p>
-			<button class="wizard-btn wizard-btn-primary" onclick={() => wizardStep = 'engine'}>Get Started</button>
+			<button class="wizard-btn wizard-btn-primary" onclick={() => { wizardEngine = 'openrouter'; wizardStep = 'apikey'; }}>Get Started</button>
 			<button class="wizard-btn wizard-btn-skip" onclick={() => { showWizard = false; updateBrainSettings(slug, { onboarding_complete: 'true' }); }}>Skip setup</button>
-		{:else if wizardStep === 'engine'}
-			<h2 class="wizard-title">Choose your engine</h2>
-			<p class="wizard-sub">Brain runs on the engine you pick. Both work for chat + tasks + research; they differ in how much infrastructure you get for the price.</p>
-			<div class="wizard-engine-grid">
-				<button type="button" class="wizard-engine-card" class:selected={wizardEngine === 'claude'} onclick={() => wizardEngine = 'claude'}>
-					<div class="wizard-engine-header">
-						<strong>Claude</strong>
-						<span class="engine-card-tag claude">Recommended</span>
-						{#if brainSettings.anthropic_api_key_set === 'true'}
-							<span class="wizard-connected">✓ Connected</span>
-						{/if}
-					</div>
-					<div class="wizard-engine-tagline">Managed Agents — Anthropic runs the runtime, not just the API.</div>
-					<ul class="wizard-engine-bullets">
-						<li>Persistent per-thread sessions + memory_store</li>
-						<li>Native skills (docx/pdf/xlsx/pptx) + 2 personas (Creative Director, Researcher)</li>
-						<li>Sonnet 4.6 default · Opus 4.7 for max capability</li>
-						<li>From <strong>$1/M input tokens</strong> (Sonnet)</li>
-					</ul>
-				</button>
-				<button type="button" class="wizard-engine-card" class:selected={wizardEngine === 'openrouter'} onclick={() => wizardEngine = 'openrouter'}>
-					<div class="wizard-engine-header">
-						<strong>OpenRouter</strong>
-						<span class="engine-card-tag">Agnostic</span>
-						{#if brainSettings.api_key_set === 'true'}
-							<span class="wizard-connected">✓ Connected</span>
-						{/if}
-					</div>
-					<div class="wizard-engine-tagline">100+ models, latest first, lowest cost.</div>
-					<ul class="wizard-engine-bullets">
-						<li>Live model browser — DeepSeek V4, Gemma 4, Qwen3, Llama 3.3</li>
-						<li>Free-tier models for unlimited internal use</li>
-						<li>Self-correcting tool loop · per-channel model overrides</li>
-						<li>Pay-as-you-go from <strong>$0.14/M input tokens</strong></li>
-					</ul>
-				</button>
-			</div>
-			<p class="wizard-hint">You can add the other engine as a secondary anytime in Brain Settings.</p>
-			<button class="wizard-btn wizard-btn-primary" onclick={() => wizardStep = 'apikey'}>Continue with {wizardEngine === 'claude' ? 'Claude' : 'OpenRouter'} →</button>
-			<button class="wizard-btn wizard-btn-skip" onclick={() => wizardStep = 'welcome'}>← Back</button>
 		{:else if wizardStep === 'apikey'}
 			{@const claudeKeySet = brainSettings.anthropic_api_key_set === 'true'}
 			{@const orKeySet = brainSettings.api_key_set === 'true'}
@@ -6681,7 +6646,7 @@ autonomy: reactive
 				{#if keyAlreadySet}
 					<button class="wizard-btn wizard-btn-skip" onclick={() => { wizardReplaceKey = false; wizardApiKey = ''; }}>← Use existing key</button>
 				{:else}
-					<button class="wizard-btn wizard-btn-skip" onclick={() => wizardStep = 'engine'}>← Back to engine</button>
+					<button class="wizard-btn wizard-btn-skip" onclick={() => wizardStep = 'welcome'}>← Back</button>
 				{/if}
 			{/if}
 		{:else if wizardStep === 'services'}
@@ -6994,7 +6959,7 @@ autonomy: reactive
 						<span class="summary-chip">{brainSkills.length} skills</span>
 						<span class="summary-chip">{mcpServers.length} MCP</span>
 						<button class="btn btn-ghost btn-xs" onclick={() => { brainTab = 'extensions'; loadSkills(); loadMCPServersData(); }} style="margin-left: 8px;">View Extensions →</button>
-						<button class="btn btn-ghost btn-xs" title="Re-open the engine + API key setup wizard" onclick={() => { wizardStep = 'welcome'; wizardApiKey = ''; wizardGeminiKey = ''; wizardBraveKey = ''; wizardXAIKey = ''; wizardOpenAIKey = ''; wizardReplaceKey = false; wizardEngine = (brainEngine || 'claude'); showWizard = true; }}>↺ Setup wizard</button>
+						<button class="btn btn-ghost btn-xs" title="Re-open the API key setup wizard" onclick={() => { wizardStep = 'welcome'; wizardApiKey = ''; wizardGeminiKey = ''; wizardBraveKey = ''; wizardXAIKey = ''; wizardOpenAIKey = ''; wizardReplaceKey = false; wizardEngine = 'openrouter'; showWizard = true; }}>↺ Setup wizard</button>
 					</div>
 				</div>
 			</div>
