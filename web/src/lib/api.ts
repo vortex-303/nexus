@@ -375,6 +375,14 @@ export async function listSkills(slug: string) {
 	return request('GET', `/api/workspaces/${slug}/brain/skills`);
 }
 
+export async function listPersonas(slug: string) {
+	return request('GET', `/api/workspaces/${slug}/brain/personas`);
+}
+
+export async function getPersona(slug: string, personaSlug: string) {
+	return request('GET', `/api/workspaces/${slug}/brain/personas/${personaSlug}`);
+}
+
 export async function getSkill(slug: string, file: string) {
 	return request('GET', `/api/workspaces/${slug}/brain/skills/${file}`);
 }

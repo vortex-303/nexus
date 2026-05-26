@@ -691,6 +691,39 @@ func (s *Server) handleBrainMentionWithToolsEx(slug, channelID, parentID, sender
 		if len(modelOverride) > 0 && modelOverride[0] != "" {
 			model = modelOverride[0]
 		}
+
+		// Phase 1: parse `[persona:<slug>] ...` prefix for explicit /persona
+		// invocation. Strip from content before downstream sees it; load the
+		// persona row; apply its model override (workspace default if empty);
+		// pass to buildContextForMode so the clean-swap path replaces the
+		// polymorphic persona-context slot with the persona's operating
+		// directive. Built-ins keep working via keyword backward compat when
+		// no prefix is present.
+		var activePersona *brain.Persona
+		if personaSlug, rest := brain.ParsePersonaPrefix(content); personaSlug != "" {
+			wdbForPersona, err := s.ws.Open(slug)
+			if err == nil {
+				p, perr := brain.LoadPersonaBySlug(wdbForPersona.DB, personaSlug)
+				if perr == nil && p.Enabled {
+					activePersona = &p
+					content = rest // strip the prefix from the downstream content
+					if p.Model != "" {
+						model = p.Model
+					}
+					logger.WithCategory(logger.CatBrain).Info().
+						Str("workspace", slug).
+						Str("persona", p.Slug).
+						Str("model", model).
+						Msg("persona invoked via slash")
+				} else {
+					logger.WithCategory(logger.CatBrain).Warn().
+						Str("workspace", slug).
+						Str("persona", personaSlug).
+						Err(perr).
+						Msg("persona prefix parsed but not found or disabled; falling through")
+				}
+			}
+		}
 		ollamaEnabled := s.getBrainSetting(slug, "ollama_enabled") == "true"
 		if apiKey == "" && s.getXAIKey(slug) == "" && !ollamaEnabled {
 			errMsg := "I can answer search and stats queries without an API key. Try: \"search for X\", \"how many messages\", \"who is online\", \"list channels\". For general questions, configure an API key in Settings."
@@ -718,8 +751,10 @@ func (s *Server) handleBrainMentionWithToolsEx(slug, channelID, parentID, sender
 			return
 		}
 
-		// Build context based on attention mode (thread vs channel)
-		systemPrompt = s.buildContextForMode(slug, wdb, channelID, parentID, content, senderName, apiKey, brainDir, systemPrompt)
+		// Build context based on attention mode (thread vs channel).
+		// activePersona is non-nil when the user explicitly invoked /persona,
+		// triggering the clean-swap path inside buildContextForMode.
+		systemPrompt = s.buildContextForModeWithPersona(slug, wdb, channelID, parentID, content, senderName, apiKey, brainDir, systemPrompt, activePersona)
 
 		messages := s.getThreadOrChannelMessages(wdb, channelID, parentID, 40)
 		logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("count", len(messages)).Msg("messages")
@@ -848,7 +883,19 @@ func (s *Server) handleBrainMentionWithToolsEx(slug, channelID, parentID, sender
 
 // buildContextForMode assembles the system prompt context based on attention mode.
 // Thread mode (parentID set) uses a focused context; channel mode uses full workspace awareness.
+// buildContextForMode keeps its original signature for legacy callers
+// (task scheduler, agents that don't go through /persona).
 func (s *Server) buildContextForMode(slug string, wdb *db.WorkspaceDB, channelID, parentID, content, senderName, apiKey, brainDir, systemPrompt string) string {
+	return s.buildContextForModeWithPersona(slug, wdb, channelID, parentID, content, senderName, apiKey, brainDir, systemPrompt, nil)
+}
+
+// buildContextForModeWithPersona is the Phase 1 entry point that knows
+// about explicit /persona invocation. When activePersona is non-nil, it
+// SKIPS the polymorphic persona-context slot (keyword-matched bodies) and
+// APPENDS a clean-swap operating directive instead — "You are operating
+// as <DisplayName>" + persona body. Tools, memory, knowledge, etc. layers
+// are unaffected.
+func (s *Server) buildContextForModeWithPersona(slug string, wdb *db.WorkspaceDB, channelID, parentID, content, senderName, apiKey, brainDir, systemPrompt string, activePersona *brain.Persona) string {
 	// Inject North Star context (always)
 	if nsCtx := s.buildNorthStarContext(slug); nsCtx != "" {
 		systemPrompt += "\n\n---\n\n" + nsCtx
@@ -904,11 +951,13 @@ func (s *Server) buildContextForMode(slug string, wdb *db.WorkspaceDB, channelID
 		}
 		// Persona / keyword-matched skill bodies — inlined into system prompt
 		// for this turn when the user's message matches a skill's keywords.
-		// Same effect Claude's skill loader provides via progressive disclosure.
-		activated := brain.MatchSkillsByContent(skills, content)
-		if personaCtx := brain.BuildPersonaContext(activated, 3000); personaCtx != "" {
-			systemPrompt += "\n\n---\n\n" + personaCtx
-			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(personaCtx)).Int("activated", len(activated)).Int("total", len(systemPrompt)).Msg("+persona_bodies (thread)")
+		// SKIPPED when activePersona is set (clean-swap takes over below).
+		if activePersona == nil {
+			activated := brain.MatchSkillsByContent(skills, content)
+			if personaCtx := brain.BuildPersonaContext(activated, 3000); personaCtx != "" {
+				systemPrompt += "\n\n---\n\n" + personaCtx
+				logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(personaCtx)).Int("activated", len(activated)).Int("total", len(systemPrompt)).Msg("+persona_bodies (thread)")
+			}
 		}
 
 		// COLD: Knowledge — only if topic-relevant, capped at 5000 chars
@@ -958,11 +1007,13 @@ func (s *Server) buildContextForMode(slug string, wdb *db.WorkspaceDB, channelID
 		}
 		// Persona / keyword-matched skill bodies — inlined into system prompt
 		// for this turn when the user's message matches a skill's keywords.
-		// Same effect Claude's skill loader provides via progressive disclosure.
-		activated := brain.MatchSkillsByContent(skills, content)
-		if personaCtx := brain.BuildPersonaContext(activated, 3000); personaCtx != "" {
-			systemPrompt += "\n\n---\n\n" + personaCtx
-			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(personaCtx)).Int("activated", len(activated)).Int("total", len(systemPrompt)).Msg("+persona_bodies")
+		// SKIPPED when activePersona is set (clean-swap takes over below).
+		if activePersona == nil {
+			activated := brain.MatchSkillsByContent(skills, content)
+			if personaCtx := brain.BuildPersonaContext(activated, 3000); personaCtx != "" {
+				systemPrompt += "\n\n---\n\n" + personaCtx
+				logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(personaCtx)).Int("activated", len(activated)).Int("total", len(systemPrompt)).Msg("+persona_bodies")
+			}
 		}
 
 		// Append knowledge base context
@@ -984,6 +1035,23 @@ func (s *Server) buildContextForMode(slug string, wdb *db.WorkspaceDB, channelID
 		if crossCtx := brain.BuildCrossChannelContext(wdb.DB, channelID); crossCtx != "" {
 			systemPrompt += "\n\n---\n\n" + crossCtx
 			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("chars", len(crossCtx)).Int("total", len(systemPrompt)).Msg("+cross_channel")
+		}
+	}
+
+	// Clean-swap: when activePersona is set, append the persona's operating
+	// directive LAST so it carries the most weight in the model's attention.
+	// The polymorphic persona slot above is already skipped — this stands in
+	// for it as the sole persona signal for this turn.
+	if activePersona != nil {
+		directive := activePersona.BuildPersonaOperatingDirective("openrouter")
+		if directive != "" {
+			systemPrompt += "\n\n---\n\n" + directive
+			logger.WithCategory(logger.CatBrain).Info().
+				Str("workspace", slug).
+				Str("persona", activePersona.Slug).
+				Int("chars", len(directive)).
+				Int("total", len(systemPrompt)).
+				Msg("+persona_directive (clean swap)")
 		}
 	}
 

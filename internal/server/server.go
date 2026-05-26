@@ -341,6 +341,8 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/workspaces/{slug}/network-log", authed(http.HandlerFunc(s.requireAdmin(s.handleNetworkLog))))
 
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/actions", authed(http.HandlerFunc(s.handleListActions)))
+	s.mux.Handle("GET /api/workspaces/{slug}/brain/personas", authed(http.HandlerFunc(s.handleListPersonas)))
+	s.mux.Handle("GET /api/workspaces/{slug}/brain/personas/{personaSlug}", authed(http.HandlerFunc(s.handleGetPersona)))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/skills", authed(http.HandlerFunc(s.handleListSkills)))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/skills/templates", authed(http.HandlerFunc(s.handleListSkillTemplates)))
 	s.mux.Handle("POST /api/workspaces/{slug}/brain/skills/generate", authed(http.HandlerFunc(s.requirePerm(roles.PermSkillManage, s.handleGenerateSkill))))

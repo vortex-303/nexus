@@ -1207,8 +1207,35 @@ var workspaceMigrations61 = migration{
 	`,
 }
 
+var workspaceMigrations62 = migration{
+	version: 62,
+	name:    "personas: workspace-scoped first-class Brain personas",
+	sql: `
+		CREATE TABLE IF NOT EXISTS personas (
+			slug              TEXT PRIMARY KEY,
+			display_name      TEXT NOT NULL,
+			description       TEXT NOT NULL DEFAULT '',
+			body              TEXT NOT NULL DEFAULT '',
+			body_openrouter   TEXT NOT NULL DEFAULT '',
+			model             TEXT NOT NULL DEFAULT '',
+			skills            TEXT NOT NULL DEFAULT '',
+			autonomy          TEXT NOT NULL DEFAULT 'reactive',
+			trigger_mode      TEXT NOT NULL DEFAULT 'both',
+			keywords          TEXT NOT NULL DEFAULT '',
+			avatar_url        TEXT NOT NULL DEFAULT '',
+			builtin_locked    INTEGER NOT NULL DEFAULT 0,
+			enabled           INTEGER NOT NULL DEFAULT 1,
+			created_by        TEXT NOT NULL DEFAULT 'system',
+			created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+			updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_personas_enabled ON personas(enabled);
+		CREATE INDEX IF NOT EXISTS idx_personas_trigger ON personas(trigger_mode);
+	`,
+}
+
 func init() {
-	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55, workspaceMigrations58, workspaceMigrations59, workspaceMigrations60, workspaceMigrations61)
+	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55, workspaceMigrations58, workspaceMigrations59, workspaceMigrations60, workspaceMigrations61, workspaceMigrations62)
 }
 
 func RunGlobal(db *sql.DB) error {

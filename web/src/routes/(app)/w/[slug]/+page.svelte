@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, testModel, distillSkills, listSkillProposals, approveSkillProposal, rejectSkillProposal, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, joinChannel, leaveChannel, browseChannels, inviteToChannel, listChannelMembers, pinMessage, unpinMessage, listPinnedMessages, getMemoryPinnedMessageIds, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, resetV3Agent, getV3Memory, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings, listNotifications, markNotificationRead, markAllNotificationsRead, getNotificationCount } from '$lib/api';
+	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, listPersonas, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, testModel, distillSkills, listSkillProposals, approveSkillProposal, rejectSkillProposal, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, joinChannel, leaveChannel, browseChannels, inviteToChannel, listChannelMembers, pinMessage, unpinMessage, listPinnedMessages, getMemoryPinnedMessageIds, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, resetV3Agent, getV3Memory, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings, listNotifications, markNotificationRead, markAllNotificationsRead, getNotificationCount } from '$lib/api';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { AGENT_CREATION_ENABLED } from '$lib/flags';
 	import { connect, disconnect, onMessage, sendMessage, sendTyping, sendReaction, removeReaction, clearChannel, markChannelRead, connectionStatus, generateClientId } from '$lib/ws';
@@ -570,6 +570,10 @@
 	let slashResults: any[] = $state([]);
 	let slashIndex = $state(0);
 
+	// Personas — fetched once on workspace load, fuel the /persona slash menu
+	// + the [persona:X] badge renderer. Empty array until first load.
+	let personasList = $state<any[]>([]);
+
 	// Online members for channel header
 	let onlineMembersList = $state<any[]>([]);
 
@@ -1024,7 +1028,23 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 		const role = currentUser?.role || 'guest';
 		const isMember = role !== 'guest' && role !== 'viewer';
 		const isAdminRole = role === 'admin' || role === 'owner';
-		const cmds: {name: string, description: string, action: string, category: string}[] = [
+		const cmds: {name: string, description: string, action: string, category: string}[] = [];
+		// Personas first — explicit invocation rewrites the input to
+		// `@Brain [persona:<slug>] ` so the backend's prefix parser triggers
+		// the clean-swap path. Listed before generic commands so /<persona>
+		// is discoverable.
+		for (const p of personasList) {
+			if (!p.enabled) continue;
+			const tm = p.trigger_mode || 'both';
+			if (tm === 'keyword') continue; // not slash-invokable
+			cmds.push({
+				name: p.slug.replace(/-/g, ''), // /creative-director typed as /creativedirector
+				description: p.description || `Activate ${p.display_name}`,
+				action: `@Brain [persona:${p.slug}] `,
+				category: 'Personas',
+			});
+		}
+		cmds.push(
 			// Everyone
 			{ name: 'search', description: 'Search the web', action: '@Brain search the web for ', category: 'Search' },
 			{ name: 'fetch', description: 'Fetch a URL', action: '@Brain fetch ', category: 'Search' },
@@ -1032,7 +1052,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			{ name: 'time', description: 'Get current time', action: '@Brain what time is it', category: 'General' },
 			{ name: 'summarize', description: 'Summarize the conversation', action: '@Brain summarize this conversation', category: 'General' },
 			{ name: 'memory', description: 'What do you remember?', action: '@Brain what do you remember about me?', category: 'General' },
-		];
+		);
 		// Members+
 		if (isMember) {
 			cmds.push(
@@ -1127,6 +1147,9 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 
 			// Load agents for sidebar built-in agents
 			loadAgents().catch(() => {});
+
+			// Load personas to power /persona slash menu + [persona:X] badges
+			loadPersonas().catch(() => {});
 
 			// Load plan info for sidebar banner
 			loadWorkspaceInfo().catch(() => {});
@@ -3096,6 +3119,16 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 		}
 	}
 
+	async function loadPersonas() {
+		try {
+			const data = await listPersonas(slug);
+			personasList = data?.personas || [];
+		} catch (e: any) {
+			console.error('Failed to load personas:', e);
+			personasList = [];
+		}
+	}
+
 	async function loadMCPTemplates() {
 		try {
 			mcpTemplates = await listMCPTemplates();
@@ -3872,6 +3905,24 @@ autonomy: reactive
 			return { badge: match[1], cleanContent: content.slice(match[0].length) };
 		}
 		return null;
+	}
+
+	// Persona badge — distinct from [skill:X]. When a message leads with
+	// `[persona:<slug>]`, render an "Active as: <Display Name>" chip and
+	// strip the prefix from the displayed content. Used on both sides:
+	// user messages (the slash command rewrites input to include the
+	// prefix) and Brain's replies (the persona's operating directive
+	// instructs Brain to lead with it).
+	function extractPersonaBadge(content: string): { slug: string; displayName: string; cleanContent: string } | null {
+		const match = content.match(/^\[persona:([a-z0-9_-]+)\]\s*/i);
+		if (!match) return null;
+		const slug = match[1];
+		const persona = personasList.find((p: any) => p.slug === slug);
+		return {
+			slug,
+			displayName: persona?.display_name || slug,
+			cleanContent: content.slice(match[0].length),
+		};
 	}
 
 	function startDMWithAgent(agent: any) {
@@ -4654,8 +4705,17 @@ autonomy: reactive
 									{/if}
 								</div>
 							{:else}
-								{@const skillInfo = extractSkillBadge(msg.content)}
-								{@const rendered = renderMessageContent(skillInfo ? skillInfo.cleanContent : msg.content)}
+								{@const personaInfo = extractPersonaBadge(msg.content)}
+								{@const afterPersona = personaInfo ? personaInfo.cleanContent : msg.content}
+								{@const skillInfo = extractSkillBadge(afterPersona)}
+								{@const rendered = renderMessageContent(skillInfo ? skillInfo.cleanContent : afterPersona)}
+								{#if personaInfo}
+									<div class="persona-badge" title="Active persona">
+										<span class="persona-badge-dot"></span>
+										<span class="persona-badge-label">Active as:</span>
+										<span class="persona-badge-name">{personaInfo.displayName}</span>
+									</div>
+								{/if}
 								{#if skillInfo}
 									<div class="skill-badge">{skillInfo.badge}</div>
 								{/if}
@@ -10316,6 +10376,35 @@ autonomy: reactive
 		border-radius: 4px;
 		margin-bottom: 4px;
 		letter-spacing: 0.02em;
+	}
+	.persona-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 0.72rem;
+		padding: 3px 10px 3px 8px;
+		border-radius: 9999px;
+		margin-bottom: 6px;
+		background: color-mix(in srgb, var(--accent) 18%, transparent);
+		border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+		color: var(--text-primary, #f0f0f0);
+		letter-spacing: 0.02em;
+	}
+	.persona-badge-dot {
+		display: inline-block;
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--accent);
+		box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 60%, transparent);
+	}
+	.persona-badge-label {
+		color: var(--text-secondary, #a0a0a8);
+		font-weight: 500;
+	}
+	.persona-badge-name {
+		color: var(--accent);
+		font-weight: 700;
 	}
 
 	/* File attachments */

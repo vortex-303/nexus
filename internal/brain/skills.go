@@ -3,8 +3,43 @@ package brain
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 )
+
+// keywordMatcherCache memoizes compiled word-boundary regexes per keyword.
+// Phase 1 bugfix: MatchSkillsByContent previously used strings.Contains,
+// which made keyword "ad" match "add", "address", etc. We now compile a
+// case-insensitive `\b<word>\b` regex per keyword and cache it.
+var (
+	keywordMatcherCache   = map[string]*regexp.Regexp{}
+	keywordMatcherCacheMu sync.RWMutex
+)
+
+func keywordMatcher(keyword string) *regexp.Regexp {
+	k := strings.ToLower(strings.TrimSpace(keyword))
+	if k == "" {
+		return nil
+	}
+	keywordMatcherCacheMu.RLock()
+	if re, ok := keywordMatcherCache[k]; ok {
+		keywordMatcherCacheMu.RUnlock()
+		return re
+	}
+	keywordMatcherCacheMu.RUnlock()
+	// `(?i)\b<word>\b` — case-insensitive, word-bounded. For multi-word
+	// keywords ("hero image"), \b still anchors the start + end, which is
+	// what we want.
+	re, err := regexp.Compile(`(?i)\b` + regexp.QuoteMeta(k) + `\b`)
+	if err != nil {
+		return nil
+	}
+	keywordMatcherCacheMu.Lock()
+	keywordMatcherCache[k] = re
+	keywordMatcherCacheMu.Unlock()
+	return re
+}
 
 // Skill represents a loaded brain skill definition.
 type Skill struct {
@@ -641,18 +676,17 @@ func MatchSkillsByContent(skills []Skill, content string) []Skill {
 	if content == "" {
 		return nil
 	}
-	contentLower := strings.ToLower(content)
 	var out []Skill
 	for _, s := range skills {
 		if s.Trigger != "keyword" || len(s.Keywords) == 0 {
 			continue
 		}
 		for _, k := range s.Keywords {
-			k = strings.ToLower(strings.TrimSpace(k))
-			if k == "" {
+			re := keywordMatcher(k)
+			if re == nil {
 				continue
 			}
-			if strings.Contains(contentLower, k) {
+			if re.MatchString(content) {
 				out = append(out, s)
 				break
 			}

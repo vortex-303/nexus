@@ -108,6 +108,14 @@ func (s *Server) ensureBrainMember(slug string) error {
 		logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("failed to seed persona skills")
 	}
 
+	// Seed first-class Persona rows into the workspace `personas` table.
+	// Idempotent (INSERT OR IGNORE). This is the source-of-truth Phase 1
+	// reads from for `/persona` slash invocation; the keyword-match path
+	// above still works (built-ins ship with trigger_mode='both').
+	if err := brain.SeedBuiltinPersonas(wdb.DB); err != nil {
+		logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("failed to seed built-in personas")
+	}
+
 	return nil
 }
 
