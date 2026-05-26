@@ -147,6 +147,16 @@ var globalMigrations = []migration{
 			);
 		`,
 	},
+	{
+		version: 7,
+		name:    "digest_state kv for daily superadmin digest",
+		sql: `
+			CREATE TABLE IF NOT EXISTS digest_state (
+				key TEXT PRIMARY KEY,
+				value TEXT NOT NULL DEFAULT ''
+			);
+		`,
+	},
 }
 
 var workspaceMigrations = []migration{

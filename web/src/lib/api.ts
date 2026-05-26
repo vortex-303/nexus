@@ -729,6 +729,14 @@ export async function adminAuditLog() {
 	return request('GET', '/api/admin/audit');
 }
 
+export async function adminListWaitlist() {
+	return request('GET', '/api/admin/waitlist');
+}
+
+export async function adminSendDigest() {
+	return request('POST', '/api/admin/digest/send');
+}
+
 export async function adminWorkspaceDetail(slug: string) {
 	return request('GET', `/api/admin/workspaces/${slug}/detail`);
 }

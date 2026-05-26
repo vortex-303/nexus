@@ -124,6 +124,7 @@ func Run(cfg *config.Config) error {
 	s.scheduleReflections()
 	s.scheduleCalendarReminders()
 	s.scheduleRetention()
+	s.registerDigestCron()
 	s.cron.Start()
 	go s.startSMTPServer()
 
@@ -427,6 +428,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/admin/models", authed(http.HandlerFunc(s.requireSuperadmin(s.handleAdminSetModels))))
 	s.mux.Handle("PUT /api/admin/models/free", authed(http.HandlerFunc(s.requireSuperadmin(s.handleAdminSetFreeModels))))
 	s.mux.Handle("GET /api/admin/waitlist", authed(http.HandlerFunc(s.requireSuperadmin(s.handleListWaitlist))))
+	s.mux.Handle("POST /api/admin/digest/send", authed(http.HandlerFunc(s.requireSuperadmin(s.handleAdminSendDigest))))
 
 	// Webhooks (public ingestion endpoint)
 	s.mux.HandleFunc("POST /w/{slug}/hook/{token}", s.handleIncomingWebhook)

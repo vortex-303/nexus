@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { getCurrentUser, clearSession, setToken, setWorkspaceSlug, adminStats, adminListWorkspaces, adminListAccounts, adminSuspendWorkspace, adminDeleteWorkspace, adminBanAccount, adminEnterWorkspace, adminAuditLog, adminWorkspaceDetail, adminExportWorkspace, adminResetPassword, adminSetAnnouncement, adminClearAnnouncement, adminGetModels, adminSetModels, browseModels, getAnnouncement, getFreeModels, adminSetFreeModels } from '$lib/api';
+	import { getCurrentUser, clearSession, setToken, setWorkspaceSlug, adminStats, adminListWorkspaces, adminListAccounts, adminSuspendWorkspace, adminDeleteWorkspace, adminBanAccount, adminEnterWorkspace, adminAuditLog, adminWorkspaceDetail, adminExportWorkspace, adminResetPassword, adminSetAnnouncement, adminClearAnnouncement, adminGetModels, adminSetModels, browseModels, getAnnouncement, getFreeModels, adminSetFreeModels, adminListWaitlist, adminSendDigest } from '$lib/api';
 
-	type Tab = 'dashboard' | 'workspaces' | 'accounts' | 'audit' | 'models';
+	type Tab = 'dashboard' | 'workspaces' | 'accounts' | 'audit' | 'models' | 'waitlist';
 	let activeTab = $state<Tab>('dashboard');
 	let loading = $state(true);
 
@@ -20,6 +20,10 @@
 
 	// Audit
 	let auditEntries = $state<any[]>([]);
+
+	// Waitlist
+	let waitlistEntries = $state<any[]>([]);
+	let waitlistFilter = $state<string>('all');
 
 	// Announcement
 	let announcementMessage = $state('');
@@ -92,6 +96,56 @@
 		else if (tab === 'accounts') await loadAccounts();
 		else if (tab === 'audit') await loadAudit();
 		else if (tab === 'models') await loadModels();
+		else if (tab === 'waitlist') await loadWaitlist();
+	}
+
+	async function loadWaitlist() {
+		try {
+			const data = await adminListWaitlist();
+			waitlistEntries = Array.isArray(data) ? data : (data?.entries || []);
+		} catch { waitlistEntries = []; }
+	}
+
+	function filteredWaitlist() {
+		if (waitlistFilter === 'all') return waitlistEntries;
+		return waitlistEntries.filter(e => e.plan === waitlistFilter);
+	}
+
+	function exportWaitlistCSV() {
+		const rows = filteredWaitlist();
+		const header = 'email,plan,created_at\n';
+		const body = rows.map(e =>
+			`"${(e.email || '').replace(/"/g, '""')}","${e.plan || ''}","${e.created_at || ''}"`
+		).join('\n');
+		const blob = new Blob([header + body], { type: 'text/csv' });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = `nexus-waitlist-${new Date().toISOString().slice(0,10)}.csv`;
+		document.body.appendChild(a);
+		a.click();
+		document.body.removeChild(a);
+		URL.revokeObjectURL(url);
+	}
+
+	async function sendDigestNow() {
+		if (!confirm('Send the daily digest to the superadmin now? (Last 24h of signups.)')) return;
+		try {
+			await adminSendDigest();
+			alert('Digest sent. Check your inbox.');
+		} catch (e: any) {
+			alert('Digest failed: ' + (e?.message || 'unknown error'));
+		}
+	}
+
+	async function copyWaitlistEmails() {
+		const emails = filteredWaitlist().map(e => e.email).filter(Boolean).join(', ');
+		try {
+			await navigator.clipboard.writeText(emails);
+			alert(`Copied ${filteredWaitlist().length} emails to clipboard`);
+		} catch {
+			alert('Copy failed — your browser may not allow clipboard access');
+		}
 	}
 
 	async function toggleSuspend(ws: any) {
@@ -286,6 +340,7 @@
 			<button class="nav-item" class:active={activeTab === 'workspaces'} onclick={() => switchTab('workspaces')}>Workspaces</button>
 			<button class="nav-item" class:active={activeTab === 'accounts'} onclick={() => switchTab('accounts')}>Accounts</button>
 			<button class="nav-item" class:active={activeTab === 'models'} onclick={() => switchTab('models')}>Models</button>
+			<button class="nav-item" class:active={activeTab === 'waitlist'} onclick={() => switchTab('waitlist')}>Waitlist</button>
 			<button class="nav-item" class:active={activeTab === 'audit'} onclick={() => switchTab('audit')}>Audit Log</button>
 		</nav>
 
@@ -556,6 +611,46 @@
 					</div>
 					<button class="btn btn-primary btn-sm" onclick={addFreeModel} disabled={!newFreeModelId.trim()}>Add</button>
 				</div>
+
+			{:else if activeTab === 'waitlist'}
+				<div class="section-header">
+					<h2>Waitlist <span class="count-pill">{waitlistEntries.length}</span></h2>
+					<div class="header-actions">
+						<select class="admin-input" bind:value={waitlistFilter}>
+							<option value="all">All plans</option>
+							<option value="pro">Pro</option>
+							<option value="business">Business</option>
+							<option value="enterprise">Enterprise</option>
+						</select>
+						<button class="btn btn-secondary btn-sm" onclick={sendDigestNow}>Send digest now</button>
+						<button class="btn btn-secondary btn-sm" onclick={copyWaitlistEmails} disabled={filteredWaitlist().length === 0}>Copy emails</button>
+						<button class="btn btn-primary btn-sm" onclick={exportWaitlistCSV} disabled={filteredWaitlist().length === 0}>Export CSV</button>
+					</div>
+				</div>
+				{#if filteredWaitlist().length === 0}
+					<p class="empty-text">No waitlist signups yet.</p>
+				{:else}
+					<div class="table-wrap">
+						<table class="admin-table">
+							<thead>
+								<tr>
+									<th>Email</th>
+									<th>Plan</th>
+									<th>Joined</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each filteredWaitlist() as entry}
+								<tr>
+									<td class="mono">{entry.email}</td>
+									<td><span class="action-badge">{entry.plan}</span></td>
+									<td class="nowrap">{formatTime(entry.created_at)}</td>
+								</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				{/if}
 
 			{:else if activeTab === 'audit'}
 				<h2>Audit Log</h2>
@@ -936,6 +1031,31 @@
 		background: rgba(59,130,246,0.15);
 		color: #60a5fa;
 		font-family: var(--font-mono, monospace);
+	}
+	.section-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		margin-bottom: 1rem;
+		flex-wrap: wrap;
+	}
+	.section-header h2 { margin: 0; }
+	.header-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	.count-pill {
+		display: inline-block;
+		margin-left: 0.5rem;
+		padding: 2px 10px;
+		border-radius: 9999px;
+		font-size: 0.75rem;
+		background: var(--accent-glow, rgba(249,115,22,0.15));
+		color: var(--accent, #f97316);
+		font-weight: 600;
+		vertical-align: middle;
 	}
 	.pinned-badge {
 		font-size: 0.7rem;
