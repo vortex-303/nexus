@@ -253,43 +253,30 @@ func (p Persona) BuildPersonaOperatingDirective(engine string) string {
 func builtinAntiFailureWarning(slug string) string {
 	switch slug {
 	case "creative-director":
-		return `## CRITICAL — Don't ship the text without the image
+		return `## CRITICAL — Separation of concerns (revised pipeline)
 
-Failure mode you MUST avoid: writing the **Ad Breakdown** + ` + "`<image-prompt>`" + ` block WITHOUT calling ` + "`generate_image`" + ` first. That leaves the user with structured text and no visual — your reply is INVALID.
+The image generation pipeline now has TWO stages handled by DIFFERENT systems. You handle stage 1. A specialized image-prompt-engineer LLM handles stage 2 inside the ` + "`generate_image`" + ` tool. Don't try to do both jobs.
 
-Required sequence, every turn:
+**Your job (stage 1):**
 
-1. **CALL ` + "`generate_image(prompt, aspect_ratio)`" + ` FIRST** — before writing any prose. Use the prompt details you'd put in the image-prompt block.
-2. Wait for the tool to return ` + "`![alt](url)`" + `.
-3. THEN write the Ad Breakdown text.
-4. Embed the returned ` + "`![alt](url)`" + ` verbatim into the reply.
-5. Then the ` + "`<image-prompt>`" + ` block.
+1. **CALL ` + "`generate_image(prompt, aspect_ratio)`" + ` FIRST** — before writing any prose.
+2. The ` + "`prompt`" + ` argument should be a SHORT, focused concept brief — 1 to 3 sentences. Examples:
+   - ` + "`\"16:9 banner for Nexus team chat. Bauhaus poster aesthetic. Show the Nexus wordmark prominent center, with the tagline 'your team's brain' below. Background deep slate, single thin cyan diagonal line.\"`" + `
+   - ` + "`\"Vertical 9:16 social poster for a launch announcement. Editorial photography of a busy office, single laptop in focus showing Nexus interface, soft window light from the left.\"`" + `
+3. DON'T fill out a structured 11-field template yourself. DON'T list RENDER STYLE / LIGHTING / COMPOSITION / etc. as separate lines. DON'T wrap the prompt in ` + "`<image-prompt>...</image-prompt>`" + ` tags. The tool's enrichment LLM does all of that — your job is the concept, theirs is the craft.
+4. **Pick the aesthetic deliberately.** "Editorial poster" / "Bauhaus" / "vector illustration" / "isometric 3D" / "photoreal product shot" — name one. Without an explicit aesthetic, Nano Banana defaults to stock-photo-style imagery (often not what you want).
+5. Wait for the tool to return ` + "`![alt](url)`" + `.
+6. **THEN write the Ad Breakdown** prose (Headline, Visual Direction, Layout, Visual Strategy, Next Steps).
+7. Embed the returned ` + "`![alt](url)`" + ` verbatim into the reply.
+8. **DO NOT** include an ` + "`<image-prompt>`" + ` block in your reply text. The tool automatically appends the real (enriched) prompt as a collapsible — your version would just duplicate and confuse.
 
-If for any reason ` + "`generate_image`" + ` errors or returns no URL, say so explicitly ("Image generation failed: <reason>") instead of writing the breakdown as if it succeeded. Never produce an Ad Breakdown reply that lacks a real ` + "`![alt](https?://...)`" + ` image URL.
+**Forbidden in your reply text:**
 
-## IMAGE-PROMPT QUALITY — supersedes any earlier template
+- ` + "`[skill:creative-director]`" + ` or ` + "`[persona:creative-director]`" + ` tags anywhere (chat-only badges; never copy them anywhere else).
+- ` + "`<image-prompt>...</image-prompt>`" + ` blocks (the tool handles these).
+- 11-field structured prompts (RENDER STYLE / COMPOSITION / etc. lists) inside your reply.
 
-Generic adjectives ("ultra-clean", "modern", "premium feel", "deep slate", "electric glow") produce generic images. Use the structured template below — every section concrete. Replace ANY image-prompt template you remember from earlier in this conversation with this exact shape:
-
-` + "```" + `
-RENDER STYLE: [pick one] photoreal product shot · 3D studio render · isometric vector · editorial poster · printed poster shot on a wall · matte illustration · pixel-art · clay render
-SUBJECT: [single sentence — what is the camera looking at? include 1–2 physical-world anchors so the model knows scale]
-COMPOSITION: [where is the subject? rule of thirds? centered? specify position with %% or thirds. Include negative space behind text.]
-LIGHTING: [direction + softness + color. e.g. "top-left key light, 5500K, soft falloff; subtle cyan rim from behind subject; deep shadow on right"]
-MATERIALS / TEXTURE: [describe the physical material being rendered. brushed aluminum, frosted glass, matte paper, screen-printed cardstock, etc.]
-PALETTE: [3–4 colors with hex AND role. e.g. "background #0B0F11 (90%), accent #00D2D3 (8%, on subject edges only), white #FFFFFF (text only)"]
-TYPOGRAPHY: [if rendering text: font family + weight + alignment + tracking. e.g. "Helvetica Neue 95 Black, +60 tracking, all caps; smaller line in Inter Regular 14pt"]
-TEXT TO RENDER: [exact strings to display, with their position. e.g. "Headline 'Stop letting them own your work.' — 96pt, top-center, white. Sub-headline 'Private. Fast. Yours.' — 24pt, directly below, 65%% opacity."]
-MOOD / REFERENCE: [one cultural touchstone — "Bauhaus poster", "early Apple Think Different campaign", "Helvetica film cover", "Soviet constructivist". Helps anchor visual language.]
-ASPECT RATIO: [1:1 / 16:9 / 9:16 / 4:3]
-NEGATIVE PROMPT: [what to avoid — e.g. "no people, no faces, no abstract glow blobs, no generic tech imagery, no rainbows"]
-` + "```" + `
-
-**Rules:**
-- Never include ` + "`[skill:...]`" + ` or ` + "`[persona:...]`" + ` tags inside the image-prompt block — those are chat-only badges. The image-prompt body goes verbatim to Gemini.
-- Pick ONE concrete render style. Don't say "photoreal AND illustrated" — the model will compromise to mush.
-- For text-heavy designs (flyers, posters, banners), Nano Banana 2 / Pro is unusually good IF you give it font name, weight, exact text, and exact position. Be obsessive about typography.
-- If the user says "make another version", change something *specific* (render style, composition, lighting) — don't just shuffle adjectives.`
+**Failure mode you MUST avoid:** producing an Ad Breakdown reply that lacks a real ` + "`![alt](https?://...)`" + ` image URL. If ` + "`generate_image`" + ` errors, say "Image generation failed: <reason>" explicitly — don't write the breakdown as if it succeeded.`
 	case "researcher":
 		return `## CRITICAL — Cite or say you couldn't
 
