@@ -132,7 +132,18 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 			}
 		}
 
-		// Run the v2 pipeline
+		// Run the v2 pipeline. Wrap ExecuteTool so each tool dispatch
+		// broadcasts a `tool_executing` agent state to the channel — the
+		// frontend uses this to show progress (e.g. the prominent
+		// "generating an image..." placeholder card when generate_image
+		// fires). After the tool returns we flip back to `thinking` so
+		// the next tool call (if any) gets its own indicator.
+		wrappedExecute := func(slug2, channelID2, senderMemberID string, call brain.ToolCall) string {
+			s.broadcastAgentState(slug2, channelID2, brain.BrainMemberID, brain.BrainName, "tool_executing", call.Function.Name, parentID)
+			out := s.executeTool(slug2, channelID2, senderMemberID, call)
+			s.broadcastAgentState(slug2, channelID2, brain.BrainMemberID, brain.BrainName, "thinking", "", parentID)
+			return out
+		}
 		result := brain2.Run(brain2.PipelineConfig{
 			Slug:         slug,
 			ChannelID:    channelID,
@@ -145,7 +156,7 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 			Client:       client,
 			MaxDepth:     maxDepth,
 			MaxCostUSD:   maxCostUSD,
-			ExecuteTool:  s.executeTool,
+			ExecuteTool:  wrappedExecute,
 		})
 
 		if result.Response == "" {

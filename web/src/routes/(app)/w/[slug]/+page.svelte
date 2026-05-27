@@ -4844,20 +4844,39 @@ autonomy: reactive
 			<!-- Agent state indicators (only for channel-level, not thread-scoped) -->
 			{#each [...agentStates.entries()] as [agentId, agentState]}
 				{#if agentState.channelID === $activeChannel?.id && !agentState.parentID}
-					<div class="agent-working-indicator">
-						<div class="agent-working-dot-group">
-							<span class="agent-working-dot"></span>
-							<span class="agent-working-dot"></span>
-							<span class="agent-working-dot"></span>
+					{#if agentState.state === 'tool_executing' && agentState.toolName === 'generate_image'}
+						<!-- Prominent image-generation loader: image gen typically
+						     takes 6–15s on Nano Banana 2, so a small text indicator
+						     leaves the user wondering. Skeleton card + spinner +
+						     estimated time gives clear progress. -->
+						<div class="image-gen-loader">
+							<div class="image-gen-loader-card">
+								<div class="image-gen-loader-shimmer"></div>
+								<div class="image-gen-loader-content">
+									<div class="image-gen-loader-spinner"></div>
+									<div class="image-gen-loader-text">
+										<div class="image-gen-loader-title">{agentState.agentName} is generating an image…</div>
+										<div class="image-gen-loader-sub">Nano Banana 2 · usually 6–15 seconds</div>
+									</div>
+								</div>
+							</div>
 						</div>
-						<span class="agent-working-text">
-							{#if agentState.state === 'thinking'}
-								{agentState.agentName} is thinking...
-							{:else if agentState.state === 'tool_executing'}
-								{agentState.agentName} is using {agentState.toolName}...
-							{/if}
-						</span>
-					</div>
+					{:else}
+						<div class="agent-working-indicator">
+							<div class="agent-working-dot-group">
+								<span class="agent-working-dot"></span>
+								<span class="agent-working-dot"></span>
+								<span class="agent-working-dot"></span>
+							</div>
+							<span class="agent-working-text">
+								{#if agentState.state === 'thinking'}
+									{agentState.agentName} is thinking...
+								{:else if agentState.state === 'tool_executing'}
+									{agentState.agentName} is using {agentState.toolName}...
+								{/if}
+							</span>
+						</div>
+					{/if}
 				{/if}
 			{/each}
 
@@ -5131,20 +5150,35 @@ autonomy: reactive
 			<!-- Agent state indicators for this thread -->
 			{#each [...agentStates.entries()] as [agentId, agentState]}
 				{#if agentState.channelID === $activeChannel?.id && agentState.parentID === threadId}
-					<div class="agent-working-indicator">
-						<div class="agent-working-dot-group">
-							<span class="agent-working-dot"></span>
-							<span class="agent-working-dot"></span>
-							<span class="agent-working-dot"></span>
+					{#if agentState.state === 'tool_executing' && agentState.toolName === 'generate_image'}
+						<div class="image-gen-loader">
+							<div class="image-gen-loader-card">
+								<div class="image-gen-loader-shimmer"></div>
+								<div class="image-gen-loader-content">
+									<div class="image-gen-loader-spinner"></div>
+									<div class="image-gen-loader-text">
+										<div class="image-gen-loader-title">{agentState.agentName} is generating an image…</div>
+										<div class="image-gen-loader-sub">Nano Banana 2 · usually 6–15 seconds</div>
+									</div>
+								</div>
+							</div>
 						</div>
-						<span class="agent-working-text">
-							{#if agentState.state === 'thinking'}
-								{agentState.agentName} is thinking...
-							{:else if agentState.state === 'tool_executing'}
-								{agentState.agentName} is using {agentState.toolName}...
-							{/if}
-						</span>
-					</div>
+					{:else}
+						<div class="agent-working-indicator">
+							<div class="agent-working-dot-group">
+								<span class="agent-working-dot"></span>
+								<span class="agent-working-dot"></span>
+								<span class="agent-working-dot"></span>
+							</div>
+							<span class="agent-working-text">
+								{#if agentState.state === 'thinking'}
+									{agentState.agentName} is thinking...
+								{:else if agentState.state === 'tool_executing'}
+									{agentState.agentName} is using {agentState.toolName}...
+								{/if}
+							</span>
+						</div>
+					{/if}
 				{/if}
 			{/each}
 			<div class="thread-input">
@@ -12983,6 +13017,74 @@ autonomy: reactive
 		color: var(--accent);
 		font-size: var(--text-sm);
 		animation: agentFadeIn 0.3s ease;
+	}
+
+	/* Prominent image-generation loader — appears in the chat stream
+	   when Brain calls generate_image. Skeleton card + spinner + ETA. */
+	.image-gen-loader {
+		padding: var(--space-md) var(--space-xl);
+		animation: agentFadeIn 0.3s ease;
+	}
+	.image-gen-loader-card {
+		position: relative;
+		max-width: 420px;
+		min-height: 180px;
+		border-radius: var(--radius-lg, 12px);
+		border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+		background: linear-gradient(135deg,
+			color-mix(in srgb, var(--accent) 6%, var(--bg-secondary)),
+			var(--bg-secondary) 60%);
+		overflow: hidden;
+		box-shadow: 0 0 24px color-mix(in srgb, var(--accent) 12%, transparent);
+	}
+	.image-gen-loader-shimmer {
+		position: absolute;
+		inset: 0;
+		background: linear-gradient(110deg,
+			transparent 30%,
+			color-mix(in srgb, var(--accent) 18%, transparent) 50%,
+			transparent 70%);
+		background-size: 200% 100%;
+		animation: shimmerSweep 2s linear infinite;
+		pointer-events: none;
+	}
+	@keyframes shimmerSweep {
+		0% { background-position: 200% 0; }
+		100% { background-position: -200% 0; }
+	}
+	.image-gen-loader-content {
+		position: relative;
+		display: flex;
+		align-items: center;
+		gap: 14px;
+		padding: 22px;
+		height: 100%;
+	}
+	.image-gen-loader-spinner {
+		width: 36px;
+		height: 36px;
+		border-radius: 50%;
+		border: 3px solid color-mix(in srgb, var(--accent) 18%, transparent);
+		border-top-color: var(--accent);
+		animation: spinnerRotate 0.9s linear infinite;
+		flex-shrink: 0;
+	}
+	@keyframes spinnerRotate {
+		to { transform: rotate(360deg); }
+	}
+	.image-gen-loader-text {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+	}
+	.image-gen-loader-title {
+		font-size: 0.92rem;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+	.image-gen-loader-sub {
+		font-size: 0.78rem;
+		color: var(--text-secondary);
 	}
 	@keyframes agentFadeIn {
 		from { opacity: 0; transform: translateY(4px); }
