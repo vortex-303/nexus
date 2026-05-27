@@ -1373,9 +1373,12 @@ NEGATIVE PROMPT: [what to avoid — no people unless asked, no faces if abstract
 //  4. Gemini generates the image.
 //  5. <image-prompt> block in the response shows the ENRICHED brief so
 //     the user can see what was actually sent.
+//  6. recordImageGen writes the full event to the image_generations table
+//     for debugging via the Brain Settings → Image Log tab.
 //
 // Enrichment failure is non-fatal — falls back to the raw prompt.
 func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
+	start := time.Now()
 	var args struct {
 		Prompt      string `json:"prompt"`
 		AspectRatio string `json:"aspect_ratio"`
@@ -1389,6 +1392,12 @@ func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
 
 	geminiKey := s.getGeminiAPIKey(slug)
 	if geminiKey == "" {
+		go s.recordImageGen(slug, imageGenEvent{
+			channelID: channelID, callerKind: "brain", callerID: "Brain",
+			aspectRatio: args.AspectRatio, rawPrompt: args.Prompt,
+			status: "error", errorMessage: "no Gemini API key configured",
+			latency: time.Since(start),
+		})
 		return "Error: no Gemini API key configured. Set it in Brain Settings."
 	}
 
@@ -1396,6 +1405,7 @@ func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
 	// Same pattern toolGenerateImageForAgent uses for agents — now also
 	// applied to @Brain so cheap MoE models can't ship vague briefs.
 	enrichedPrompt := args.Prompt
+	enrichedByModel := ""
 	apiKey, model := s.getBrainSettings(slug)
 	enrichModel := model
 	_, _, memModel := s.getMemorySettings(slug)
@@ -1412,6 +1422,7 @@ func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
 			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("brain image prompt enrichment failed, using raw prompt")
 		} else {
 			enrichedPrompt = strings.TrimSpace(result)
+			enrichedByModel = enrichModel
 			s.trackUsage(slug, enrichUsage, enrichModel, "image_enrichment", channelID, "")
 			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("raw_chars", len(args.Prompt)).Int("enriched_chars", len(enrichedPrompt)).Str("preview", truncate(enrichedPrompt, 200)).Msg("brain image prompt enriched")
 		}
@@ -1427,6 +1438,13 @@ func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
 	text, imageData, mimeType, err := brain.GenerateImageGemini(geminiKey, imageModel, enrichedPrompt, args.AspectRatio)
 	if err != nil {
 		logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("image generation error")
+		go s.recordImageGen(slug, imageGenEvent{
+			channelID: channelID, callerKind: "brain", callerID: "Brain",
+			model: imageModel, aspectRatio: args.AspectRatio,
+			rawPrompt: args.Prompt, enrichedPrompt: enrichedPrompt, enrichedByModel: enrichedByModel,
+			status: "error", errorMessage: err.Error(),
+			latency: time.Since(start),
+		})
 		return "Error generating image: " + err.Error()
 	}
 
@@ -1436,8 +1454,26 @@ func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
 	}
 	saved := s.saveBase64ImageBlob(slug, channelID, imageData, mimeType)
 	if saved == "" {
+		go s.recordImageGen(slug, imageGenEvent{
+			channelID: channelID, callerKind: "brain", callerID: "Brain",
+			model: imageModel, aspectRatio: args.AspectRatio,
+			rawPrompt: args.Prompt, enrichedPrompt: enrichedPrompt, enrichedByModel: enrichedByModel,
+			status: "error", errorMessage: "blob save failed",
+			latency: time.Since(start),
+		})
 		return "Image generated but failed to save"
 	}
+
+	// Record success — pull the hash out of the markdown reference for
+	// future blob lookups.
+	go s.recordImageGen(slug, imageGenEvent{
+		channelID: channelID, callerKind: "brain", callerID: "Brain",
+		model: imageModel, aspectRatio: args.AspectRatio,
+		rawPrompt: args.Prompt, enrichedPrompt: enrichedPrompt, enrichedByModel: enrichedByModel,
+		status:  "ok",
+		latency: time.Since(start),
+		// blobHash extraction left for a future enhancement
+	})
 
 	// Show the ENRICHED prompt in the collapsible <image-prompt> block so
 	// the user can see what was actually sent to Gemini — useful for

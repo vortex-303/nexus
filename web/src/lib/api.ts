@@ -379,6 +379,10 @@ export async function listPersonas(slug: string) {
 	return request('GET', `/api/workspaces/${slug}/brain/personas`);
 }
 
+export async function listImageGenLog(slug: string, limit = 50) {
+	return request('GET', `/api/workspaces/${slug}/brain/image-log?limit=${limit}`);
+}
+
 export async function getPersona(slug: string, personaSlug: string) {
 	return request('GET', `/api/workspaces/${slug}/brain/personas/${personaSlug}`);
 }

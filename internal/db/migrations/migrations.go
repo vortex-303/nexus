@@ -1207,6 +1207,31 @@ var workspaceMigrations61 = migration{
 	`,
 }
 
+var workspaceMigrations64 = migration{
+	version: 64,
+	name:    "image_generations: per-call debug log for Gemini image gen",
+	sql: `
+		CREATE TABLE IF NOT EXISTS image_generations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+			channel_id TEXT NOT NULL DEFAULT '',
+			caller_kind TEXT NOT NULL DEFAULT 'brain', -- brain | agent
+			caller_id TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL DEFAULT '',
+			aspect_ratio TEXT NOT NULL DEFAULT '',
+			raw_prompt TEXT NOT NULL DEFAULT '',
+			enriched_prompt TEXT NOT NULL DEFAULT '',
+			enriched_by_model TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT '', -- ok | error
+			error_message TEXT NOT NULL DEFAULT '',
+			latency_ms INTEGER NOT NULL DEFAULT 0,
+			blob_hash TEXT NOT NULL DEFAULT ''
+		);
+		CREATE INDEX IF NOT EXISTS idx_imagegen_created ON image_generations(created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_imagegen_channel ON image_generations(channel_id, created_at DESC);
+	`,
+}
+
 var workspaceMigrations63 = migration{
 	version: 63,
 	name:    "force brain_version=v2: retire v1/v3 paths, OpenRouter-only",
@@ -1254,7 +1279,7 @@ var workspaceMigrations62 = migration{
 }
 
 func init() {
-	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55, workspaceMigrations58, workspaceMigrations59, workspaceMigrations60, workspaceMigrations61, workspaceMigrations62, workspaceMigrations63)
+	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55, workspaceMigrations58, workspaceMigrations59, workspaceMigrations60, workspaceMigrations61, workspaceMigrations62, workspaceMigrations63, workspaceMigrations64)
 }
 
 func RunGlobal(db *sql.DB) error {
