@@ -6615,7 +6615,7 @@ autonomy: reactive
 				</svg>
 			</div>
 			<h2 class="wizard-title">Welcome to Nexus</h2>
-			<p class="wizard-sub">Brain is your AI teammate. Let's pick the engine that powers it — you can add the other one later as a secondary.</p>
+			<p class="wizard-sub">Brain is your AI teammate. {#if BRAIN_V3_ENABLED}Let's pick the engine that powers it — you can add the other one later as a secondary.{:else}Connect your OpenRouter API key to power Brain with multimodal Qwen3.5-Flash (text + image), plus 100+ alternative models when you want them. Pay-as-you-go from $0.065 per M tokens.{/if}</p>
 			<button class="wizard-btn wizard-btn-primary" onclick={() => { wizardEngine = 'openrouter'; wizardStep = 'apikey'; }}>Get Started</button>
 			<button class="wizard-btn wizard-btn-skip" onclick={() => { showWizard = false; updateBrainSettings(slug, { onboarding_complete: 'true' }); }}>Skip setup</button>
 		{:else if wizardStep === 'apikey'}
@@ -6800,8 +6800,12 @@ autonomy: reactive
 				</svg>
 			</div>
 			<h2 class="wizard-title">You're all set!</h2>
-			<p class="wizard-sub">Brain is running on <strong>{wizardEngine === 'claude' ? 'Claude' : 'OpenRouter'}</strong>. Start a conversation to see it in action.</p>
-			<p class="wizard-hint" style="margin: 8px 0 16px;">Want to add <strong>{wizardEngine === 'claude' ? 'OpenRouter' : 'Claude'}</strong> as a secondary engine? Brain Settings → engine cards anytime.</p>
+			<p class="wizard-sub">Brain is running on <strong>{BRAIN_V3_ENABLED && wizardEngine === 'claude' ? 'Claude' : 'OpenRouter'}</strong>. Start a conversation to see it in action.</p>
+			{#if BRAIN_V3_ENABLED}
+				<p class="wizard-hint" style="margin: 8px 0 16px;">Want to add <strong>{wizardEngine === 'claude' ? 'OpenRouter' : 'Claude'}</strong> as a secondary engine? Brain Settings → engine cards anytime.</p>
+			{:else}
+				<p class="wizard-hint" style="margin: 8px 0 16px;">Next: add Gemini for image generation and xAI for real-time research — Brain Settings → Services.</p>
+			{/if}
 			<button class="wizard-btn wizard-btn-primary" onclick={async () => {
 				showWizard = false;
 				try {
