@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, listPersonas, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, testModel, distillSkills, listSkillProposals, approveSkillProposal, rejectSkillProposal, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, joinChannel, leaveChannel, browseChannels, inviteToChannel, listChannelMembers, pinMessage, unpinMessage, listPinnedMessages, getMemoryPinnedMessageIds, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, resetV3Agent, getV3Memory, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings, listNotifications, markNotificationRead, markAllNotificationsRead, getNotificationCount } from '$lib/api';
+	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, listPersonas, listImageGenLog, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, testModel, distillSkills, listSkillProposals, approveSkillProposal, rejectSkillProposal, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, joinChannel, leaveChannel, browseChannels, inviteToChannel, listChannelMembers, pinMessage, unpinMessage, listPinnedMessages, getMemoryPinnedMessageIds, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, resetV3Agent, getV3Memory, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings, listNotifications, markNotificationRead, markAllNotificationsRead, getNotificationCount } from '$lib/api';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { AGENT_CREATION_ENABLED, BRAIN_V3_ENABLED } from '$lib/flags';
 	import { connect, disconnect, onMessage, sendMessage, sendTyping, sendReaction, removeReaction, clearChannel, markChannelRead, connectionStatus, generateClientId } from '$lib/ws';
@@ -573,6 +573,23 @@
 	// Personas — fetched once on workspace load, fuel the /persona slash menu
 	// + the [persona:X] badge renderer. Empty array until first load.
 	let personasList = $state<any[]>([]);
+
+	// Image generation log — loaded on Brain Settings → Image Log tab open.
+	// Captures every Gemini call: raw prompt, enriched prompt, model, status.
+	let imageLogEntries = $state<any[]>([]);
+	let imageLogLoading = $state(false);
+	let imageLogExpanded = $state<Record<number, boolean>>({});
+	async function loadImageLog() {
+		imageLogLoading = true;
+		try {
+			const data = await listImageGenLog(slug, 50);
+			imageLogEntries = data?.entries || [];
+		} catch (e: any) {
+			console.error('Failed to load image log:', e);
+			imageLogEntries = [];
+		}
+		imageLogLoading = false;
+	}
 
 	// Online members for channel header
 	let onlineMembersList = $state<any[]>([]);
@@ -6944,6 +6961,7 @@ autonomy: reactive
 					<button class="brain-nav-item" class:active={brainTab === 'roles'} onclick={() => { brainTab = 'roles'; loadRoles(); }}>Roles</button>
 					<button class="brain-nav-item" class:active={brainTab === 'info'} onclick={() => { brainTab = 'info'; loadWorkspaceInfo(); }}>Info</button>
 					<button class="brain-nav-item" class:active={brainTab === 'network'} onclick={() => { brainTab = 'network'; getNetworkLog(slug, 'stats').then(s => networkStats = s); }}>Network</button>
+					<button class="brain-nav-item" class:active={brainTab === 'imagelog'} onclick={() => { brainTab = 'imagelog'; loadImageLog(); }}>Image Log</button>
 					<button class="brain-nav-item" class:active={brainTab === 'portability'} onclick={() => brainTab = 'portability'}>Portability</button>
 					<button class="brain-nav-item" class:active={brainTab === 'costs'} onclick={() => { brainTab = 'costs'; loadUsage(); }}>Costs</button>
 					<button class="brain-nav-item" class:active={brainTab === 'bridge'} onclick={() => brainTab = 'bridge'}>Mac App</button>
@@ -9320,6 +9338,61 @@ autonomy: reactive
 						<p style="font-size: 0.7rem; color: var(--text-tertiary); margin-top: var(--space-xs);">Use the command matching where you placed the app. Then open it normally.</p>
 					</div>
 				</div>
+			</div>
+
+			{:else if brainTab === 'imagelog'}
+			<div class="brain-section">
+				<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 8px;">
+					<h3 class="brain-section-title" style="margin: 0;">Image Generation Log</h3>
+					<button class="btn btn-secondary btn-sm" onclick={loadImageLog} disabled={imageLogLoading}>
+						{imageLogLoading ? 'Loading…' : 'Refresh'}
+					</button>
+				</div>
+				<p class="brain-hint" style="margin-bottom: 1rem">Every <code>generate_image</code> call to Gemini, with the raw prompt Brain wrote, the enriched brief actually sent to Gemini, the model used, and the result. Use this to debug image quality — see exactly what reached Gemini.</p>
+				{#if imageLogEntries.length === 0 && !imageLogLoading}
+					<p class="empty-text" style="padding: 1rem 0; color: var(--text-tertiary);">No image generation calls yet. Try <code>@Brain make a banner</code> in any channel, then refresh.</p>
+				{:else}
+					<div style="display: flex; flex-direction: column; gap: 8px;">
+						{#each imageLogEntries as e (e.id)}
+							<div class="image-log-entry" style="border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px; background: var(--bg-secondary);">
+								<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 0.78rem;">
+									<span class="action-badge" style="background: {e.status === 'ok' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)'}; color: {e.status === 'ok' ? '#4ade80' : '#f87171'};">{e.status}</span>
+									<span class="mono" style="color: var(--text-tertiary);">{new Date(e.created_at).toLocaleString()}</span>
+									<span style="color: var(--text-secondary);">·</span>
+									<span class="mono" style="color: var(--accent);">{e.model}</span>
+									<span style="color: var(--text-secondary);">·</span>
+									<span class="mono">{e.aspect_ratio || '—'}</span>
+									<span style="color: var(--text-secondary);">·</span>
+									<span class="mono" style="color: var(--text-tertiary);">{e.latency_ms}ms</span>
+									{#if e.caller_kind && e.caller_kind !== 'brain'}
+										<span style="color: var(--text-secondary);">·</span>
+										<span class="mono" style="color: var(--text-tertiary);">via {e.caller_kind}: {e.caller_id}</span>
+									{/if}
+									<button class="btn btn-ghost btn-xs" style="margin-left: auto;" onclick={() => imageLogExpanded[e.id] = !imageLogExpanded[e.id]}>
+										{imageLogExpanded[e.id] ? '▾ Hide details' : '▸ Show prompts'}
+									</button>
+								</div>
+								{#if e.error_message}
+									<div style="margin-top: 6px; padding: 6px 10px; background: rgba(239,68,68,0.08); border-radius: 4px; font-size: 0.78rem; color: #f87171;">{e.error_message}</div>
+								{/if}
+								{#if imageLogExpanded[e.id]}
+									<div style="margin-top: 10px; display: flex; flex-direction: column; gap: 10px;">
+										<div>
+											<div style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-tertiary); margin-bottom: 4px;">Raw prompt (from Brain LLM)</div>
+											<pre style="margin: 0; padding: 8px 10px; background: var(--bg-base); border-radius: 4px; font-size: 0.78rem; max-height: 240px; overflow: auto; white-space: pre-wrap; font-family: var(--font-mono, monospace);">{e.raw_prompt || '(empty)'}</pre>
+										</div>
+										<div>
+											<div style="font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-tertiary); margin-bottom: 4px;">
+												Enriched prompt (sent to Gemini){#if e.enriched_by_model} · by <code style="background: transparent; color: var(--accent);">{e.enriched_by_model}</code>{/if}
+											</div>
+											<pre style="margin: 0; padding: 8px 10px; background: var(--bg-base); border-radius: 4px; font-size: 0.78rem; max-height: 320px; overflow: auto; white-space: pre-wrap; font-family: var(--font-mono, monospace);">{e.enriched_prompt || '(no enrichment)'}</pre>
+										</div>
+									</div>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				{/if}
 			</div>
 
 			{:else if brainTab === 'costs'}
