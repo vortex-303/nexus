@@ -730,6 +730,14 @@ func BuildPersonaContext(activated []Skill, maxBodyChars int) string {
 		}
 		b.WriteString("\n\n")
 		b.WriteString(body)
+		// Append persona-specific anti-failure warning so the keyword-match
+		// path (no explicit /persona slash) also benefits from the
+		// strengthened directives. Matches by slug — only fires for
+		// built-in personas like creative-director / researcher.
+		if warning := builtinAntiFailureWarning(s.Name); warning != "" {
+			b.WriteString("\n\n")
+			b.WriteString(warning)
+		}
 		b.WriteString("\n\n---\n\n")
 	}
 	return b.String()
