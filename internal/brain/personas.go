@@ -3,8 +3,15 @@ package brain
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+// imagePromptTagPattern matches `[skill:X]` and `[persona:X]` badge tokens
+// (with optional surrounding whitespace) that should never appear in a
+// prompt sent to an image-generation model. The model would otherwise
+// try to render the literal text — observed in production.
+var imagePromptTagPattern = regexp.MustCompile(`\s*\[(?:skill|persona):[^\]\n]+\]\s*`)
 
 // Persona is a workspace-scoped Brain persona — a polymorphic operating mode
 // the user invokes either explicitly (via `/persona-slug` slash command,
@@ -258,7 +265,31 @@ Required sequence, every turn:
 4. Embed the returned ` + "`![alt](url)`" + ` verbatim into the reply.
 5. Then the ` + "`<image-prompt>`" + ` block.
 
-If for any reason ` + "`generate_image`" + ` errors or returns no URL, say so explicitly ("Image generation failed: <reason>") instead of writing the breakdown as if it succeeded. Never produce an Ad Breakdown reply that lacks a real ` + "`![alt](https?://...)`" + ` image URL.`
+If for any reason ` + "`generate_image`" + ` errors or returns no URL, say so explicitly ("Image generation failed: <reason>") instead of writing the breakdown as if it succeeded. Never produce an Ad Breakdown reply that lacks a real ` + "`![alt](https?://...)`" + ` image URL.
+
+## IMAGE-PROMPT QUALITY — supersedes any earlier template
+
+Generic adjectives ("ultra-clean", "modern", "premium feel", "deep slate", "electric glow") produce generic images. Use the structured template below — every section concrete. Replace ANY image-prompt template you remember from earlier in this conversation with this exact shape:
+
+` + "```" + `
+RENDER STYLE: [pick one] photoreal product shot · 3D studio render · isometric vector · editorial poster · printed poster shot on a wall · matte illustration · pixel-art · clay render
+SUBJECT: [single sentence — what is the camera looking at? include 1–2 physical-world anchors so the model knows scale]
+COMPOSITION: [where is the subject? rule of thirds? centered? specify position with %% or thirds. Include negative space behind text.]
+LIGHTING: [direction + softness + color. e.g. "top-left key light, 5500K, soft falloff; subtle cyan rim from behind subject; deep shadow on right"]
+MATERIALS / TEXTURE: [describe the physical material being rendered. brushed aluminum, frosted glass, matte paper, screen-printed cardstock, etc.]
+PALETTE: [3–4 colors with hex AND role. e.g. "background #0B0F11 (90%), accent #00D2D3 (8%, on subject edges only), white #FFFFFF (text only)"]
+TYPOGRAPHY: [if rendering text: font family + weight + alignment + tracking. e.g. "Helvetica Neue 95 Black, +60 tracking, all caps; smaller line in Inter Regular 14pt"]
+TEXT TO RENDER: [exact strings to display, with their position. e.g. "Headline 'Stop letting them own your work.' — 96pt, top-center, white. Sub-headline 'Private. Fast. Yours.' — 24pt, directly below, 65%% opacity."]
+MOOD / REFERENCE: [one cultural touchstone — "Bauhaus poster", "early Apple Think Different campaign", "Helvetica film cover", "Soviet constructivist". Helps anchor visual language.]
+ASPECT RATIO: [1:1 / 16:9 / 9:16 / 4:3]
+NEGATIVE PROMPT: [what to avoid — e.g. "no people, no faces, no abstract glow blobs, no generic tech imagery, no rainbows"]
+` + "```" + `
+
+**Rules:**
+- Never include ` + "`[skill:...]`" + ` or ` + "`[persona:...]`" + ` tags inside the image-prompt block — those are chat-only badges. The image-prompt body goes verbatim to Gemini.
+- Pick ONE concrete render style. Don't say "photoreal AND illustrated" — the model will compromise to mush.
+- For text-heavy designs (flyers, posters, banners), Nano Banana 2 / Pro is unusually good IF you give it font name, weight, exact text, and exact position. Be obsessive about typography.
+- If the user says "make another version", change something *specific* (render style, composition, lighting) — don't just shuffle adjectives.`
 	case "researcher":
 		return `## CRITICAL — Cite or say you couldn't
 
@@ -267,4 +298,23 @@ Failure mode you MUST avoid: writing **Findings** bullets without inline ` + "`[
 If no useful search results came back, say so in **Bottom line** and **Caveats** — don't fabricate sources or invent URLs.`
 	}
 	return ""
+}
+
+// SanitizeImagePrompt strips chat-only badge tags (`[skill:...]`,
+// `[persona:...]`) and the workflow-tag header pattern from prompts
+// before they're sent to the image generation model. Models will
+// otherwise try to render the tag as literal text — a real bug observed
+// in production when Brain leaked the persona badge into the prompt.
+//
+// Public so internal/server can call it before invoking GenerateImageGemini.
+func SanitizeImagePrompt(prompt string) string {
+	// Strip any leading or inline [skill:X] / [persona:X] tokens.
+	out := imagePromptTagPattern.ReplaceAllString(prompt, "")
+	// Clean up leading blank lines + extra whitespace the strip leaves behind.
+	out = strings.TrimSpace(out)
+	// Collapse any "\n\n\n+" runs that resulted from line-only tag removal.
+	for strings.Contains(out, "\n\n\n") {
+		out = strings.ReplaceAll(out, "\n\n\n", "\n\n")
+	}
+	return out
 }

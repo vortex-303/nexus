@@ -1300,6 +1300,10 @@ func (s *Server) toolGenerateImageForAgent(slug, channelID string, agent *Agent,
 	if imageModel == "" {
 		imageModel = s.getImageModel(slug)
 	}
+	// Strip chat-only badge tags ([skill:X], [persona:X]) that Brain
+	// sometimes leaks into the prompt — the model would otherwise try to
+	// render the literal text as part of the image.
+	enrichedPrompt = brain.SanitizeImagePrompt(enrichedPrompt)
 	logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("model", imageModel).Msg("using Gemini model")
 
 	text, imageData, mimeType, err := brain.GenerateImageGemini(geminiKey, imageModel, enrichedPrompt, args.AspectRatio)
@@ -1342,9 +1346,13 @@ func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
 	}
 
 	imageModel := s.getImageModel(slug)
+	// Strip chat-only badge tags ([skill:X], [persona:X]) that Brain
+	// sometimes leaks into the prompt — the model would otherwise render
+	// the literal tag text as part of the image.
+	sanitized := brain.SanitizeImagePrompt(args.Prompt)
 	logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("model", imageModel).Str("aspect", args.AspectRatio).Msg("using Gemini model")
 
-	text, imageData, mimeType, err := brain.GenerateImageGemini(geminiKey, imageModel, args.Prompt, args.AspectRatio)
+	text, imageData, mimeType, err := brain.GenerateImageGemini(geminiKey, imageModel, sanitized, args.AspectRatio)
 	if err != nil {
 		logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("image generation error")
 		return "Error generating image: " + err.Error()
