@@ -1326,8 +1326,55 @@ func (s *Server) toolGenerateImageForAgent(slug, channelID string, agent *Agent,
 	return result
 }
 
+// BrainImagePromptEnrichmentSystemPrompt is a dedicated, narrow system
+// prompt for the "image-prompt engineer" LLM call that runs between
+// Brain's raw prompt and Gemini. It produces ONE high-quality, fully
+// structured image generation prompt — no conversation, no commentary.
+//
+// Why a dedicated call: cheap MoE models (DeepSeek V4 Flash,
+// Qwen3.5-Flash, Gemma 4) are great at reasoning but mediocre at
+// image-prompt engineering — they default to generic adjectives
+// ("ultra-clean", "deep slate", "electric glow"). A single-purpose LLM
+// call with a strict template produces much richer briefs that lean
+// into Nano Banana's strengths (precise text, specific composition,
+// material descriptions).
+const BrainImagePromptEnrichmentSystemPrompt = `You are a senior art director and image-prompt engineer. Your one job: turn a short concept brief into a single, dense, production-quality image generation prompt for Gemini (Nano Banana 2).
+
+Rules — non-negotiable:
+
+- Output ONLY the prompt body. No preamble, no markdown fences, no explanations, no quotes around the whole thing, no greeting.
+- Never include ` + "`[skill:...]`" + ` or ` + "`[persona:...]`" + ` tags — these are chat-only badges, not image directives.
+- Use the structured template below. Every field must be filled with concrete, specific language. No generic adjectives ("modern", "ultra-clean", "premium feel"). If a brief is vague, infer reasonable specifics from context — don't pass vagueness through.
+- For any text to render on the image, specify exact text, exact font feel (Helvetica Bold, Inter Regular, Playfair Display, custom hand-lettered, etc.), exact position (with %% or thirds), exact weight + size + color. Nano Banana renders text reliably ONLY when you give it these specifics.
+- Keep total prompt under 280 words. Dense and specific beats long and floaty.
+
+Output template — fill every section, in this exact order:
+
+RENDER STYLE: [one of: photoreal product shot / 3D studio render / isometric vector / editorial poster / printed poster shot on a wall / matte illustration / pixel-art / clay render / collage]
+SUBJECT: [one sentence — what the camera/viewer sees. Include a physical-world anchor for scale where relevant.]
+COMPOSITION: [where the subject sits, with %% or thirds. Include negative space for text. Mention symmetry/asymmetry, rule-of-thirds, golden ratio.]
+LIGHTING: [direction + softness + color temperature + accent lights. Mention shadows explicitly.]
+MATERIALS / TEXTURE: [what the physical surfaces are. Brushed aluminum, matte cardstock, frosted glass, screen-printed paper grain, etc.]
+PALETTE: [3–4 colors with hex and role/percentage. e.g. "background #0B0F11 (85%), accent #00D2D3 (10%, on subject edges only), white #FFFFFF (5%, text only)"]
+TYPOGRAPHY: [font family + weight + tracking + alignment for any rendered text]
+TEXT TO RENDER: [exact strings, each with position + size + color + weight. Or "none" if no text.]
+MOOD / REFERENCE: [one cultural touchstone: Bauhaus poster / Müller-Brockmann grid / early Apple Think Different / Soviet constructivist / Wes Anderson symmetry / etc.]
+ASPECT RATIO: [matches the target ratio passed by the caller]
+NEGATIVE PROMPT: [what to avoid — no people unless asked, no faces if abstract, no generic tech imagery, no rainbows, no extra unrelated text, no watermarks]`
+
 // toolGenerateImage calls the Gemini API to generate an image from a prompt.
 // Returns markdown image reference or error string (used by Brain, not agents).
+//
+// Flow:
+//  1. Brain's raw prompt comes in via the generate_image tool call.
+//  2. An "image-prompt engineer" LLM call (BrainImagePromptEnrichmentSystemPrompt)
+//     rewrites it into a structured, dense brief tuned for Nano Banana.
+//  3. SanitizeImagePrompt strips any leaked chat-only badge tags.
+//  4. Gemini generates the image.
+//  5. <image-prompt> block in the response shows the ENRICHED brief so
+//     the user can see what was actually sent.
+//
+// Enrichment failure is non-fatal — falls back to the raw prompt.
 func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
 	var args struct {
 		Prompt      string `json:"prompt"`
@@ -1345,14 +1392,39 @@ func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
 		return "Error: no Gemini API key configured. Set it in Brain Settings."
 	}
 
+	// Enrich the prompt via a dedicated image-prompt-engineer LLM call.
+	// Same pattern toolGenerateImageForAgent uses for agents — now also
+	// applied to @Brain so cheap MoE models can't ship vague briefs.
+	enrichedPrompt := args.Prompt
+	apiKey, model := s.getBrainSettings(slug)
+	enrichModel := model
+	_, _, memModel := s.getMemorySettings(slug)
+	if memModel != "" {
+		enrichModel = memModel
+	}
+	if apiKey != "" && enrichModel != "" {
+		client := brain.NewClient(apiKey, enrichModel)
+		userMsg := fmt.Sprintf("## Concept Brief\n%s\n\n## Target Aspect Ratio\n%s", args.Prompt, args.AspectRatio)
+		result, enrichUsage, err := client.Complete(BrainImagePromptEnrichmentSystemPrompt, []brain.Message{
+			{Role: "user", Content: userMsg},
+		})
+		if err != nil {
+			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("brain image prompt enrichment failed, using raw prompt")
+		} else {
+			enrichedPrompt = strings.TrimSpace(result)
+			s.trackUsage(slug, enrichUsage, enrichModel, "image_enrichment", channelID, "")
+			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("raw_chars", len(args.Prompt)).Int("enriched_chars", len(enrichedPrompt)).Str("preview", truncate(enrichedPrompt, 200)).Msg("brain image prompt enriched")
+		}
+	}
+
+	// Strip any leaked [skill:X] / [persona:X] tokens that the enrichment
+	// LLM might have copied through. Belt-and-suspenders.
+	enrichedPrompt = brain.SanitizeImagePrompt(enrichedPrompt)
+
 	imageModel := s.getImageModel(slug)
-	// Strip chat-only badge tags ([skill:X], [persona:X]) that Brain
-	// sometimes leaks into the prompt — the model would otherwise render
-	// the literal tag text as part of the image.
-	sanitized := brain.SanitizeImagePrompt(args.Prompt)
 	logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("model", imageModel).Str("aspect", args.AspectRatio).Msg("using Gemini model")
 
-	text, imageData, mimeType, err := brain.GenerateImageGemini(geminiKey, imageModel, sanitized, args.AspectRatio)
+	text, imageData, mimeType, err := brain.GenerateImageGemini(geminiKey, imageModel, enrichedPrompt, args.AspectRatio)
 	if err != nil {
 		logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("image generation error")
 		return "Error generating image: " + err.Error()
@@ -1367,7 +1439,11 @@ func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
 		return "Image generated but failed to save"
 	}
 
+	// Show the ENRICHED prompt in the collapsible <image-prompt> block so
+	// the user can see what was actually sent to Gemini — useful for
+	// iterating on the brief.
 	result := strings.TrimSpace(text) + saved
+	result += fmt.Sprintf("\n\n<image-prompt>\n%s\n</image-prompt>", enrichedPrompt)
 	return result
 }
 
