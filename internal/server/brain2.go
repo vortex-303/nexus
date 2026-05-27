@@ -156,6 +156,19 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 			}
 		}
 
+		// Strip hallucinated external image URLs (image.pollinations.ai,
+		// api.dicebear.com, etc.) that cheap MoE models sometimes emit
+		// instead of calling the generate_image tool. Real images go
+		// through Gemini via toolGenerateImage; the response there
+		// contains internal blob references that pass through unchanged.
+		if cleaned, stripped := brain.SanitizeBrainResponse(result.Response); stripped > 0 {
+			logger.WithCategory(logger.CatBrain).Warn().
+				Str("workspace", slug).
+				Int("stripped", stripped).
+				Msg("stripped hallucinated external image URLs from Brain response")
+			result.Response = cleaned
+		}
+
 		// Send the response (reuses v1)
 		msgID := s.sendBrainMessage(slug, channelID, parentID, result.Response)
 

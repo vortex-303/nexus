@@ -13,6 +13,46 @@ import (
 // try to render the literal text — observed in production.
 var imagePromptTagPattern = regexp.MustCompile(`\s*\[(?:skill|persona):[^\]\n]+\]\s*`)
 
+// externalImageMarkdownPattern matches markdown image syntax `![alt](url)`
+// where the URL is an external http(s) — used by SanitizeBrainResponse to
+// strip hallucinated third-party image URLs that cheap MoE models invent
+// (e.g. image.pollinations.ai, api.dicebear.com) instead of calling the
+// generate_image tool. Internal blob references like `/api/workspaces/...`
+// or relative URLs are preserved.
+var externalImageMarkdownPattern = regexp.MustCompile(`!\[[^\]]*\]\((https?://[^)\s]+)\)`)
+
+// SanitizeBrainResponse strips markdown image URLs that point to external
+// hosts — these are LLM hallucinations from cheap models that learned
+// image-generation URL patterns in training (Pollinations, DiceBear, etc.)
+// and emit them instead of calling the generate_image tool.
+//
+// Internal blob URLs (relative paths starting with /api/workspaces/ or
+// absolute URLs to known Nexus hosts) are preserved. The image is replaced
+// with an explicit "image generation skipped" notice so the user knows
+// something went sideways and Brain's text reply isn't credible as a
+// "we made an image" claim.
+func SanitizeBrainResponse(response string) (cleaned string, strippedCount int) {
+	cleaned = externalImageMarkdownPattern.ReplaceAllStringFunc(response, func(match string) string {
+		// Extract the URL — group 1 of the pattern
+		sub := externalImageMarkdownPattern.FindStringSubmatch(match)
+		if len(sub) < 2 {
+			return match
+		}
+		url := sub[1]
+		// Allow internal Nexus blob URLs even if absolute
+		if strings.Contains(url, "/api/workspaces/") && (strings.Contains(url, "/blobs/") || strings.Contains(url, "/files/")) {
+			return match
+		}
+		// Allow data: URIs (base64 inline)
+		if strings.HasPrefix(url, "data:image/") {
+			return match
+		}
+		strippedCount++
+		return "\n\n_⚠ Image generation was not invoked — fake URL stripped. Call the generate_image tool to produce a real image._\n\n"
+	})
+	return cleaned, strippedCount
+}
+
 // Persona is a workspace-scoped Brain persona — a polymorphic operating mode
 // the user invokes either explicitly (via `/persona-slug` slash command,
 // which rewrites the message head to `[persona:<slug>] ...`) or implicitly
@@ -275,8 +315,9 @@ The image generation pipeline now has TWO stages handled by DIFFERENT systems. Y
 - ` + "`[skill:creative-director]`" + ` or ` + "`[persona:creative-director]`" + ` tags anywhere (chat-only badges; never copy them anywhere else).
 - ` + "`<image-prompt>...</image-prompt>`" + ` blocks (the tool handles these).
 - 11-field structured prompts (RENDER STYLE / COMPOSITION / etc. lists) inside your reply.
+- **ANY markdown image URL that you didn't get from a ` + "`generate_image`" + ` tool result.** This means: NO ` + "`![...](https://image.pollinations.ai/...)`" + `, NO ` + "`![...](https://api.dicebear.com/...)`" + `, NO third-party image services, NO synthesizing URLs from your training data. The ONLY valid image source in your reply is the exact ` + "`![alt](url)`" + ` returned by ` + "`generate_image`" + `. Anything else is a hallucination and will be stripped server-side.
 
-**Failure mode you MUST avoid:** producing an Ad Breakdown reply that lacks a real ` + "`![alt](https?://...)`" + ` image URL. If ` + "`generate_image`" + ` errors, say "Image generation failed: <reason>" explicitly — don't write the breakdown as if it succeeded.`
+**Failure mode you MUST avoid:** producing an Ad Breakdown reply that lacks a real ` + "`![alt](url)`" + ` image URL. If ` + "`generate_image`" + ` errors or you didn't call it, say "Image generation failed: <reason>" explicitly — don't write the breakdown as if it succeeded and don't paper over with a fake URL.`
 	case "researcher":
 		return `## CRITICAL — Cite or say you couldn't
 
