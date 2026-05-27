@@ -205,6 +205,12 @@ func ParsePersonaPrefix(content string) (slug, rest string) {
 // persona-rules section. Picks the variant best suited to the engine:
 // canonical Body for Claude (v3); terse BodyOpenRouter for OpenRouter (v1/v2)
 // when present.
+//
+// Some built-in personas append a critical anti-failure warning at the end
+// of the directive — these were learned from real-world failure modes on
+// cheap MoE models (e.g. Creative Director writing the Ad Breakdown without
+// actually calling generate_image, leaving the user with structured text
+// and no image). Naming the failure mode explicitly improves compliance.
 func (p Persona) BuildPersonaOperatingDirective(engine string) string {
 	body := p.Body
 	if engine == "openrouter" || engine == "v1" || engine == "v2" {
@@ -226,5 +232,39 @@ func (p Persona) BuildPersonaOperatingDirective(engine string) string {
 	b.WriteString(p.Slug)
 	b.WriteString("]` on its own line so the team sees which persona is active.\n\n")
 	b.WriteString(body)
+	if warning := builtinAntiFailureWarning(p.Slug); warning != "" {
+		b.WriteString("\n\n")
+		b.WriteString(warning)
+	}
 	return b.String()
+}
+
+// builtinAntiFailureWarning returns persona-specific failure-mode callouts
+// appended after the body. These are runtime-applied so they take effect
+// for existing workspaces without requiring a re-seed of the personas DB
+// rows. Empty string for personas without a known failure mode.
+func builtinAntiFailureWarning(slug string) string {
+	switch slug {
+	case "creative-director":
+		return `## CRITICAL — Don't ship the text without the image
+
+Failure mode you MUST avoid: writing the **Ad Breakdown** + ` + "`<image-prompt>`" + ` block WITHOUT calling ` + "`generate_image`" + ` first. That leaves the user with structured text and no visual — your reply is INVALID.
+
+Required sequence, every turn:
+
+1. **CALL ` + "`generate_image(prompt, aspect_ratio)`" + ` FIRST** — before writing any prose. Use the prompt details you'd put in the image-prompt block.
+2. Wait for the tool to return ` + "`![alt](url)`" + `.
+3. THEN write the Ad Breakdown text.
+4. Embed the returned ` + "`![alt](url)`" + ` verbatim into the reply.
+5. Then the ` + "`<image-prompt>`" + ` block.
+
+If for any reason ` + "`generate_image`" + ` errors or returns no URL, say so explicitly ("Image generation failed: <reason>") instead of writing the breakdown as if it succeeded. Never produce an Ad Breakdown reply that lacks a real ` + "`![alt](https?://...)`" + ` image URL.`
+	case "researcher":
+		return `## CRITICAL — Cite or say you couldn't
+
+Failure mode you MUST avoid: writing **Findings** bullets without inline ` + "`[source](url)`" + ` links. Every external claim needs a citation. If you couldn't find a source for a claim, either omit the claim or mark it as ` + "`(no source found)`" + `.
+
+If no useful search results came back, say so in **Bottom line** and **Caveats** — don't fabricate sources or invent URLs.`
+	}
+	return ""
 }
