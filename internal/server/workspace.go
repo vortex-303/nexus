@@ -246,6 +246,12 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		"/w/"+slug,
 		"", "Nexus", "")
 
+	// Onboarding nudges: fire delayed inbox cards explaining the
+	// capabilities the user is missing without Gemini (image generation)
+	// and xAI (real-time research). Each nudge re-checks key state at
+	// fire-time and silently skips if the user added it in the gap.
+	go s.scheduleOnboardingNudges(slug, userID)
+
 	// Issue JWT
 	token, err := s.jwt.Issue(userID, req.DisplayName, slug, "admin", accountID)
 	if err != nil {

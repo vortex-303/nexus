@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { listBriefs, createBrief, deleteBrief, generateBrief, getBrief, getCurrentUser, shareBrief, unshareBrief } from '$lib/api';
+	import BriefCard from '$lib/components/BriefCard.svelte';
 
 	let slug = $derived(page.params.slug);
 	let briefs = $state<any[]>([]);
@@ -277,33 +278,33 @@
 
 		<div class="brief-detail">
 			{#if activeBrief}
-				<div class="brief-detail-header">
-					<h2>{activeBrief.title}</h2>
-					{#if activeBrief.generated_at}
-						<span class="brief-detail-time">Generated {timeAgo(activeBrief.generated_at)}</span>
-					{/if}
-					<div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
-						<button class="btn btn-sm" style="border:1px solid var(--border-subtle);" onclick={() => handleGenerate(activeBrief.id)} disabled={generatingId === activeBrief.id}>
-							{generatingId === activeBrief.id ? 'Generating...' : 'Refresh'}
+				<!-- Action bar — refresh + share/copy controls live outside
+				     the card so they're always reachable. Card chrome below
+				     mirrors the shareable /brief/<token> view. -->
+				<div class="brief-action-bar">
+					<button class="btn btn-sm" style="border:1px solid var(--border-subtle);" onclick={() => handleGenerate(activeBrief.id)} disabled={generatingId === activeBrief.id}>
+						{generatingId === activeBrief.id ? 'Generating...' : 'Refresh'}
+					</button>
+					{#if activeBrief.is_public && activeBrief.share_token}
+						<button class="btn btn-sm share-btn shared" onclick={() => copyShareLink(activeBrief.share_token)}>
+							{copiedLink ? 'Copied!' : 'Copy Link'}
 						</button>
-						{#if activeBrief.is_public && activeBrief.share_token}
-							<button class="btn btn-sm share-btn shared" onclick={() => copyShareLink(activeBrief.share_token)}>
-								{copiedLink ? 'Copied!' : 'Copy Link'}
-							</button>
-							<button class="btn btn-sm" style="border:1px solid var(--border-subtle);color:var(--text-tertiary);" onclick={() => handleUnshare(activeBrief.id)}>
-								Unshare
-							</button>
-						{:else}
-							<button class="btn btn-sm share-btn" onclick={() => handleShare(activeBrief.id)} disabled={sharingId === activeBrief.id}>
-								{sharingId === activeBrief.id ? 'Sharing...' : 'Share'}
-							</button>
-						{/if}
-					</div>
+						<button class="btn btn-sm" style="border:1px solid var(--border-subtle);color:var(--text-tertiary);" onclick={() => handleUnshare(activeBrief.id)}>
+							Unshare
+						</button>
+					{:else}
+						<button class="btn btn-sm share-btn" onclick={() => handleShare(activeBrief.id)} disabled={sharingId === activeBrief.id}>
+							{sharingId === activeBrief.id ? 'Sharing...' : 'Share'}
+						</button>
+					{/if}
 				</div>
 				{#if activeBrief.content}
-					<div class="brief-content markdown-body">
-						{@html renderMarkdown(activeBrief.content)}
-					</div>
+					<BriefCard
+						template={activeBrief.template}
+						title={activeBrief.title}
+						date={activeBrief.generated_at}
+						bodyHtml={renderMarkdown(activeBrief.content)}
+					/>
 				{:else}
 					<div class="empty-state">
 						<p>This brief hasn't been generated yet.</p>
@@ -424,6 +425,16 @@
 		flex: 1;
 		overflow-y: auto;
 		padding: var(--space-xl);
+	}
+	/* Action bar lives outside the BriefCard so Refresh / Share / Copy
+	   stay reachable above the card chrome. Right-aligned, condensed. */
+	.brief-action-bar {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+		justify-content: flex-end;
+		margin: 0 auto var(--space-md) auto;
+		max-width: 720px;
 	}
 
 	/* Brief cards */
