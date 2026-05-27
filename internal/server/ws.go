@@ -360,26 +360,12 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 	if !p.WebLLM {
 		if brain.ContainsMention(p.Content) || isBrainDM {
 			brainTriggered = true
-			// Route on the user-facing engine. Two engines today:
-			// OpenRouter (the agentic v2 pipeline) and Claude (managed
-			// agents v3). Legacy v1 routing kept as a fallback while
-			// migrating workspaces that still have brain_version='v1'
-			// stored without the new engine setting.
-			switch s.resolveEngine(conn.WorkspaceSlug) {
-			case "claude":
-				s.handleBrainV3(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
-			case "openrouter":
-				if s.getBrainSetting(conn.WorkspaceSlug, "brain_version") == "v1" {
-					// Soft-migration path: a legacy v1 workspace can stay on
-					// v1 routing until they hit Settings and explicitly
-					// select OpenRouter (which writes brain_version='v2').
-					s.handleBrainMentionWithTools(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
-				} else {
-					s.handleBrainV2(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
-				}
-			default:
-				s.handleBrainMentionWithTools(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
-			}
+			// Brain v2 (OpenRouter Plan→Execute→Synthesize pipeline) is the
+			// only active path. v1 + v3 dispatch removed 2026-05-27 as part
+			// of the OpenRouter-only consolidation. Workspaces with stale
+			// brain_version='v1' or 'v3' values are migrated by the
+			// workspace v63 migration before this code runs.
+			s.handleBrainV2(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
 		}
 	}
 

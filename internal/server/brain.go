@@ -18,22 +18,13 @@ import (
 	"github.com/nexus-chat/nexus/internal/logger"
 )
 
-// resolveEngine returns the user-facing engine for the workspace:
-// "openrouter" or "claude". When the engine setting is unset (legacy
-// workspaces), it's derived from brain_version: v3 -> claude, anything
-// else -> openrouter. Used for routing decisions and for the legacy-
-// agent visibility filter.
+// resolveEngine returns the user-facing engine for the workspace.
+// Post-2026-05-27 OpenRouter consolidation, "openrouter" is the only
+// active engine — the function is kept as a one-line constant so callers
+// don't have to be edited and so the door is open for future engines.
+// Legacy 'claude' values are migrated to 'openrouter' by workspace
+// migration v63 before any caller sees them.
 func (s *Server) resolveEngine(slug string) string {
-	switch s.getBrainSetting(slug, "engine") {
-	case "claude":
-		return "claude"
-	case "openrouter":
-		return "openrouter"
-	}
-	// Migration: derive from brain_version.
-	if s.getBrainSetting(slug, "brain_version") == "v3" {
-		return "claude"
-	}
 	return "openrouter"
 }
 
@@ -493,28 +484,20 @@ func (s *Server) buildWelcomeMessage(slug string, wdb *db.WorkspaceDB, firstName
 	if wsName == "" {
 		wsName = slug
 	}
-	engine := s.resolveEngine(slug)
-	var engineLabel, modelLabel, modelShort, otherEngineLabel string
-	if engine == "claude" {
-		engineLabel = "Claude (Managed Agents)"
-		modelLabel = s.getBrainSetting(slug, "mga_model", "claude-sonnet-4-6")
-		modelShort = strings.ReplaceAll(strings.TrimPrefix(modelLabel, "claude-"), "-", " ")
-		otherEngineLabel = "OpenRouter"
+	engineLabel := "OpenRouter"
+	modelLabel := s.getBrainSetting(slug, "model", "qwen/qwen3.5-flash-02-23")
+	var modelShort string
+	if modelLabel == "nexus/free-auto" {
+		modelShort = "Free Auto (model rotation)"
 	} else {
-		engineLabel = "OpenRouter"
-		modelLabel = s.getBrainSetting(slug, "model", "google/gemma-4-26b-a4b-it")
-		if modelLabel == "nexus/free-auto" {
-			modelShort = "Free Auto (model rotation)"
+		parts := strings.SplitN(modelLabel, "/", 2)
+		if len(parts) == 2 {
+			modelShort = parts[1]
 		} else {
-			parts := strings.SplitN(modelLabel, "/", 2)
-			if len(parts) == 2 {
-				modelShort = parts[1]
-			} else {
-				modelShort = modelLabel
-			}
+			modelShort = modelLabel
 		}
-		otherEngineLabel = "Claude"
 	}
+	_ = engineLabel
 
 	// Service status — separate booleans so the message can show per-line
 	// "✓ connected" / "→ add in Settings → Services".
@@ -559,18 +542,14 @@ func (s *Server) buildWelcomeMessage(slug string, wdb *db.WorkspaceDB, firstName
 	}
 	b.WriteString("\n")
 
-	// Capability list — what I can do here, engine-aware
+	// Capability list — what I can do here
 	b.WriteString("**What I can do here**\n")
 	b.WriteString("- **Tasks · Documents · Calendar · Knowledge · Memory** — built-in workspace tools\n")
 	b.WriteString("- **Creative Director persona** — _\"@Brain make a 16:9 banner for X\"_ → structured Ad Brief + image\n")
 	b.WriteString("- **Researcher persona** — _\"@Brain research X\"_ → cited bullets + bottom line\n")
-	if engine == "claude" {
-		b.WriteString("- **Persistent memory_store** — I write decisions, profiles, projects to /mnt/memory and read them next turn\n")
-		b.WriteString("- **Native skills**: `docx` · `pdf` · `xlsx` · `pptx` (read, edit, generate)\n")
-	} else {
-		fmt.Fprintf(&b, "- **Self-correcting tool loop** with up to %s retries on tool failures\n", maxToolDepth)
-		b.WriteString("- **Live model browser** in Settings → OpenRouter card — try DeepSeek V4, Gemma 4 MoE, Qwen3, Llama 3.3, free-tier rotations\n")
-	}
+	b.WriteString("- **Vision** — drop an image into chat, then `/describe`, `/extract`, or `/analyze`\n")
+	fmt.Fprintf(&b, "- **Self-correcting tool loop** with up to %s retries on tool failures\n", maxToolDepth)
+	b.WriteString("- **Live model browser** in Settings → OpenRouter card — try Qwen3.5-Flash, DeepSeek V4, Gemma 4 MoE, Llama 3.3, free-tier rotations\n")
 	b.WriteString("\n")
 
 	// Tailored "Try one of these" — first item depends on Gemini key,
@@ -601,7 +580,7 @@ func (s *Server) buildWelcomeMessage(slug string, wdb *db.WorkspaceDB, firstName
 	b.WriteString("- **Personality** tab → edit my `SOUL.md` and `INSTRUCTIONS.md` (voice + workspace rules)\n")
 	b.WriteString("- **Extensions** tab → see my skills, propose new ones via the **Skill Distiller**, connect MCP servers\n")
 	b.WriteString("- **Memory** tab → watch what I learn over time\n")
-	fmt.Fprintf(&b, "- **Settings** → add **%s** as a secondary engine anytime\n", otherEngineLabel)
+	b.WriteString("- **Services** → connect Gemini for image generation, xAI for real-time research, Brave for web search\n")
 	b.WriteString("\n")
 
 	if justSetup {
@@ -1179,27 +1158,17 @@ func (s *Server) handleUpdateBrainSettings(w http.ResponseWriter, r *http.Reques
 			}
 		}
 
-		// Engine side-effects: when the user picks an engine card, also write
-		// the implied brain_version and force ollama_enabled=false (cloud-only
-		// product right now). This keeps internal routing primitives in sync
-		// without exposing them in the UI.
-		if k == "engine" {
-			var derivedBrainVersion string
-			switch v {
-			case "claude":
-				derivedBrainVersion = "v3"
-			case "openrouter":
-				derivedBrainVersion = "v2"
-			}
-			if derivedBrainVersion != "" {
-				_, _ = wdb.DB.Exec(
-					"INSERT INTO brain_settings (key, value) VALUES ('brain_version', ?) ON CONFLICT(key) DO UPDATE SET value = ?",
-					derivedBrainVersion, derivedBrainVersion,
-				)
-				_, _ = wdb.DB.Exec(
-					"INSERT INTO brain_settings (key, value) VALUES ('ollama_enabled', 'false') ON CONFLICT(key) DO UPDATE SET value = 'false'",
-				)
-			}
+		// Engine side-effects: when the user picks an engine, write the implied
+		// brain_version and force ollama_enabled=false. OpenRouter is the only
+		// active engine post-2026-05-27, but the side-effect lives on so future
+		// engine additions plug in here cleanly.
+		if k == "engine" && v == "openrouter" {
+			_, _ = wdb.DB.Exec(
+				"INSERT INTO brain_settings (key, value) VALUES ('brain_version', 'v2') ON CONFLICT(key) DO UPDATE SET value = 'v2'",
+			)
+			_, _ = wdb.DB.Exec(
+				"INSERT INTO brain_settings (key, value) VALUES ('ollama_enabled', 'false') ON CONFLICT(key) DO UPDATE SET value = 'false'",
+			)
 		}
 
 		// Auto-register Telegram webhook when bot token is saved
@@ -1544,19 +1513,13 @@ func (s *Server) handleWebLLMContext(w http.ResponseWriter, r *http.Request) {
 // or "claude-sonnet-4-6") — passed in to avoid the helper having to know
 // which engine resolves it.
 func (s *Server) BuildCapabilitiesSection(slug, engine, activeModel string) string {
+	_ = engine // legacy parameter; OpenRouter is the only engine post-2026-05-27
 	var b strings.Builder
 	b.WriteString("\n\n---\n\n## What I have here (auto-generated)\n\n")
 
-	// Engine-specific intro
-	if engine == "claude" {
-		b.WriteString("Running on **Claude** via managed-agents (")
-		b.WriteString(activeModel)
-		b.WriteString("). Persistent sessions per (channel, thread); workspace memory_store mounted at /mnt/memory; on-demand skill loader.\n\n")
-	} else {
-		b.WriteString("Running on **OpenRouter** (")
-		b.WriteString(activeModel)
-		b.WriteString(") with self-correcting tool loop. Stateless turns; no persistent sessions.\n\n")
-	}
+	b.WriteString("Running on **OpenRouter** (")
+	b.WriteString(activeModel)
+	b.WriteString(") with self-correcting tool loop. Native multimodal: I can see images attached to messages in the channel.\n\n")
 
 	// Built-in workspace tools (always available — these are product features)
 	b.WriteString("**Workspace tools (always on):** create / list / update / delete tasks · create documents · search workspace · search knowledge base · recall workspace memory · create / list / update / delete calendar events · send email · send Telegram message.\n\n")
@@ -1609,19 +1572,11 @@ func (s *Server) BuildCapabilitiesSection(slug, engine, activeModel string) stri
 		}
 	}
 
-	// Engine-specific extras
-	if engine == "claude" {
-		b.WriteString("**Claude-only capabilities:**\n")
-		b.WriteString("- File ops on memory_store: read · write · edit · glob · grep — for `/decisions/`, `/people/`, `/projects/`, `/feedback/`, `/self/` files\n")
-		b.WriteString("- 4 native Anthropic skills: `docx`, `xlsx`, `pdf`, `pptx`\n")
-		b.WriteString("- 5 workspace skills loaded on demand: `writing-plans`, `executing-plans`, `verification-before-completion`, `task-conventions`, `decision-log`\n")
-		b.WriteString("- 2 personas (load via `[skill:Workflow]` tag): **Creative Director** (Ad Creative, Campaign Ideation, Brand Review) · **Researcher** (Quick Research, Comparison Brief, Source-Cited Memo, Social Pulse)\n\n")
-	} else {
-		b.WriteString("**OpenRouter behavior:**\n")
-		b.WriteString("- Self-correction loop on tool failures (configurable depth)\n")
-		b.WriteString("- Workspace skills inlined in the prompt when their trigger keywords match\n")
-		b.WriteString("- No persistent agent state between turns\n\n")
-	}
+	b.WriteString("**OpenRouter behavior:**\n")
+	b.WriteString("- Self-correction loop on tool failures (configurable depth)\n")
+	b.WriteString("- Workspace skills inlined in the prompt when their trigger keywords match — or invoke explicitly via `/persona`\n")
+	b.WriteString("- Vision: images attached to recent channel messages are passed to the model as `image_url` content blocks\n")
+	b.WriteString("- Stateless turns between mentions (each call sees the last 40 messages of conversation as context)\n\n")
 
 	return b.String()
 }

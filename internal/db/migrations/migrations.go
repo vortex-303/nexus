@@ -1207,6 +1207,25 @@ var workspaceMigrations61 = migration{
 	`,
 }
 
+var workspaceMigrations63 = migration{
+	version: 63,
+	name:    "force brain_version=v2: retire v1/v3 paths, OpenRouter-only",
+	sql: `
+		UPDATE brain_settings SET value = 'v2'
+			WHERE key = 'brain_version' AND value IN ('v1', 'v3');
+		UPDATE brain_settings SET value = 'openrouter'
+			WHERE key = 'engine' AND value = 'claude';
+		DELETE FROM brain_settings WHERE key IN (
+			'mga_agent_id', 'mga_agent_version', 'mga_provisioned_model',
+			'mga_memory_store_id', 'mga_members_seeded', 'mga_model',
+			'mga_system_prompt_template', 'mga_tools_hash',
+			'mga_tools_drift_detected', 'mga_provisioned_at',
+			'anthropic_api_key', 'anthropic_api_key_masked', 'anthropic_api_key_set'
+		);
+		DELETE FROM brain_settings WHERE key LIKE 'mga_skill_%_id';
+	`,
+}
+
 var workspaceMigrations62 = migration{
 	version: 62,
 	name:    "personas: workspace-scoped first-class Brain personas",
@@ -1235,7 +1254,7 @@ var workspaceMigrations62 = migration{
 }
 
 func init() {
-	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55, workspaceMigrations58, workspaceMigrations59, workspaceMigrations60, workspaceMigrations61, workspaceMigrations62)
+	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55, workspaceMigrations58, workspaceMigrations59, workspaceMigrations60, workspaceMigrations61, workspaceMigrations62, workspaceMigrations63)
 }
 
 func RunGlobal(db *sql.DB) error {

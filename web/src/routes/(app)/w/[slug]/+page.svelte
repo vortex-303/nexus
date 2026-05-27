@@ -1053,6 +1053,13 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			{ name: 'time', description: 'Get current time', action: '@Brain what time is it', category: 'General' },
 			{ name: 'summarize', description: 'Summarize the conversation', action: '@Brain summarize this conversation', category: 'General' },
 			{ name: 'memory', description: 'What do you remember?', action: '@Brain what do you remember about me?', category: 'General' },
+			// Vision — Brain reads images from recent channel uploads automatically
+			// (server-side: getRecentChannelImages attaches them to the LLM call).
+			// These commands are surfaced regardless of whether an image is currently
+			// in the channel; the verb is what changes Brain's behavior.
+			{ name: 'describe', description: 'Describe an image you just uploaded', action: '@Brain describe the image I just uploaded — composition, palette, subject, mood.', category: 'Vision' },
+			{ name: 'extract', description: 'Extract text from an image', action: '@Brain extract all visible text from the image I just uploaded. Preserve structure (lists, headings, columns). Output as plain text.', category: 'Vision' },
+			{ name: 'analyze', description: 'Analyze an image in depth', action: '@Brain analyze the image I just uploaded. Identify objects, infer context, flag anything unusual, and answer: what is this and what might I want to do with it?', category: 'Vision' },
 		);
 		// Members+
 		if (isMember) {
@@ -4156,6 +4163,12 @@ autonomy: reactive
 		uploading = true;
 		try {
 			await uploadFile(slug, current.id, file);
+			// First-image toast: nudge the user once that Brain can see images.
+			// localStorage key is per-user so the hint disappears after one upload.
+			if (file.type.startsWith('image/') && !localStorage.getItem('nexus_vision_hint_seen')) {
+				localStorage.setItem('nexus_vision_hint_seen', '1');
+				addToast('Brain can see images. Try "@Brain what\'s in this?" or use /describe.', 'info', 8000);
+			}
 		} catch (err: any) {
 			alert(err.message);
 		} finally {
