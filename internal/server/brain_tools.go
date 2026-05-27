@@ -1226,6 +1226,7 @@ Rules:
 
 // toolGenerateImageForAgent enriches the prompt using the agent's identity before calling Gemini.
 func (s *Server) toolGenerateImageForAgent(slug, channelID string, agent *Agent, argsJSON string) string {
+	start := time.Now()
 	var args struct {
 		Prompt      string `json:"prompt"`
 		AspectRatio string `json:"aspect_ratio"`
@@ -1240,6 +1241,12 @@ func (s *Server) toolGenerateImageForAgent(slug, channelID string, agent *Agent,
 	apiKey, model := s.getBrainSettings(slug)
 	geminiKey := s.getGeminiAPIKey(slug)
 	if geminiKey == "" {
+		go s.recordImageGen(slug, imageGenEvent{
+			channelID: channelID, callerKind: "agent", callerID: agent.Name,
+			aspectRatio: args.AspectRatio, rawPrompt: args.Prompt,
+			status: "error", errorMessage: "no Gemini API key configured",
+			latency: time.Since(start),
+		})
 		return "Error: no Gemini API key configured. Set it in Brain Settings."
 	}
 
@@ -1277,6 +1284,7 @@ func (s *Server) toolGenerateImageForAgent(slug, channelID string, agent *Agent,
 
 	// Enrich the prompt via LLM
 	enrichedPrompt := args.Prompt
+	enrichedByModel := ""
 	if apiKey != "" {
 		client := brain.NewClient(apiKey, enrichModel)
 		userMsg := fmt.Sprintf("## Creative Professional Identity\n%s\n## Concept Brief\n%s", agentContext, args.Prompt)
@@ -1291,6 +1299,7 @@ func (s *Server) toolGenerateImageForAgent(slug, channelID string, agent *Agent,
 			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("prompt enrichment failed, using raw prompt")
 		} else {
 			enrichedPrompt = strings.TrimSpace(result)
+			enrichedByModel = enrichModel
 			s.trackUsage(slug, enrichUsage, enrichModel, "image", channelID, "")
 			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("prompt", truncate(enrichedPrompt, 200)).Msg("enriched prompt")
 		}
@@ -1309,6 +1318,13 @@ func (s *Server) toolGenerateImageForAgent(slug, channelID string, agent *Agent,
 	text, imageData, mimeType, err := brain.GenerateImageGemini(geminiKey, imageModel, enrichedPrompt, args.AspectRatio)
 	if err != nil {
 		logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("image generation error")
+		go s.recordImageGen(slug, imageGenEvent{
+			channelID: channelID, callerKind: "agent", callerID: agent.Name,
+			model: imageModel, aspectRatio: args.AspectRatio,
+			rawPrompt: args.Prompt, enrichedPrompt: enrichedPrompt, enrichedByModel: enrichedByModel,
+			status: "error", errorMessage: err.Error(),
+			latency: time.Since(start),
+		})
 		return "Error generating image: " + err.Error()
 	}
 
@@ -1317,8 +1333,24 @@ func (s *Server) toolGenerateImageForAgent(slug, channelID string, agent *Agent,
 	}
 	saved := s.saveBase64ImageBlob(slug, channelID, imageData, mimeType)
 	if saved == "" {
+		go s.recordImageGen(slug, imageGenEvent{
+			channelID: channelID, callerKind: "agent", callerID: agent.Name,
+			model: imageModel, aspectRatio: args.AspectRatio,
+			rawPrompt: args.Prompt, enrichedPrompt: enrichedPrompt, enrichedByModel: enrichedByModel,
+			status: "error", errorMessage: "blob save failed",
+			latency: time.Since(start),
+		})
 		return "Image generated but failed to save"
 	}
+
+	// Record success
+	go s.recordImageGen(slug, imageGenEvent{
+		channelID: channelID, callerKind: "agent", callerID: agent.Name,
+		model: imageModel, aspectRatio: args.AspectRatio,
+		rawPrompt: args.Prompt, enrichedPrompt: enrichedPrompt, enrichedByModel: enrichedByModel,
+		status:  "ok",
+		latency: time.Since(start),
+	})
 
 	// Return: Gemini text + image + collapsible prompt (special marker for frontend)
 	result := strings.TrimSpace(text) + saved
