@@ -201,7 +201,7 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// re-create migration?) isn't overwritten — fresh workspaces only.
 	defaults := map[string]string{
 		"engine":         "openrouter",
-		"model":          "deepseek/deepseek-v4-flash",
+		"model":          "qwen/qwen3.5-flash-02-23",
 		"tool_max_depth": "3",
 	}
 	for k, v := range defaults {

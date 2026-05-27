@@ -4,7 +4,7 @@
 	import { onMount } from 'svelte';
 	import { getWorkspaceSlug, joinByCode, getAuthConfig, setToken, setWorkspaceSlug, listChannels, getWorkspace, getMessages, createChannel, createInvite, clearSession, getCurrentUser, getMember, updateMemberRole, kickMember, listTasks, createTask, updateTask, deleteTask, uploadFile, fileUrl, listDocs, createDoc, updateDoc, deleteDoc, getBrainSettings, updateBrainSettings, getBrainDefinition, updateBrainDefinition, listMemories, deleteMemory, clearMemories, pinMemory, listActions, listSkills, listPersonas, getSkill, updateSkill, deleteSkill, listKnowledge, createKnowledge, uploadKnowledge, updateKnowledge, deleteKnowledge, importKnowledgeURL, getAnnouncement, getPinnedModels, browseModels, testModel, distillSkills, listSkillProposals, approveSkillProposal, rejectSkillProposal, listAgents, createAgent, updateAgent, deleteAgent, listAgentTemplates, createAgentFromTemplate, generateAgentConfig, getOrgChart, updateOrgPosition, updateMemberProfile, createOrgRole, updateOrgRole, deleteOrgRole, fillOrgRole, listAgentSkills, getAgentSkill, updateAgentSkill, deleteAgentSkill, getMe, updateMe, changePassword, getOnlineMembers, listTelegramChats, deleteTelegramChat, listRoles, listSkillTemplates, createSkill, generateSkill, updateMemberPermission, toggleSkill, listMCPServers, createMCPServer, deleteMCPServer, refreshMCPServer, listMCPTemplates, listOrgRoles, getWorkspaceModels, addWorkspaceModel, removeWorkspaceModel, checkModelAvailability, getThread, toggleFavorite, editAgentWithAI, getWorkspaceFreeModels, setWorkspaceFreeModels, getWorkspaceInfo, saveBrainMessage, getBrainPrompt, executeBrainTool, getBrainTools, getWebLLMContext, deleteChannel, kickChannelMember, joinChannel, leaveChannel, browseChannels, inviteToChannel, listChannelMembers, pinMessage, unpinMessage, listPinnedMessages, getMemoryPinnedMessageIds, triggerBrainWelcome, extractMemoriesNow, triggerReflection, getReflectionHistory, resetV3Agent, getV3Memory, exportWorkspaceUrl, destroyWorkspace, getNetworkLog, getUsage, getLogs, reindexEmbeddings, listNotifications, markNotificationRead, markAllNotificationsRead, getNotificationCount } from '$lib/api';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
-	import { AGENT_CREATION_ENABLED } from '$lib/flags';
+	import { AGENT_CREATION_ENABLED, BRAIN_V3_ENABLED } from '$lib/flags';
 	import { connect, disconnect, onMessage, sendMessage, sendTyping, sendReaction, removeReaction, clearChannel, markChannelRead, connectionStatus, generateClientId } from '$lib/ws';
 	import { channels, members, messages, activeChannel, typingUsers, onlineUsers } from '$lib/stores/workspace';
 	import type { Channel } from '$lib/stores/workspace';
@@ -595,7 +595,7 @@
 	const _cachedBrain = typeof localStorage !== 'undefined' ? JSON.parse(localStorage.getItem('nexus_brain_config') || 'null') : null;
 	let brainSettings = $state<any>({});
 	let brainApiKey = $state('');
-	let brainModel = $state(_cachedBrain?.model || 'deepseek/deepseek-v4-flash');
+	let brainModel = $state(_cachedBrain?.model || 'qwen/qwen3.5-flash-02-23');
 	let brainImageModel = $state(_cachedBrain?.image_model || 'gemini-3.1-flash-image-preview');
 	let brainGeminiKey = $state('');
 	let brainXAIKey = $state('');
@@ -717,6 +717,7 @@
 		pricingCompletion?: string;
 	};
 	const openRouterRecommended: RecommendedModel[] = [
+		{ id: 'qwen/qwen3.5-flash-02-23',  label: 'Qwen3.5-Flash — multimodal (text + image) · 1M ctx · $0.065/$0.26/M ⭐ default', contextLength: 1_000_000, supportsTools: true,  pricingPrompt: '0.000000065', pricingCompletion: '0.00000026' },
 		{ id: 'deepseek/deepseek-v4-pro',  label: 'DeepSeek V4 Pro — MoE 1.6T/49B active · $0.43/$0.87/M', contextLength: 1_050_000, supportsTools: true,  pricingPrompt: '0.000000435', pricingCompletion: '0.00000087' },
 		{ id: 'deepseek/deepseek-v4-flash', label: 'DeepSeek V4 Flash — MoE 284B/13B active · $0.14/$0.28/M', contextLength: 1_050_000, supportsTools: true, pricingPrompt: '0.00000014',  pricingCompletion: '0.00000028' },
 		{ id: 'google/gemma-4-26b-a4b-it',  label: 'Gemma 4 26B-a4b — MoE · Google',                          contextLength: 0,         supportsTools: true,  pricingPrompt: '0',           pricingCompletion: '0' },
@@ -2543,7 +2544,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 	async function loadBrainSettings() {
 		try {
 			brainSettings = await getBrainSettings(slug);
-			brainModel = brainSettings.model || 'deepseek/deepseek-v4-flash';
+			brainModel = brainSettings.model || 'qwen/qwen3.5-flash-02-23';
 			brainImageModel = brainSettings.image_model || 'gemini-3.1-flash-image-preview';
 			brainGeminiKey = '';
 			brainBraveKey = '';
@@ -6683,12 +6684,12 @@ autonomy: reactive
 							updates.anthropic_api_key = wizardApiKey.trim();
 						} else {
 							updates.api_key = wizardApiKey.trim();
-							// Cheap-by-default for OpenRouter: V4 Flash is the
-							// cheapest tool-capable MoE on OpenRouter today
-							// ($0.14/$0.28 per M). Skip the override if the
-							// admin has already chosen a different model.
+							// Default to Qwen3.5-Flash: multimodal (text + image)
+							// with tool calling on OpenRouter, 1M context,
+							// $0.065/$0.26 per M tokens. Skip the override if
+							// the admin has already chosen a different model.
 							if (!brainSettings.model) {
-								updates.model = 'deepseek/deepseek-v4-flash';
+								updates.model = 'qwen/qwen3.5-flash-02-23';
 							}
 							if (!brainSettings.tool_max_depth) {
 								updates.tool_max_depth = '3';
@@ -7167,49 +7168,54 @@ autonomy: reactive
 			{/if}
 			{#if brainTab === 'engines'}
 			<div class="brain-section engine-section">
-				<h3 class="brain-section-title">Choose your engine</h3>
-				<p class="brain-section-desc">Brain runs on the engine you select. Pick the one that matches your priorities — model flexibility and cost, or capability and managed infrastructure.</p>
-				<div class="engine-grid">
-					<button
-						type="button"
-						class="engine-card"
-						class:selected={brainEngine === 'openrouter'}
-						onclick={() => { brainEngine = 'openrouter'; brainVersion = 'v2'; }}
-					>
-						<div class="engine-card-header">
-							<span class="engine-card-name">OpenRouter</span>
-							<span class="engine-card-tag">Agnostic</span>
-						</div>
-						<div class="engine-card-tagline">100+ models, latest first, lowest cost.</div>
-						<ul class="engine-card-bullets">
-							<li>Live model browser — DeepSeek V4, Gemma 4 MoE, Llama 3.3, and more</li>
-							<li>Free-tier models for unlimited internal use</li>
-							<li>Per-channel model overrides</li>
-							<li>Pay-as-you-go from $0.14/M input tokens</li>
-						</ul>
-						<div class="engine-card-best">Best for: cost, flexibility, model variety.</div>
-					</button>
-					<button
-						type="button"
-						class="engine-card"
-						class:selected={brainEngine === 'claude'}
-						onclick={() => { brainEngine = 'claude'; brainVersion = 'v3'; }}
-					>
-						<div class="engine-card-header">
-							<span class="engine-card-name">Claude</span>
-							<span class="engine-card-tag claude">Managed Agents</span>
-						</div>
-						<div class="engine-card-tagline">Anthropic-managed agent runtime, not just an API.</div>
-						<ul class="engine-card-bullets">
-							<li>Persistent per-thread sessions + workspace memory_store</li>
-							<li>Native skills (docx/pdf/xlsx/pptx + custom)</li>
-							<li>Polymorphic personas (Creative Director, Researcher)</li>
-							<li>Sonnet 4.6 default, Opus 4.7 for max capability</li>
-							<li>From $1/M input tokens (Sonnet)</li>
-						</ul>
-						<div class="engine-card-best">Best for: capability, agentic workflows, structured deliverables.</div>
-					</button>
-				</div>
+				{#if BRAIN_V3_ENABLED}
+					<h3 class="brain-section-title">Choose your engine</h3>
+					<p class="brain-section-desc">Brain runs on the engine you select. Pick the one that matches your priorities — model flexibility and cost, or capability and managed infrastructure.</p>
+					<div class="engine-grid">
+						<button
+							type="button"
+							class="engine-card"
+							class:selected={brainEngine === 'openrouter'}
+							onclick={() => { brainEngine = 'openrouter'; brainVersion = 'v2'; }}
+						>
+							<div class="engine-card-header">
+								<span class="engine-card-name">OpenRouter</span>
+								<span class="engine-card-tag">Agnostic</span>
+							</div>
+							<div class="engine-card-tagline">100+ models, latest first, lowest cost.</div>
+							<ul class="engine-card-bullets">
+								<li>Live model browser — Qwen3.5-Flash, DeepSeek V4, Gemma 4 MoE, Llama 3.3, and more</li>
+								<li>Free-tier models for unlimited internal use</li>
+								<li>Per-channel model overrides</li>
+								<li>Pay-as-you-go from $0.065/M input tokens</li>
+							</ul>
+							<div class="engine-card-best">Best for: cost, flexibility, model variety.</div>
+						</button>
+						<button
+							type="button"
+							class="engine-card"
+							class:selected={brainEngine === 'claude'}
+							onclick={() => { brainEngine = 'claude'; brainVersion = 'v3'; }}
+						>
+							<div class="engine-card-header">
+								<span class="engine-card-name">Claude</span>
+								<span class="engine-card-tag claude">Managed Agents</span>
+							</div>
+							<div class="engine-card-tagline">Anthropic-managed agent runtime, not just an API.</div>
+							<ul class="engine-card-bullets">
+								<li>Persistent per-thread sessions + workspace memory_store</li>
+								<li>Native skills (docx/pdf/xlsx/pptx + custom)</li>
+								<li>Polymorphic personas (Creative Director, Researcher)</li>
+								<li>Sonnet 4.6 default, Opus 4.7 for max capability</li>
+								<li>From $1/M input tokens (Sonnet)</li>
+							</ul>
+							<div class="engine-card-best">Best for: capability, agentic workflows, structured deliverables.</div>
+						</button>
+					</div>
+				{:else}
+					<h3 class="brain-section-title">Engine</h3>
+					<p class="brain-section-desc">Brain runs on OpenRouter — model-agnostic, multimodal-first, lowest cost. Default: <strong>Qwen3.5-Flash</strong> (text + image · 1M context · $0.065 / $0.26 per M tokens).</p>
+				{/if}
 				{#if brainEngine === 'openrouter'}
 					<div class="engine-detail">
 						<div class="engine-key-row">
