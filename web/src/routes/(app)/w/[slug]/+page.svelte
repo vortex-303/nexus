@@ -4846,9 +4846,9 @@ autonomy: reactive
 			{#if slashActive && slashResults.length > 0}
 				<div class="mention-popup slash-popup">
 					<div class="slash-engine-header">
-						<span>Engine: <strong>{brainEngine === 'claude' ? 'Claude' : 'OpenRouter'}</strong></span>
+						<span>Engine: <strong>{BRAIN_V3_ENABLED && brainEngine === 'claude' ? 'Claude' : 'OpenRouter'}</strong></span>
 						<span class="slash-engine-detail">
-							{#if brainEngine === 'claude'}
+							{#if BRAIN_V3_ENABLED && brainEngine === 'claude'}
 								Sessions, memory_store, native skills + personas
 							{:else}
 								{(brainModel === 'nexus/free-auto' ? 'Free Auto' : (brainModel || '').split('/').pop()) || 'no model'} · self-correcting tool loop
@@ -7005,9 +7005,9 @@ autonomy: reactive
 				<div class="settings-summary-row">
 					<div class="settings-summary-engine">
 						<span class="settings-summary-label">Active engine</span>
-						<strong>{brainEngine === 'claude' ? 'Claude' : 'OpenRouter'}</strong>
+						<strong>{BRAIN_V3_ENABLED && brainEngine === 'claude' ? 'Claude' : 'OpenRouter'}</strong>
 						<span class="settings-summary-model">
-							{brainEngine === 'claude'
+							{BRAIN_V3_ENABLED && brainEngine === 'claude'
 								? (brainAnthropicModel || 'claude-sonnet-4-6').replace('claude-', '').replace(/-/g, ' ')
 								: (brainModel === 'nexus/free-auto' ? 'Free Auto' : (brainModel || '').split('/').pop() || 'no model')}
 						</span>
@@ -8437,48 +8437,60 @@ autonomy: reactive
 			</div>
 
 			{:else if brainTab === 'extensions'}
-			<!-- Engine matrix — read-only summary at the top. -->
+			<!-- Engine capabilities — read-only summary at the top. -->
 			<div class="brain-section">
-				<h3 class="brain-section-title">What this engine has</h3>
-				<p class="brain-section-desc">Brain extends product features (tasks, docs, calendar, memory, knowledge) with skills and MCP integrations. Both engines see the surface below — what differs is per-engine mechanics.</p>
-				<div class="engine-matrix">
-					<div class="engine-matrix-col" class:active-engine={brainEngine === 'claude'}>
-						<div class="engine-matrix-header">
-							<strong>Claude</strong>
-							<span class="engine-card-tag claude">Managed Agents</span>
-							{#if brainEngine === 'claude'}<span class="engine-matrix-active-pill">Active</span>{/if}
+				<h3 class="brain-section-title">What Brain can do</h3>
+				{#if BRAIN_V3_ENABLED}
+					<p class="brain-section-desc">Brain extends product features (tasks, docs, calendar, memory, knowledge) with skills and MCP integrations. Both engines see the surface below — what differs is per-engine mechanics.</p>
+					<div class="engine-matrix">
+						<div class="engine-matrix-col" class:active-engine={brainEngine === 'claude'}>
+							<div class="engine-matrix-header">
+								<strong>Claude</strong>
+								<span class="engine-card-tag claude">Managed Agents</span>
+								{#if brainEngine === 'claude'}<span class="engine-matrix-active-pill">Active</span>{/if}
+							</div>
+							<ul class="engine-matrix-list">
+								<li>~18 built-in workspace tools</li>
+								<li>5 file ops on memory_store (read / write / edit / glob / grep)</li>
+								<li>4 Anthropic native skills: docx · xlsx · pdf · pptx</li>
+								<li>5 workspace skills: writing-plans · executing-plans · verification-before-completion · task-conventions · decision-log</li>
+								<li>2 personas: creative-director · researcher</li>
+								<li>MCP tools attached → exposed as additional functions</li>
+								<li>Sessions persist per (channel, thread); skill loader is on-demand</li>
+							</ul>
 						</div>
-						<ul class="engine-matrix-list">
-							<li>~18 built-in workspace tools</li>
-							<li>5 file ops on memory_store (read / write / edit / glob / grep)</li>
-							<li>4 Anthropic native skills: docx · xlsx · pdf · pptx</li>
-							<li>5 workspace skills: writing-plans · executing-plans · verification-before-completion · task-conventions · decision-log</li>
-							<li>2 personas: creative-director · researcher</li>
-							<li>MCP tools attached → exposed as additional functions</li>
-							<li>Sessions persist per (channel, thread); skill loader is on-demand</li>
-						</ul>
-					</div>
-					<div class="engine-matrix-col" class:active-engine={brainEngine === 'openrouter'}>
-						<div class="engine-matrix-header">
-							<strong>OpenRouter</strong>
-							<span class="engine-card-tag">Agnostic</span>
-							{#if brainEngine === 'openrouter'}<span class="engine-matrix-active-pill">Active</span>{/if}
+						<div class="engine-matrix-col" class:active-engine={brainEngine === 'openrouter'}>
+							<div class="engine-matrix-header">
+								<strong>OpenRouter</strong>
+								<span class="engine-card-tag">Agnostic</span>
+								{#if brainEngine === 'openrouter'}<span class="engine-matrix-active-pill">Active</span>{/if}
+							</div>
+							<ul class="engine-matrix-list">
+								<li>~18 built-in workspace tools</li>
+								<li>Self-correcting tool loop (max {brainToolMaxDepth} iterations)</li>
+								<li>Workspace skills: appended to system prompt when keyword-matched</li>
+								<li>MCP tools attached → exposed as additional functions</li>
+								<li>Stateless turns; no persistent sessions or memory_store</li>
+							</ul>
 						</div>
-						<ul class="engine-matrix-list">
-							<li>~18 built-in workspace tools</li>
-							<li>Self-correcting tool loop (max {brainToolMaxDepth} iterations)</li>
-							<li>Workspace skills: appended to system prompt when keyword-matched</li>
-							<li>MCP tools attached → exposed as additional functions</li>
-							<li>Stateless turns; no persistent sessions or memory_store</li>
-						</ul>
 					</div>
-				</div>
+				{:else}
+					<p class="brain-section-desc">Brain runs on OpenRouter with multimodal Qwen3.5-Flash by default. Extend it with workspace skills, personas, and MCP integrations.</p>
+					<ul class="engine-matrix-list" style="max-width: 640px;">
+						<li>~18 built-in workspace tools (tasks, docs, calendar, memory, knowledge, web search, image generation)</li>
+						<li>Self-correcting tool loop (max {brainToolMaxDepth} iterations)</li>
+						<li>Multimodal: image attachments read natively by Qwen3.5-Flash</li>
+						<li>Workspace skills: appended to system prompt when keyword-matched or explicitly invoked via /persona</li>
+						<li>Personas: creative-director · researcher (more via the Persona Creator, coming soon)</li>
+						<li>MCP tools attached → exposed as additional functions Brain can call</li>
+					</ul>
+				{/if}
 			</div>
 
 			<!-- Workspace Skills — summary + drill into legacy detail view -->
 			<div class="brain-section">
 				<h3 class="brain-section-title">Workspace Skills <span style="font-size: 0.75rem; color: var(--text-tertiary); font-weight: 400;">· {brainSkills.length} active</span></h3>
-				<p class="brain-section-desc">Behavioral playbooks Brain follows. <strong>Claude</strong> loads them on demand via the skill loader; <strong>OpenRouter</strong> appends them to the prompt when trigger keywords match.</p>
+				<p class="brain-section-desc">Behavioral playbooks Brain follows. {#if BRAIN_V3_ENABLED}<strong>Claude</strong> loads them on demand via the skill loader; <strong>OpenRouter</strong> appends them to the prompt when trigger keywords match.{:else}Each skill defines a structured workflow Brain runs when its keywords match the user's message — or when the user explicitly invokes it via <code>/persona</code> or by name.{/if}</p>
 				{#if brainSkills.length > 0}
 					<div class="extensions-summary-list">
 						{#each brainSkills.slice(0, 6) as skill}
@@ -8524,10 +8536,10 @@ autonomy: reactive
 									</details>
 								{/if}
 								<details>
-									<summary style="font-size: 0.72rem; color: var(--text-tertiary); cursor: pointer;">View skill body{p.body_openrouter ? ' (Claude variant)' : ''}</summary>
-									<pre style="margin-top: 6px; padding: 8px 10px; background: var(--bg-base); border-radius: 4px; font-size: 0.72rem; max-height: 240px; overflow: auto; white-space: pre-wrap;">{p.body}</pre>
+									<summary style="font-size: 0.72rem; color: var(--text-tertiary); cursor: pointer;">View skill body{p.body_openrouter && BRAIN_V3_ENABLED ? ' (canonical variant)' : ''}</summary>
+									<pre style="margin-top: 6px; padding: 8px 10px; background: var(--bg-base); border-radius: 4px; font-size: 0.72rem; max-height: 240px; overflow: auto; white-space: pre-wrap;">{BRAIN_V3_ENABLED ? p.body : (p.body_openrouter || p.body)}</pre>
 								</details>
-								{#if p.body_openrouter}
+								{#if p.body_openrouter && BRAIN_V3_ENABLED}
 									<details>
 										<summary style="font-size: 0.72rem; color: var(--text-tertiary); cursor: pointer;">View OpenRouter variant (terser, prompt-prepended verbatim)</summary>
 										<pre style="margin-top: 6px; padding: 8px 10px; background: var(--bg-base); border-radius: 4px; font-size: 0.72rem; max-height: 200px; overflow: auto; white-space: pre-wrap;">{p.body_openrouter}</pre>
@@ -8575,7 +8587,7 @@ autonomy: reactive
 					}}>
 						{runningDistill ? 'Analyzing…' : 'Propose new skills'}
 					</button>
-					<span class="brain-hint">Uses your active model · ~$0.05–0.15 per run on Sonnet · cooldown 7 days</span>
+					<span class="brain-hint">Uses your active model · cooldown 7 days{#if BRAIN_V3_ENABLED} · ~$0.05–0.15 per run on Sonnet{:else} · ~$0.01–0.03 per run on Qwen3.5-Flash{/if}</span>
 				</div>
 			</div>
 
