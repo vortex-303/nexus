@@ -175,9 +175,31 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 		// "generating an image..." placeholder card when generate_image
 		// fires). After the tool returns we flip back to `thinking` so
 		// the next tool call (if any) gets its own indicator.
+		//
+		// Also captures image markdown + <image-prompt> blocks from
+		// every generate_image tool result so we can re-append them
+		// after the synthesizer LLM runs. v2's synthesizer otherwise
+		// summarizes the tool output into prose and drops the
+		// `![alt](url)` markdown — observed in production: Image Log
+		// shows successful Gemini calls but Brain's reply contains no
+		// image. Mirrors the appendMissingImages protection that's
+		// long-existed in agent_runtime.go but never ported to brain2.
+		var imageRefs []string
+		var imagePromptTag string
 		wrappedExecute := func(slug2, channelID2, senderMemberID string, call brain.ToolCall) string {
 			s.broadcastAgentState(slug2, channelID2, brain.BrainMemberID, brain.BrainName, "tool_executing", call.Function.Name, parentID)
 			out := s.executeTool(slug2, channelID2, senderMemberID, call)
+			if call.Function.Name == "generate_image" {
+				imageRefs = append(imageRefs, extractImageMarkdown(out)...)
+				// Strip the <image-prompt> block from the tool result that
+				// the synthesizer sees (otherwise the LLM echoes it inline),
+				// stash it for re-attachment to the final response.
+				cleaned, tag := extractImagePromptTag(out)
+				if tag != "" {
+					imagePromptTag = tag
+					out = cleaned
+				}
+			}
 			s.broadcastAgentState(slug2, channelID2, brain.BrainMemberID, brain.BrainName, "thinking", "", parentID)
 			return out
 		}
@@ -215,6 +237,27 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 				Int("stripped", stripped).
 				Msg("stripped hallucinated external image URLs from Brain response")
 			result.Response = cleaned
+		}
+
+		// Re-attach images that generate_image returned but the synthesizer
+		// LLM dropped (or fabricated different URLs for). appendMissingImages
+		// strips any /api/workspaces/ refs that aren't in our captured set
+		// (kills synthesizer hallucinations) and appends any captured refs
+		// that aren't already in the response. Without this, the user sees
+		// Brain describing an image that "should be" there but no actual
+		// image renders.
+		if len(imageRefs) > 0 {
+			before := result.Response
+			result.Response = appendMissingImages(result.Response, imageRefs)
+			if result.Response != before {
+				logger.WithCategory(logger.CatBrain).Info().
+					Str("workspace", slug).
+					Int("images", len(imageRefs)).
+					Msg("re-attached image markdown that synthesizer dropped")
+			}
+		}
+		if imagePromptTag != "" {
+			result.Response += imagePromptTag
 		}
 
 		// Send the response (reuses v1)
