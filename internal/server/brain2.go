@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nexus-chat/nexus/internal/brain"
@@ -11,6 +12,24 @@ import (
 	"github.com/nexus-chat/nexus/internal/logger"
 	"github.com/nexus-chat/nexus/internal/metrics"
 )
+
+// looksLikeCreativeImageRequest returns true when the user message is most
+// likely asking for an image (banner, ad, poster, etc.) AND looks like
+// it's targeting the Creative Director persona — explicit /persona slash,
+// the [persona:creative-director] prefix, or keyword overlap with the
+// persona's trigger set.
+//
+// Used to set tool_choice="required" on the next LLM call so cheap MoE
+// models can't skip generate_image and hallucinate an external URL.
+func looksLikeCreativeImageRequest(content string) bool {
+	lower := strings.ToLower(content)
+	// Strong signal: explicit persona invocation
+	if strings.Contains(lower, "[persona:creative-director]") {
+		return true
+	}
+	// Otherwise: classic image-gen ask
+	return looksLikeImageRequest(content)
+}
 
 // handleBrainV2 is the Brain 2.0 pipeline handler. It runs the Plan → Execute → Synthesize
 // pipeline using the same tools, context, and memory system as v1.
@@ -87,6 +106,24 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 		model := s.getBrainSetting(slug, "model", "openai/gpt-4o-mini")
 		resolvedModel, fallbacks := s.resolveFreeAuto(model, slug)
 		client := s.makeBrainClient(slug, apiKey, resolvedModel, fallbacks)
+
+		// Force tool_choice on the first LLM call when the user is clearly
+		// asking for an image via Creative Director. Cheap MoE models
+		// (DeepSeek V4 Flash, Qwen3.5-Flash on certain prompts) sometimes
+		// skip generate_image and hallucinate external image URLs
+		// (image.pollinations.ai, etc.). tool_choice="required" forces
+		// the model to call SOME tool — the persona directive + tool
+		// catalog make generate_image the obvious pick. Consumed once by
+		// the next CompleteWithTools call, then cleared automatically.
+		//
+		// Only OpenRouter clients honor NextToolChoice. Ollama/xAI/bridge
+		// clients ignore it (no-op via the type assertion).
+		if looksLikeCreativeImageRequest(content) {
+			if orClient, ok := client.(*brain.Client); ok {
+				orClient.NextToolChoice = "required"
+				logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Msg("forcing tool_choice=required for image request")
+			}
+		}
 
 		// Runtime ground truth: tell the model what it is. Without this, when
 		// the user switches models (e.g. Claude Sonnet 4.6 -> DeepSeek V4

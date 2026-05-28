@@ -236,7 +236,15 @@ type CompletionRequest struct {
 	// request via samplingForModel().
 	TopP       float64   `json:"top_p,omitempty"`
 	Tools      []ToolDef `json:"tools,omitempty"`
-	Modalities []string  `json:"modalities,omitempty"`
+	// ToolChoice constrains the model's tool-calling. Possible values:
+	//   - omitted (default): "auto" — model decides
+	//   - "required": model MUST call some tool from the Tools list
+	//   - {"type":"function","function":{"name":"foo"}}: must call exactly foo
+	// Used to fix the "Brain hallucinates Pollinations URLs instead of
+	// calling generate_image" failure mode on cheap MoE models. Set
+	// per-request via Client.NextToolChoice.
+	ToolChoice any      `json:"tool_choice,omitempty"`
+	Modalities []string `json:"modalities,omitempty"`
 }
 
 // samplingForModel returns the (temperature, top_p) the request should
@@ -275,8 +283,15 @@ type CompletionResponse struct {
 
 // Client talks to an OpenAI-compatible chat completions API (OpenRouter, xAI, etc).
 type Client struct {
-	APIKey             string
-	Model              string
+	APIKey string
+	Model  string
+	// NextToolChoice, when non-nil, is sent as the `tool_choice` field on
+	// the NEXT CompleteWithTools call and then cleared. Lets callers force
+	// the model to call a tool (or a specific tool) for high-reliability
+	// scenarios — e.g. Creative Director must call generate_image, not
+	// hallucinate an external URL. Cleared after one use so subsequent
+	// calls go back to "auto".
+	NextToolChoice any
 	BaseURL            string // defaults to openRouterURL
 	Multimodal         bool
 	HTTPClient         *http.Client
@@ -559,6 +574,13 @@ func (c *Client) CompleteWithTools(systemPrompt string, messages []Message, tool
 	// honors it, others ignore.
 	strictTools := PrepareStrictTools(tools)
 
+	// Consume NextToolChoice — one-shot flag set by callers that need to
+	// force tool-calling (e.g. Creative Director must call generate_image
+	// or the reply is incomplete). Cleared after read so subsequent
+	// CompleteWithTools calls go back to "auto".
+	toolChoice := c.NextToolChoice
+	c.NextToolChoice = nil
+
 	var lastErr error
 	for i := 0; i < maxAttempts; i++ {
 		model := models[i]
@@ -571,6 +593,7 @@ func (c *Client) CompleteWithTools(systemPrompt string, messages []Message, tool
 			Temperature: temp,
 			TopP:        topP,
 			Tools:       strictTools,
+			ToolChoice:  toolChoice,
 		}
 
 		body, err := json.Marshal(req)
