@@ -1422,15 +1422,34 @@ func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
 		return "Error: prompt is required"
 	}
 
+	// Image provider selector. Default "openrouter" routes image gen
+	// through the same OpenRouter API key used for LLM calls — no
+	// separate Gemini key needed. "gemini" keeps the direct Google AI
+	// API path for workspaces that explicitly opt in (cheaper per image
+	// since no OR markup; requires a Gemini key in Settings).
+	provider := s.getBrainSetting(slug, "image_provider", "openrouter")
+
+	apiKey, model := s.getBrainSettings(slug)
 	geminiKey := s.getGeminiAPIKey(slug)
-	if geminiKey == "" {
+
+	// Validate provider has its required key
+	if provider == "gemini" && geminiKey == "" {
 		go s.recordImageGen(slug, imageGenEvent{
 			channelID: channelID, callerKind: "brain", callerID: "Brain",
 			aspectRatio: args.AspectRatio, rawPrompt: args.Prompt,
 			status: "error", errorMessage: "no Gemini API key configured",
 			latency: time.Since(start),
 		})
-		return "Error: no Gemini API key configured. Set it in Brain Settings."
+		return "Error: no Gemini API key configured. Set it in Brain Settings, or switch image_provider to 'openrouter'."
+	}
+	if provider == "openrouter" && apiKey == "" {
+		go s.recordImageGen(slug, imageGenEvent{
+			channelID: channelID, callerKind: "brain", callerID: "Brain",
+			aspectRatio: args.AspectRatio, rawPrompt: args.Prompt,
+			status: "error", errorMessage: "no OpenRouter API key configured",
+			latency: time.Since(start),
+		})
+		return "Error: no OpenRouter API key configured. Set it in Brain Settings."
 	}
 
 	// Enrich the prompt via a dedicated image-prompt-engineer LLM call.
@@ -1438,7 +1457,6 @@ func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
 	// applied to @Brain so cheap MoE models can't ship vague briefs.
 	enrichedPrompt := args.Prompt
 	enrichedByModel := ""
-	apiKey, model := s.getBrainSettings(slug)
 	enrichModel := model
 	_, _, memModel := s.getMemorySettings(slug)
 	if memModel != "" {
@@ -1465,14 +1483,30 @@ func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
 	enrichedPrompt = brain.SanitizeImagePrompt(enrichedPrompt)
 
 	imageModel := s.getImageModel(slug)
-	logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("model", imageModel).Str("aspect", args.AspectRatio).Msg("using Gemini model")
+	logger.WithCategory(logger.CatBrain).Info().
+		Str("workspace", slug).
+		Str("provider", provider).
+		Str("model", imageModel).
+		Str("aspect", args.AspectRatio).
+		Msg("calling image gen")
 
-	text, imageData, mimeType, err := brain.GenerateImageGemini(geminiKey, imageModel, enrichedPrompt, args.AspectRatio)
+	var text, imageData, mimeType string
+	var orUsage *brain.CompletionUsage
+	var err error
+	switch provider {
+	case "openrouter":
+		text, imageData, mimeType, orUsage, err = brain.GenerateImageOpenRouter(apiKey, imageModel, enrichedPrompt, args.AspectRatio)
+		if orUsage != nil {
+			s.trackUsage(slug, orUsage, "google/"+imageModel, "image", channelID, "")
+		}
+	default: // "gemini" or anything else falls through to direct Gemini
+		text, imageData, mimeType, err = brain.GenerateImageGemini(geminiKey, imageModel, enrichedPrompt, args.AspectRatio)
+	}
 	if err != nil {
-		logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Err(err).Msg("image generation error")
+		logger.WithCategory(logger.CatBrain).Error().Str("workspace", slug).Str("provider", provider).Err(err).Msg("image generation error")
 		go s.recordImageGen(slug, imageGenEvent{
 			channelID: channelID, callerKind: "brain", callerID: "Brain",
-			model: imageModel, aspectRatio: args.AspectRatio,
+			model: provider + ":" + imageModel, aspectRatio: args.AspectRatio,
 			rawPrompt: args.Prompt, enrichedPrompt: enrichedPrompt, enrichedByModel: enrichedByModel,
 			status: "error", errorMessage: err.Error(),
 			latency: time.Since(start),
@@ -1488,7 +1522,7 @@ func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
 	if saved == "" {
 		go s.recordImageGen(slug, imageGenEvent{
 			channelID: channelID, callerKind: "brain", callerID: "Brain",
-			model: imageModel, aspectRatio: args.AspectRatio,
+			model: provider + ":" + imageModel, aspectRatio: args.AspectRatio,
 			rawPrompt: args.Prompt, enrichedPrompt: enrichedPrompt, enrichedByModel: enrichedByModel,
 			status: "error", errorMessage: "blob save failed",
 			latency: time.Since(start),
@@ -1496,15 +1530,14 @@ func (s *Server) toolGenerateImage(slug, channelID, argsJSON string) string {
 		return "Image generated but failed to save"
 	}
 
-	// Record success — pull the hash out of the markdown reference for
-	// future blob lookups.
+	// Record success. Model is prefixed with provider ("openrouter:" /
+	// "gemini:") so the Image Log makes the route obvious.
 	go s.recordImageGen(slug, imageGenEvent{
 		channelID: channelID, callerKind: "brain", callerID: "Brain",
-		model: imageModel, aspectRatio: args.AspectRatio,
+		model: provider + ":" + imageModel, aspectRatio: args.AspectRatio,
 		rawPrompt: args.Prompt, enrichedPrompt: enrichedPrompt, enrichedByModel: enrichedByModel,
 		status:  "ok",
 		latency: time.Since(start),
-		// blobHash extraction left for a future enhancement
 	})
 
 	// Show the ENRICHED prompt in the collapsible <image-prompt> block so
