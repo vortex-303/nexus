@@ -1050,7 +1050,7 @@ func (s *Server) handleUpdateBrainSettings(w http.ResponseWriter, r *http.Reques
 
 	allowedKeys := map[string]bool{
 		"api_key": true, "gemini_api_key": true, "xai_api_key": true, "openai_api_key": true, "xai_model": true, "xai_enabled": true,
-		"model": true, "image_model": true,
+		"model": true, "image_model": true, "image_provider": true,
 		"memory_enabled": true, "system_memory_enabled": true, "extraction_frequency": true, "memory_model": true, "memory_engine": true,
 		"standard_chat_enabled": true, "llm_enabled": true,
 		"webllm_enabled": true, "webllm_model": true, "webllm_system_prompt": true,

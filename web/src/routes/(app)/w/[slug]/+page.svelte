@@ -614,6 +614,11 @@
 	let brainApiKey = $state('');
 	let brainModel = $state(_cachedBrain?.model || 'qwen/qwen3.5-flash-02-23');
 	let brainImageModel = $state(_cachedBrain?.image_model || 'gemini-3.1-flash-image-preview');
+	// Image provider — routes generate_image through OpenRouter (default,
+	// uses workspace OR key) or direct Google Gemini (legacy, needs a
+	// separate Gemini key). Same image_model list works for both — OR
+	// auto-prefixes with "google/".
+	let brainImageProvider = $state<'openrouter' | 'gemini'>(_cachedBrain?.image_provider || 'openrouter');
 	let brainGeminiKey = $state('');
 	let brainXAIKey = $state('');
 	let brainXAIModel = $state(_cachedBrain?.xai_model || '');
@@ -2570,6 +2575,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			brainSettings = await getBrainSettings(slug);
 			brainModel = brainSettings.model || 'qwen/qwen3.5-flash-02-23';
 			brainImageModel = brainSettings.image_model || 'gemini-3.1-flash-image-preview';
+			brainImageProvider = (brainSettings.image_provider === 'gemini') ? 'gemini' : 'openrouter';
 			brainGeminiKey = '';
 			brainBraveKey = '';
 			brainXAIKey = '';
@@ -2620,6 +2626,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 				localStorage.setItem('nexus_brain_config', JSON.stringify({
 					model: brainModel,
 					image_model: brainImageModel,
+				image_provider: brainImageProvider,
 					standard_chat_enabled: brainStandardChatEnabled,
 					llm_enabled: brainLLMEnabled,
 					webllm_enabled: brainWebLLMEnabled,
@@ -2701,6 +2708,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 			const updates: Record<string, string> = {
 				model: brainModel,
 				image_model: brainImageModel,
+				image_provider: brainImageProvider,
 				standard_chat_enabled: String(brainStandardChatEnabled),
 				llm_enabled: String(brainLLMEnabled),
 				webllm_enabled: String(brainWebLLMEnabled),
@@ -2799,6 +2807,7 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 		try {
 			const updates: Record<string, string> = {
 				image_model: brainImageModel,
+				image_provider: brainImageProvider,
 				xai_model: brainXAIModel,
 				xai_enabled: String(brainXAIEnabled),
 			};
@@ -7905,43 +7914,69 @@ autonomy: reactive
 				<h3 class="brain-section-title">Services</h3>
 				<p class="brain-section-desc">Add-on capabilities that work with any engine. Each one is optional — Brain works without them, but they unlock specific tools and workflows.</p>
 				<div class="service-cards">
-					<!-- Google Gemini — Images -->
-					<div class="service-card" class:service-active={brainSettings.gemini_api_key_set === 'true'}>
+					<!-- Image Generation — provider switch + model -->
+					<div class="service-card" class:service-active={(brainImageProvider === 'openrouter' ? brainSettings.api_key_set === 'true' : brainSettings.gemini_api_key_set === 'true')}>
 						<div class="service-header">
-							<div class="service-status-dot" class:active={brainSettings.gemini_api_key_set === 'true'}></div>
+							<div class="service-status-dot" class:active={(brainImageProvider === 'openrouter' ? brainSettings.api_key_set === 'true' : brainSettings.gemini_api_key_set === 'true')}></div>
 							<div class="service-title-area">
-								<span class="service-name">Google Gemini</span>
-								<span class="service-role">Images</span>
-								<span class="service-badge">{brainSettings.gemini_api_key_set === 'true' ? 'Connected' : 'Not configured'}</span>
+								<span class="service-name">Image Generation</span>
+								<span class="service-role">{brainImageProvider === 'openrouter' ? 'via OpenRouter' : 'via Google Gemini direct'}</span>
+								<span class="service-badge">{(brainImageProvider === 'openrouter' ? brainSettings.api_key_set === 'true' : brainSettings.gemini_api_key_set === 'true') ? 'Connected' : 'Not configured'}</span>
 							</div>
 						</div>
 						<div class="service-desc">
-							{#if brainSettings.gemini_api_key_set === 'true'}
-								Image model: <strong>{brainImageModel.replace('gemini-', '').replace('-image', '').replace('-preview', '')}</strong> · Powers <code>generate_image</code> in chat.
-								{#if brainSettings.gemini_api_key_masked}&middot; Key: {brainSettings.gemini_api_key_masked}{/if}
+							{#if brainImageProvider === 'openrouter' && brainSettings.api_key_set === 'true'}
+								Image model: <strong>{brainImageModel.replace('gemini-', '').replace('-image', '').replace('-preview', '')}</strong> · Powers <code>generate_image</code> in chat. Routed through OpenRouter.
+							{:else if brainImageProvider === 'gemini' && brainSettings.gemini_api_key_set === 'true'}
+								Image model: <strong>{brainImageModel.replace('gemini-', '').replace('-image', '').replace('-preview', '')}</strong> · Powers <code>generate_image</code> in chat. Direct Google API.
+							{:else if brainImageProvider === 'openrouter'}
+								Image generation routed through OpenRouter — no separate API key needed. Uses the same key as your LLM.
 							{:else}
-								Image generation — Brain calls <code>generate_image</code> for banners, mockups, ad creative. Free tier available; Nano Banana 2 is ~$0.04 per image.
+								Image generation — Brain calls <code>generate_image</code> for banners, mockups, ad creative. Add your Gemini key below.
 							{/if}
 						</div>
-						<details class="service-details">
+						<details class="service-details" open>
 							<summary>Configure</summary>
 							<div class="service-fields">
+								<!-- Provider selector — defaults to openrouter for new workspaces.
+								     The image_model picker below works for both providers; the
+								     OR path auto-prepends google/ to the model ID. -->
 								<div class="brain-field">
-									<label>API Key</label>
-									{#if brainSettings.gemini_api_key_set === 'true'}
-										<div class="brain-key-status">Active ({brainSettings.gemini_api_key_masked})</div>
-									{/if}
-									<input type="password" class="brain-input" placeholder="AIza..." bind:value={brainGeminiKey} />
-									<span class="brain-hint">Get a key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com</a></span>
+									<label>Provider</label>
+									<select class="brain-input" bind:value={brainImageProvider}>
+										<option value="openrouter">OpenRouter (recommended — one key, unified billing)</option>
+										<option value="gemini">Google Gemini direct (requires separate key — cheaper per image)</option>
+									</select>
+									<span class="brain-hint">
+										{#if brainImageProvider === 'openrouter'}
+											Routes through your existing OpenRouter key. Adds a small markup over direct Google pricing in exchange for unified billing + cost tracking.
+										{:else}
+											Direct API call to Google AI. ~2× cheaper per image but requires a separate Gemini key.
+										{/if}
+									</span>
 								</div>
+								<!-- Gemini key only needed for direct provider -->
+								{#if brainImageProvider === 'gemini'}
+									<div class="brain-field">
+										<label>Gemini API Key</label>
+										{#if brainSettings.gemini_api_key_set === 'true'}
+											<div class="brain-key-status">Active ({brainSettings.gemini_api_key_masked})</div>
+										{/if}
+										<input type="password" class="brain-input" placeholder="AIza..." bind:value={brainGeminiKey} />
+										<span class="brain-hint">Get a key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com</a></span>
+									</div>
+								{/if}
 								<div class="brain-field">
 									<label>Image Model</label>
 									<select class="brain-input" bind:value={brainImageModel}>
-										<option value="gemini-2.5-flash-image">Nano Banana (Gemini 2.5 Flash Image, legacy)</option>
-										<option value="gemini-3-pro-image-preview">Nano Banana Pro (Gemini 3 Pro Image)</option>
 										<option value="gemini-3.1-flash-image-preview">Nano Banana 2 (Gemini 3.1 Flash Image) — recommended</option>
+										<option value="gemini-3-pro-image-preview">Nano Banana Pro (Gemini 3 Pro Image)</option>
+										<option value="gemini-2.5-flash-image">Nano Banana (Gemini 2.5 Flash Image, legacy)</option>
 										<option value="imagen-4.0-generate-001">Imagen 4.0</option>
 									</select>
+									<span class="brain-hint">
+										{#if brainImageProvider === 'openrouter'}Resolved as <code>google/{brainImageModel}</code> on OpenRouter.{:else}Called directly against the Google AI API.{/if}
+									</span>
 								</div>
 							</div>
 						</details>
