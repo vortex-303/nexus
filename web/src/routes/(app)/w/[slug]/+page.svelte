@@ -13020,9 +13020,11 @@ autonomy: reactive
 	}
 
 	/* Prominent image-generation loader — appears in the chat stream
-	   when Brain calls generate_image. Skeleton card + spinner + ETA. */
+	   when Brain calls generate_image. Skeleton card + spinner + ETA.
+	   Left padding (58px) aligns the card with message text content,
+	   skipping past the 34px avatar + 12px row padding + 12px gap. */
 	.image-gen-loader {
-		padding: var(--space-md) var(--space-xl);
+		padding: var(--space-md) var(--space-md) var(--space-md) 58px;
 		animation: agentFadeIn 0.3s ease;
 	}
 	.image-gen-loader-card {
