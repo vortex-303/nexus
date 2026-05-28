@@ -10551,7 +10551,7 @@ autonomy: reactive
 
 	/* File attachments */
 	.message-file {
-		margin-top: var(--space-xs);
+		margin-top: var(--space-lg);
 	}
 	.file-preview-img {
 		max-width: 400px;
