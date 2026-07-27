@@ -208,6 +208,13 @@ func (s *Server) handleBrainV2Ex(slug, channelID, parentID, senderName, content 
 		systemPrompt += brain2.BuildFeedbackContext(wdb.DB)
 		systemPrompt += brain2.BuildSelfMemoryContext(wdb.DB)
 
+		// Persistent file memory (v4): teach the layout + tools, seed member
+		// profiles once, and pre-inject pinned.md + the sender's profile so
+		// the model doesn't burn tool calls re-reading its own basics.
+		go s.seedMemberProfilesFS(slug)
+		systemPrompt += brain.MemoryFSGuide()
+		systemPrompt += s.buildMemoryPreload(slug, senderName)
+
 		// Get messages
 		messages := s.getThreadOrChannelMessages(wdb, channelID, parentID, 40)
 

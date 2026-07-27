@@ -98,6 +98,12 @@ func (s *Server) ensureBrainMember(slug string) error {
 	if err := brain.SeedPersonaSkills(brainDir); err != nil {
 		logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("failed to seed persona skills")
 	}
+	// Workflow discipline skills (decision-log, task-conventions,
+	// writing-plans, executing-plans, verification) — ported from v3,
+	// retargeted at the local memory tools. Same idempotent seeding.
+	if err := brain.SeedWorkflowSkills(brainDir); err != nil {
+		logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("failed to seed workflow skills")
+	}
 
 	// Seed first-class Persona rows into the workspace `personas` table.
 	// Idempotent (INSERT OR IGNORE). This is the source-of-truth Phase 1

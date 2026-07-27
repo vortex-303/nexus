@@ -61,6 +61,16 @@ func (s *Server) executeToolInner(slug, channelID, senderMemberID string, call b
 		return s.toolRecallMemory(slug, call.Function.Arguments)
 	case "save_memory":
 		return s.toolSaveMemory(slug, channelID, call.Function.Arguments)
+	case "read_memory":
+		return s.toolReadMemory(slug, call.Function.Arguments)
+	case "write_memory":
+		return s.toolWriteMemory(slug, call.Function.Arguments)
+	case "edit_memory":
+		return s.toolEditMemory(slug, call.Function.Arguments)
+	case "glob_memory":
+		return s.toolGlobMemory(slug, call.Function.Arguments)
+	case "grep_memory":
+		return s.toolGrepMemory(slug, call.Function.Arguments)
 	case "generate_image":
 		return s.toolGenerateImage(slug, channelID, call.Function.Arguments)
 	case "create_calendar_event":

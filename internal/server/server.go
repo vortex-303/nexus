@@ -315,6 +315,7 @@ func (s *Server) routes() {
 	// brain_version='v2' on all workspaces. Brain v3 dispatch is gone from
 	// ws.go; the brain3 endpoints are no longer reachable.
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/reflections", authed(http.HandlerFunc(s.requireAdmin(s.handleReflectionHistory))))
+	s.mux.Handle("GET /api/workspaces/{slug}/brain/memory/files", authed(http.HandlerFunc(s.handleListMemoryFiles)))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/traces", authed(http.HandlerFunc(s.handleListTraces)))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/traces/{traceID}", authed(http.HandlerFunc(s.handleGetTrace)))
 	s.mux.Handle("POST /api/workspaces/{slug}/brain/distill-skills", authed(http.HandlerFunc(s.handleDistillSkills)))
