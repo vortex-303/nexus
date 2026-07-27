@@ -31,12 +31,30 @@ func looksLikeCreativeImageRequest(content string) bool {
 	return looksLikeImageRequest(content)
 }
 
-// handleBrainV2 is the Brain 2.0 pipeline handler. It runs the Plan → Execute → Synthesize
-// pipeline using the same tools, context, and memory system as v1.
-// Called from ws.go when brain_version == "v2".
+// handleBrainV2 is the Brain pipeline handler: the self-correcting
+// Execute → Synthesize loop over the shared tool/context/memory system.
+// Since the v4 consolidation this is the only chat loop — the v1 fixed
+// 2-round loop was retired into it.
 func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content string, messageTime time.Time) {
+	s.handleBrainV2Ex(slug, channelID, parentID, senderName, content, messageTime, nil)
+}
+
+// handleBrainV2Ex is handleBrainV2 plus completion tracking and model
+// override. onComplete, if non-nil, receives the sent message ID + response
+// when the turn finishes (task scheduler, external-reply integrations).
+// modelOverride, if non-empty, replaces the workspace default model.
+func (s *Server) handleBrainV2Ex(slug, channelID, parentID, senderName, content string, messageTime time.Time, onComplete TaskCompletionCallback, modelOverride ...string) {
 	go func() {
-		// Acquire semaphore (same pool as v1)
+		// Completion tracking for task scheduler / external-reply callbacks
+		var completionMsgID, completionResponse string
+		var completionErr error
+		defer func() {
+			if onComplete != nil {
+				onComplete(completionMsgID, completionResponse, completionErr)
+			}
+		}()
+
+		// Acquire semaphore (shared pool with agents/ingest)
 		select {
 		case s.agentSem <- struct{}{}:
 			defer func() { <-s.agentSem }()
@@ -46,16 +64,88 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 			defer func() { <-s.agentSem }()
 		}
 
-		// Skip stale messages
+		// Skip messages from before this server boot (e.g., after restart);
+		// tiered staleness — threads are faster-paced than channel mentions.
 		if messageTime.Before(s.bootedAt) {
 			return
 		}
-		threshold := 10 * time.Minute
+		maxAge := maxBrainChannelAge
 		if parentID != "" {
-			threshold = 5 * time.Minute
+			maxAge = maxBrainThreadAge
 		}
-		if time.Since(messageTime) > threshold {
-			logger.WithCategory(logger.CatBrain).Debug().Str("workspace", slug).Msg("v2: skipping stale message")
+		if time.Since(messageTime) > maxAge {
+			logger.WithCategory(logger.CatBrain).Debug().Str("workspace", slug).Dur("age", time.Since(messageTime)).Msg("v2: skipping stale message")
+			return
+		}
+		metrics.AgentExecutionsTotal.WithLabelValues("Brain", "started").Inc()
+
+		// Handle /search, /localsearch, and natural language web search
+		// directly — zero-LLM, zero-cost bypasses (ported from v1).
+		trimmed := strings.TrimSpace(content)
+		if webQuery := extractWebSearchQuery(trimmed); webQuery != "" {
+			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", "web_search", parentID)
+			defer s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "", parentID)
+			argsJSON := fmt.Sprintf(`{"query":%q}`, webQuery)
+			result := s.toolWebSearch(slug, argsJSON)
+			completionMsgID = s.sendBrainMessage(slug, channelID, parentID, result, "web_search")
+			completionResponse = result
+			return
+		}
+		if strings.HasPrefix(trimmed, "/localsearch ") {
+			if query := strings.TrimSpace(strings.TrimPrefix(trimmed, "/localsearch")); query != "" {
+				s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", "search_workspace", parentID)
+				defer s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "", parentID)
+				argsJSON := fmt.Sprintf(`{"query":%q}`, query)
+				result := s.toolSearchMessages(slug, channelID, argsJSON)
+				completionMsgID = s.sendBrainMessage(slug, channelID, parentID, result, "search_workspace")
+				completionResponse = result
+				return
+			}
+		}
+
+		apiKey, model := s.getBrainSettings(slug)
+		if len(modelOverride) > 0 && modelOverride[0] != "" {
+			model = modelOverride[0]
+		}
+
+		// Parse `[persona:<slug>] ...` prefix for explicit /persona invocation
+		// (ported from v1). Strip from content before downstream sees it; load
+		// the persona row; apply its model override (persona wins); pass to
+		// buildContextForModeWithPersona so the clean-swap path replaces the
+		// polymorphic persona-context slot with the persona's operating
+		// directive. Built-ins keep working via keyword backward compat when
+		// no prefix is present.
+		var activePersona *brain.Persona
+		if personaSlug, rest := brain.ParsePersonaPrefix(content); personaSlug != "" {
+			if wdbForPersona, err := s.ws.Open(slug); err == nil {
+				p, perr := brain.LoadPersonaBySlug(wdbForPersona.DB, personaSlug)
+				if perr == nil && p.Enabled {
+					activePersona = &p
+					content = rest // strip the prefix from the downstream content
+					if p.Model != "" {
+						model = p.Model
+					}
+					logger.WithCategory(logger.CatBrain).Info().
+						Str("workspace", slug).
+						Str("persona", p.Slug).
+						Str("model", model).
+						Msg("persona invoked via slash")
+				} else {
+					logger.WithCategory(logger.CatBrain).Warn().
+						Str("workspace", slug).
+						Str("persona", personaSlug).
+						Err(perr).
+						Msg("persona prefix parsed but not found or disabled; falling through")
+				}
+			}
+		}
+
+		ollamaEnabled := s.getBrainSetting(slug, "ollama_enabled") == "true"
+		if apiKey == "" && s.getXAIKey(slug) == "" && !ollamaEnabled {
+			errMsg := "I can answer search and stats queries without an API key. Try: \"search for X\", \"how many messages\", \"who is online\", \"list channels\". For general questions, configure an API key in Settings."
+			completionMsgID = s.sendBrainMessage(slug, channelID, parentID, errMsg)
+			completionResponse = errMsg
+			completionErr = fmt.Errorf("no API key configured")
 			return
 		}
 
@@ -63,7 +153,7 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 		s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "thinking", "", parentID)
 		defer s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "", parentID)
 
-		// Build system prompt (reuses v1)
+		// Build system prompt
 		brainDir := brain.BrainDir(s.cfg.DataDir, slug)
 		systemPrompt, err := brain.BuildSystemPrompt(brainDir)
 		if err != nil {
@@ -76,16 +166,16 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 			return
 		}
 
-		// Build context (reuses v1 — memories, skills, knowledge, channel summaries)
-		apiKey := s.getBrainSetting(slug, "api_key")
-		systemPrompt = s.buildContextForMode(slug, wdb, channelID, parentID, content, senderName, apiKey, brainDir, systemPrompt)
+		// Build context — memories, skills, knowledge, channel summaries.
+		// activePersona non-nil triggers the clean-swap persona path.
+		systemPrompt = s.buildContextForModeWithPersona(slug, wdb, channelID, parentID, content, senderName, apiKey, brainDir, systemPrompt, activePersona)
 
 		// v2 additions: pinned memories, feedback, self-memories (always in context)
 		systemPrompt += brain2.BuildPinnedMemoryContext(wdb.DB)
 		systemPrompt += brain2.BuildFeedbackContext(wdb.DB)
 		systemPrompt += brain2.BuildSelfMemoryContext(wdb.DB)
 
-		// Get messages (reuses v1)
+		// Get messages
 		messages := s.getThreadOrChannelMessages(wdb, channelID, parentID, 40)
 
 		// Attach recent channel images to the last user message (vision support)
@@ -102,8 +192,7 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 			logger.WithCategory(logger.CatBrain).Debug().Str("workspace", slug).Str("channel", channelID).Msg("v2: no recent images found")
 		}
 
-		// Resolve model and create client (reuses v1)
-		model := s.getBrainSetting(slug, "model", "openai/gpt-4o-mini")
+		// Resolve model and create client
 		resolvedModel, fallbacks := s.resolveFreeAuto(model, slug)
 		client := s.makeBrainClient(slug, apiKey, resolvedModel, fallbacks)
 
@@ -135,7 +224,7 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 		// per turn. Brain self-describes accurately instead of guessing.
 		systemPrompt += s.BuildCapabilitiesSection(slug, "openrouter", resolvedModel)
 
-		// Get all tools (reuses v1)
+		// Get all tools (built-in + MCP)
 		allTools := s.getAllTools(slug)
 
 		// Tool cheatsheet — Codebuff-style compact name(args) — desc list of
@@ -186,8 +275,12 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 		// long-existed in agent_runtime.go but never ported to brain2.
 		var imageRefs []string
 		var imagePromptTag string
+		senderID := s.resolveMemberIDByName(slug, senderName)
 		wrappedExecute := func(slug2, channelID2, senderMemberID string, call brain.ToolCall) string {
 			s.broadcastAgentState(slug2, channelID2, brain.BrainMemberID, brain.BrainName, "tool_executing", call.Function.Name, parentID)
+			if senderMemberID == "" {
+				senderMemberID = senderID
+			}
 			out := s.executeTool(slug2, channelID2, senderMemberID, call)
 			if call.Function.Name == "generate_image" {
 				imageRefs = append(imageRefs, extractImageMarkdown(out)...)
@@ -223,6 +316,9 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 				result.Response = friendly
 			} else {
 				result.Response = "I processed your request but couldn't generate a response."
+			}
+			if result.LastError != "" {
+				completionErr = fmt.Errorf("%s", result.LastError)
 			}
 		}
 
@@ -260,33 +356,35 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 			result.Response += imagePromptTag
 		}
 
-		// Send the response (reuses v1)
-		msgID := s.sendBrainMessage(slug, channelID, parentID, result.Response)
+		// Send the response
+		msgID := s.sendBrainMessage(slug, channelID, parentID, result.Response, result.ToolsUsed...)
+		completionMsgID = msgID
+		completionResponse = result.Response
 
 		// Track per-turn LLM spend so the Console → Cost subsection shows
-		// v2 turns alongside v3. The pipeline already accumulates cost from
-		// each round's CompletionUsage; we just stamp it into llm_usage.
+		// v2 turns. The pipeline already accumulates cost from each round's
+		// CompletionUsage; we just stamp it into llm_usage.
 		s.trackUsage(slug, &brain.CompletionUsage{Cost: result.CostUSD}, resolvedModel, "brain_v2", channelID, senderName)
 
-		// Log the action (reuses v1 action log)
+		// Log the action
 		brain.LogAction(wdb.DB, id.New(), "brain_v2", channelID,
 			content, result.Response, resolvedModel, result.ToolsUsed)
 
-		// Track for memory extraction (reuses v1)
+		// Track for memory extraction
 		s.trackMessageAndMaybeExtract(slug, channelID, msgID, result.Response, brain.BrainName)
 
 		// Async reflector — detects feedback, updates profiles, saves self-memories (requires automations)
 		if s.getBrainSetting(slug, "automations_enabled") == "true" {
-		go brain2.RunReflector(brain2.ReflectorConfig{
-			DB:            wdb.DB,
-			Slug:          slug,
-			ChannelID:     channelID,
-			SenderName:    senderName,
-			SenderID:      "", // TODO: pass sender member ID when available
-			UserMessage:   content,
-			BrainResponse: result.Response,
-			ToolsUsed:     result.ToolsUsed,
-		})
+			go brain2.RunReflector(brain2.ReflectorConfig{
+				DB:            wdb.DB,
+				Slug:          slug,
+				ChannelID:     channelID,
+				SenderName:    senderName,
+				SenderID:      senderID,
+				UserMessage:   content,
+				BrainResponse: result.Response,
+				ToolsUsed:     result.ToolsUsed,
+			})
 		}
 
 		metrics.MessagesTotal.WithLabelValues(slug).Inc()

@@ -230,6 +230,22 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ExecutorOutput {
 		})
 	}
 
+	// v1's ResultAsAnswer short-circuit: exactly one tool call whose def is
+	// flagged ResultAsAnswer (web_search, generate_image, fetch_url,
+	// create_document, search_x) — the raw tool result IS the reply. Skips
+	// the synthesizer round entirely: saves an LLM round-trip and stops the
+	// synthesizer from paraphrasing away image markdown and source links.
+	// len(out.Results)==1 guarantees the call passed validation and executed.
+	if len(toolCalls) == 1 && len(out.Results) == 1 {
+		if td := findToolDef(scopedTools, toolCalls[0].Function.Name); td != nil && td.Function.ResultAsAnswer {
+			out.Results = append(out.Results, StepResult{
+				StepID: "raa_0", Tool: "_response", Result: out.Results[0].Result,
+			})
+			out.Items = append(out.Items, brain.StreamItem{Kind: brain.ItemKindText, Text: out.Results[0].Result})
+			return out
+		}
+	}
+
 	// Loop-detection sliding window. DeepSeek V3/V4's #1 failure mode is
 	// over-retry on tool errors — upstream evals show 7-8 rounds where
 	// Qwen finishes in 2. Hash (tool_name, args) for every tool the model
@@ -361,4 +377,14 @@ func executeWithTimeout(cfg PipelineConfig, call brain.ToolCall) string {
 	case <-ctx.Done():
 		return fmt.Sprintf(`{"error": "tool '%s' timed out after 30 seconds"}`, call.Function.Name)
 	}
+}
+
+// findToolDef returns the tool definition matching name, or nil.
+func findToolDef(tools []brain.ToolDef, name string) *brain.ToolDef {
+	for i := range tools {
+		if tools[i].Function.Name == name {
+			return &tools[i]
+		}
+	}
+	return nil
 }

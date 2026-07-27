@@ -209,7 +209,7 @@ func (s *Server) checkDirectAgentEvents() {
 			// Brain vs custom agent
 			if agentID == "brain" {
 				logger.WithCategory(logger.CatCalendar).Info().Str("workspace", slug).Str("event", title).Str("model", model).Msg("triggering Brain for scheduled event")
-				s.handleBrainMentionWithTools(slug, targetChannel, "", "Scheduler", prompt, time.Now(), model)
+				s.handleBrainV2Ex(slug, targetChannel, "", "Scheduler", prompt, time.Now(), nil, model)
 			} else {
 				agent := s.loadAgentByID(slug, agentID)
 				if agent != nil {

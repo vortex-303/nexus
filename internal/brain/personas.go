@@ -227,7 +227,7 @@ func builtinDisplayName(slug string) string {
 // slug + the original content when no prefix is present.
 //
 // The prefix is what `/persona-slug` slash commands rewrite the input to
-// before sending, and what handleBrainMention reads to decide whether to
+// before sending, and what handleBrainV2Ex reads to decide whether to
 // switch into clean-swap mode.
 func ParsePersonaPrefix(content string) (slug, rest string) {
 	c := strings.TrimLeft(content, " \t")

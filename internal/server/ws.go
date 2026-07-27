@@ -473,7 +473,7 @@ func (s *Server) handleWSSendMessage(conn *hub.Conn, h *hub.Hub, payload json.Ra
 				}
 				if !threadStale {
 					triggered[brain.BrainMemberID] = true
-					s.handleBrainMentionWithTools(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
+					s.handleBrainV2(conn.WorkspaceSlug, p.ChannelID, p.ParentID, conn.DisplayName, p.Content, time.Now())
 				}
 			}
 		}

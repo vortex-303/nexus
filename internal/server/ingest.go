@@ -64,49 +64,32 @@ func (s *Server) ingestExternalMessage(slug, channelID, senderID, senderName, co
 		return
 	case "draft":
 		// Brain responds in channel only — no external reply
-		s.handleBrainMentionWithTools(slug, channelID, "", senderName, content, time.Now())
+		s.handleBrainV2(slug, channelID, "", senderName, content, time.Now())
 	case "autonomous":
 		// Brain responds + calls replyFn to send back to external source
 		s.handleBrainMentionWithReply(slug, channelID, senderName, content, replyFn)
 	default:
 		// Default to draft
-		s.handleBrainMentionWithTools(slug, channelID, "", senderName, content, time.Now())
+		s.handleBrainV2(slug, channelID, "", senderName, content, time.Now())
 	}
 }
 
-// handleBrainMentionWithReply is like handleBrainMentionWithTools but captures
-// the final response and calls onReply to send it back to the external source.
+// handleBrainMentionWithReply is like handleBrainV2 but captures the final
+// response and calls onReply to send it back to the external source.
 func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, content string, onReply func(string)) {
 	messageTime := time.Now()
 	if onReply == nil {
 		// No reply function — fall back to normal mention
-		s.handleBrainMentionWithTools(slug, channelID, "", senderName, content, messageTime)
+		s.handleBrainV2(slug, channelID, "", senderName, content, messageTime)
 		return
 	}
 
-	go func() {
-		// Acquire semaphore to limit concurrent brain goroutines
-		select {
-		case s.agentSem <- struct{}{}:
-			defer func() { <-s.agentSem }()
-		default:
-			s.agentSem <- struct{}{} // block until slot available
-			defer func() { <-s.agentSem }()
-		}
-
-		// Skip stale messages that waited too long on the semaphore
-		if time.Since(messageTime) > maxBrainChannelAge {
-			logger.WithCategory(logger.CatBrain).Info().Dur("age", time.Since(messageTime)).Msg("skipping stale ingest message")
-			return
-		}
-
-		// When workspace is Local LLM mode, external sources can't use WebLLM.
-		// Try Standard Chat patterns; otherwise return a fallback message.
-		webllmOnly := s.getBrainSetting(slug, "webllm_enabled") == "true" &&
-			s.getBrainSetting(slug, "llm_enabled", "true") == "false"
-
-		if webllmOnly {
-			// Still try zero-LLM patterns (search, stats, lists)
+	// When workspace is Local LLM mode, external sources can't use WebLLM.
+	// Try Standard Chat patterns; otherwise return a fallback message.
+	webllmOnly := s.getBrainSetting(slug, "webllm_enabled") == "true" &&
+		s.getBrainSetting(slug, "llm_enabled", "true") == "false"
+	if webllmOnly {
+		go func() {
 			if wdb, err := s.ws.Open(slug); err == nil {
 				if response, handled := s.tryZeroLLMResponse(slug, content, wdb.DB, senderName); handled {
 					s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "thinking", "")
@@ -122,151 +105,17 @@ func (s *Server) handleBrainMentionWithReply(slug, channelID, senderName, conten
 				"Try commands like: **list tasks**, **search for** *something*, **workspace stats**."
 			s.sendBrainMessage(slug, channelID, "", fallback)
 			onReply(fallback)
-			return
+		}()
+		return
+	}
+
+	// LLM path: run the standard pipeline, forward the final response
+	// to the external source when the turn succeeds.
+	s.handleBrainV2Ex(slug, channelID, "", senderName, content, messageTime, func(_, response string, err error) {
+		if err == nil && strings.TrimSpace(response) != "" {
+			onReply(response)
 		}
-
-		// Standard chat pre-filter disabled — all messages go to LLM
-		// TODO: re-enable when standard chat patterns are production-ready
-
-		// LLM-disabled gate removed — makeBrainClient handles xAI/OpenRouter routing
-
-		apiKey, model := s.getBrainSettings(slug)
-		ollamaEnabled := s.getBrainSetting(slug, "ollama_enabled") == "true"
-		if apiKey == "" && s.getXAIKey(slug) == "" && !ollamaEnabled {
-			s.sendBrainMessage(slug, channelID, "",
-				"I can answer search and stats queries without an API key. Try: \"search for X\", \"how many messages\", \"who is online\". For general questions, configure an API key in Settings.")
-			return
-		}
-
-		// Broadcast thinking state
-		s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "thinking", "")
-		defer s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "")
-
-		brainDir := brain.BrainDir(s.cfg.DataDir, slug)
-		systemPrompt, err := brain.BuildSystemPrompt(brainDir)
-		if err != nil {
-			logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("failed to build system prompt")
-			return
-		}
-
-		wdb, err := s.ws.Open(slug)
-		if err != nil {
-			logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("workspace error")
-			return
-		}
-
-		// Append workspace snapshot
-		wsContext := brain.BuildWorkspaceContext(wdb.DB)
-		if wsContext != "" {
-			systemPrompt += "\n\n---\n\n" + wsContext
-		}
-
-		// Append memories
-		memoryContext := brain.BuildMemoryContext(wdb.DB, content)
-		if memoryContext != "" {
-			systemPrompt += "\n\n---\n\n" + memoryContext
-		}
-
-		// Append skills (role-gated + enabled filter)
-		skills := brain.LoadSkills(brainDir)
-		s.applySkillEnabledState(slug, skills)
-		var senderRole string
-		_ = wdb.DB.QueryRow("SELECT role FROM members WHERE LOWER(display_name) = LOWER(?)", senderName).Scan(&senderRole)
-		skills = brain.FilterSkillsByRole(skills, senderRole)
-		skills = filterEnabledSkills(skills)
-		skillContext := brain.BuildSkillContext(skills)
-		if skillContext != "" {
-			systemPrompt += "\n\n---\n\n" + skillContext
-		}
-
-		// Append knowledge base
-		kbContext := brain.BuildKnowledgeContext(wdb.DB, content, brain.SemanticOpts{
-			VectorStore: s.vectors, APIKey: apiKey, Slug: slug,
-		})
-		if kbContext != "" {
-			systemPrompt += "\n\n---\n\n" + kbContext
-		}
-
-		// Append channel history
-		if chSummary := brain.BuildSingleChannelContext(wdb.DB, channelID); chSummary != "" {
-			systemPrompt += "\n\n---\n\n" + chSummary
-		}
-
-		// Cross-channel awareness
-		if crossCtx := brain.BuildCrossChannelContext(wdb.DB, channelID); crossCtx != "" {
-			systemPrompt += "\n\n---\n\n" + crossCtx
-		}
-
-		messages := s.getRecentMessages(wdb, channelID, 40)
-		resolvedModel, fallbacks := s.resolveFreeAuto(model, slug)
-		client := s.makeBrainClient(slug, apiKey, resolvedModel, fallbacks)
-
-		// First call with tools (built-in + MCP)
-		allTools := s.getAllTools(slug)
-		responseContent, toolCalls, ingestUsage, err := client.CompleteWithTools(systemPrompt, messages, allTools)
-		if err != nil {
-			logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("LLM error")
-			s.sendBrainMessage(slug, channelID, "", "Sorry, I encountered an error.")
-			return
-		}
-		s.trackUsage(slug, ingestUsage, resolvedModel, "tools", channelID, "")
-
-		if len(toolCalls) == 0 {
-			responseContent = strings.TrimSpace(responseContent)
-			if responseContent != "" {
-				s.sendBrainMessage(slug, channelID, "", responseContent)
-				onReply(responseContent)
-			}
-			brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
-				truncate(content, 200), truncate(responseContent, 500), model, nil)
-			return
-		}
-
-		// Execute tools
-		logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Int("count", len(toolCalls)).Msg("executing tool calls")
-		assistantMsg := brain.Message{Role: "assistant", Content: responseContent, ToolCalls: toolCalls}
-		followUp := append(messages, assistantMsg)
-
-		var imageRefs []string
-		for _, call := range toolCalls {
-			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", call.Function.Name)
-			result := s.executeTool(slug, channelID, "", call)
-			logger.WithCategory(logger.CatBrain).Info().Str("workspace", slug).Str("tool", call.Function.Name).Str("result", truncate(result, 100)).Msg("tool executed")
-			imageRefs = append(imageRefs, extractImageMarkdown(result)...)
-			followUp = append(followUp, brain.Message{
-				Role:       "tool",
-				Content:    result,
-				ToolCallID: call.ID,
-			})
-		}
-
-		// Second call: final response
-		finalResponse, ingestUsage2, err := client.Complete(systemPrompt, followUp)
-		if err != nil {
-			logger.WithCategory(logger.CatBrain).Error().Err(err).Str("workspace", slug).Msg("follow-up LLM error")
-			if responseContent != "" {
-				s.sendBrainMessage(slug, channelID, "", appendMissingImages(responseContent, imageRefs))
-				onReply(responseContent)
-			}
-			return
-		}
-		s.trackUsage(slug, ingestUsage2, resolvedModel, "tools", channelID, "")
-
-		finalResponse = strings.TrimSpace(finalResponse)
-		finalResponse = appendMissingImages(finalResponse, imageRefs)
-
-		var toolNames []string
-		for _, call := range toolCalls {
-			toolNames = append(toolNames, call.Function.Name)
-		}
-
-		if finalResponse != "" {
-			s.sendBrainMessage(slug, channelID, "", finalResponse, toolNames...)
-			onReply(finalResponse)
-		}
-		brain.LogAction(wdb.DB, id.New(), brain.ActionMention, channelID,
-			truncate(content, 200), truncate(finalResponse, 500), model, toolNames)
-	}()
+	})
 }
 
 // getBrainSetting reads a single brain_settings value for a workspace.
