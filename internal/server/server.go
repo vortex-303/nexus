@@ -53,15 +53,15 @@ type Server struct {
 	bridges     sync.Map // map[slug]*BridgeConn — one Ollama bridge per workspace
 	bootedAt    time.Time
 
-	// brainV3Busy is the per-conversation lock for Brain v3 turns. Key
-	// format: "slug|channelID|parentID". When a v3 mention arrives and the
-	// matching key is already set, the mention is dropped silently — the
-	// per-channel agent-state indicator already shows Brain busy, so the
-	// sender knows. Brain mimics human turn-taking: one reply per
-	// conversation at a time, parallel across conversations. The global
-	// agentSem stays as a workspace-wide rate cap on top of this.
-	brainV3BusyMu sync.Mutex
-	brainV3Busy   map[string]bool
+	// brainBusy is the per-conversation lock for Brain turns. Key format:
+	// "slug|channelID|parentID". When a mention arrives and the matching
+	// key is already set, the mention is dropped silently — the per-channel
+	// agent-state indicator already shows Brain busy, so the sender knows.
+	// Brain mimics human turn-taking: one reply per conversation at a
+	// time, parallel across conversations. The global agentSem stays as a
+	// workspace-wide rate cap on top of this.
+	brainBusyMu sync.Mutex
+	brainBusy   map[string]bool
 }
 
 func Run(cfg *config.Config) error {
@@ -102,7 +102,7 @@ func Run(cfg *config.Config) error {
 		agentSem:    make(chan struct{}, 20), // max 20 concurrent agent/brain goroutines
 		netLog:      netLog,
 		bootedAt:    time.Now(),
-		brainV3Busy: make(map[string]bool),
+		brainBusy:   make(map[string]bool),
 	}
 	// Initialize asynq task queue (optional — falls back to goroutines)
 	if err := s.initAsynq(); err != nil {
@@ -315,6 +315,8 @@ func (s *Server) routes() {
 	// brain_version='v2' on all workspaces. Brain v3 dispatch is gone from
 	// ws.go; the brain3 endpoints are no longer reachable.
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/reflections", authed(http.HandlerFunc(s.requireAdmin(s.handleReflectionHistory))))
+	s.mux.Handle("GET /api/workspaces/{slug}/brain/traces", authed(http.HandlerFunc(s.handleListTraces)))
+	s.mux.Handle("GET /api/workspaces/{slug}/brain/traces/{traceID}", authed(http.HandlerFunc(s.handleGetTrace)))
 	s.mux.Handle("POST /api/workspaces/{slug}/brain/distill-skills", authed(http.HandlerFunc(s.handleDistillSkills)))
 	s.mux.Handle("GET /api/workspaces/{slug}/brain/skill-proposals", authed(http.HandlerFunc(s.handleListSkillProposals)))
 	s.mux.Handle("POST /api/workspaces/{slug}/brain/skill-proposals/{name}/approve", authed(http.HandlerFunc(s.handleApproveSkillProposal)))

@@ -3,16 +3,20 @@ package brain2
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/nexus-chat/nexus/internal/brain"
 )
 
-// RunSynthesizer takes the original context + tool results and produces the final response.
-func RunSynthesizer(cfg PipelineConfig, plan Plan, results []StepResult) string {
+// RunSynthesizer takes the original context + tool results and produces the
+// final response, streaming token deltas to cfg.OnTextDelta when available.
+// The returned usage is nil when no LLM call was made (direct _response) or
+// when the provider didn't report usage.
+func RunSynthesizer(cfg PipelineConfig, plan Plan, results []StepResult) (string, *brain.CompletionUsage) {
 	// Check if any result is a direct final response (from self-correction loop)
 	for _, r := range results {
 		if r.Tool == "_response" {
-			return r.Result
+			return r.Result, nil
 		}
 	}
 
@@ -35,7 +39,9 @@ func RunSynthesizer(cfg PipelineConfig, plan Plan, results []StepResult) string 
 		synthPrompt = synthPrompt[:100000]
 	}
 
-	response, _, err := cfg.Client.Complete(synthPrompt, cfg.Messages)
+	llmStart := time.Now()
+	response, usage, err := completeMaybeStream(cfg, synthPrompt)
+	cfg.Trace.AddLLMCall(cfg.Model, time.Since(llmStart), errString(err))
 	if err != nil {
 		// Fallback: return raw tool results if synthesis fails
 		var fallback strings.Builder
@@ -46,12 +52,12 @@ func RunSynthesizer(cfg PipelineConfig, plan Plan, results []StepResult) string 
 			}
 		}
 		if fallback.Len() > 0 {
-			return fallback.String()
+			return fallback.String(), usage
 		}
-		return "Sorry, I encountered an error synthesizing the results."
+		return "Sorry, I encountered an error synthesizing the results.", usage
 	}
 
-	return response
+	return response, usage
 }
 
 // BuildToolResultMessages converts step results to brain.Message format

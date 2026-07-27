@@ -12,27 +12,27 @@ import (
 
 // Metrics captures timing and cost data for a single Brain v2 invocation.
 type Metrics struct {
-	Version      string        `json:"version"`
-	TotalLatency time.Duration `json:"total_latency"`
-	PlanLatency  time.Duration `json:"plan_latency"`
-	ExecLatency  time.Duration `json:"exec_latency"`
-	SynthLatency time.Duration `json:"synth_latency"`
-	LLMCalls     int           `json:"llm_calls"`
-	ToolCalls    int           `json:"tool_calls"`
-	ToolsParallel int          `json:"tools_parallel"`
-	InputTokens  int           `json:"input_tokens"`
-	OutputTokens int           `json:"output_tokens"`
-	CostUSD      float64       `json:"cost_usd"`
-	Model        string        `json:"model"`
-	PlannerModel string        `json:"planner_model"`
-	Success      bool          `json:"success"`
+	Version       string        `json:"version"`
+	TotalLatency  time.Duration `json:"total_latency"`
+	PlanLatency   time.Duration `json:"plan_latency"`
+	ExecLatency   time.Duration `json:"exec_latency"`
+	SynthLatency  time.Duration `json:"synth_latency"`
+	LLMCalls      int           `json:"llm_calls"`
+	ToolCalls     int           `json:"tool_calls"`
+	ToolsParallel int           `json:"tools_parallel"`
+	InputTokens   int           `json:"input_tokens"`
+	OutputTokens  int           `json:"output_tokens"`
+	CostUSD       float64       `json:"cost_usd"`
+	Model         string        `json:"model"`
+	PlannerModel  string        `json:"planner_model"`
+	Success       bool          `json:"success"`
 }
 
 // Step represents a single planned action in the execution pipeline.
 type Step struct {
 	ID        string   `json:"id"`
 	Tool      string   `json:"tool"`
-	Args      string   `json:"args"`      // JSON string of arguments
+	Args      string   `json:"args"`       // JSON string of arguments
 	DependsOn []string `json:"depends_on"` // step IDs that must complete first
 }
 
@@ -40,15 +40,15 @@ type Step struct {
 type Plan struct {
 	Steps        []Step   `json:"steps"`
 	DirectAnswer bool     `json:"direct_answer"` // true = skip executor, no tools needed
-	ScopedTools  []string `json:"tools"`          // only these tools sent to executor
+	ScopedTools  []string `json:"tools"`         // only these tools sent to executor
 }
 
 // StepResult holds the output of a single executed step.
 type StepResult struct {
-	StepID  string `json:"step_id"`
-	Tool    string `json:"tool"`
-	Result  string `json:"result"`
-	Error   string `json:"error,omitempty"`
+	StepID  string        `json:"step_id"`
+	Tool    string        `json:"tool"`
+	Result  string        `json:"result"`
+	Error   string        `json:"error,omitempty"`
 	Elapsed time.Duration `json:"elapsed"`
 }
 
@@ -83,6 +83,16 @@ type PipelineConfig struct {
 	// because we read .cost off the standard CompletionUsage already.
 	MaxCostUSD  float64
 	ExecuteTool ToolExecutor
+	// Model is the resolved model id for this turn — used for trace steps
+	// and log labels only; the Client already carries the model for calls.
+	Model string
+	// Trace, when non-nil, collects per-step telemetry (tool calls, LLM
+	// calls, validation errors) for the brain_traces tables. Nil is a no-op.
+	Trace *TraceCollector
+	// OnTextDelta, when non-nil, receives token deltas as the final response
+	// is generated (synthesizer + plain-completion paths). Enables chat
+	// streaming; tool-selection rounds are not streamed.
+	OnTextDelta func(delta string)
 }
 
 // PipelineResult holds the output of a complete pipeline run.
@@ -106,6 +116,10 @@ type PipelineResult struct {
 	// Same shape works for both engines (v3's `thinking` blocks map to
 	// `reasoning` cleanly). Populated even without active streaming.
 	Items []brain.StreamItem
+	// InputTokens / OutputTokens are the summed real token counts across
+	// every LLM call of the turn, for llm_usage + trace rows.
+	InputTokens  int
+	OutputTokens int
 }
 
 // Run executes the Brain v2 pipeline with self-correcting tool loop.
@@ -126,6 +140,7 @@ func Run(cfg PipelineConfig) PipelineResult {
 	m.ExecLatency = time.Since(execStart)
 	m.ToolCalls = len(exec.Results)
 	costUSD := exec.CostUSD
+	inTokens, outTokens := exec.InputTokens, exec.OutputTokens
 	items := exec.Items
 
 	// Extract response
@@ -144,7 +159,13 @@ func Run(cfg PipelineConfig) PipelineResult {
 	// Skip when the cost cap broke us out — the budget-break message in
 	// exec.Results is already the right reply, no point burning more spend.
 	if response == "" && len(exec.ToolsUsed) > 0 && !exec.BudgetExceeded {
-		response = RunSynthesizer(cfg, plan, exec.Results)
+		var synthUsage *brain.CompletionUsage
+		response, synthUsage = RunSynthesizer(cfg, plan, exec.Results)
+		if synthUsage != nil {
+			costUSD += synthUsage.Cost
+			inTokens += synthUsage.PromptTokens
+			outTokens += synthUsage.CompletionTokens
+		}
 		m.LLMCalls++
 		if response != "" {
 			items = append(items, brain.StreamItem{Kind: brain.ItemKindText, Text: response})
@@ -156,10 +177,14 @@ func Run(cfg PipelineConfig) PipelineResult {
 	// Last resort: if still empty, do a plain completion
 	if response == "" {
 		fmt.Printf("[brain2] pipeline: no response from executor, trying plain Complete\n")
-		plainResp, plainUsage, err := cfg.Client.Complete(cfg.SystemPrompt, cfg.Messages)
+		llmStart := time.Now()
+		plainResp, plainUsage, err := completeMaybeStream(cfg, cfg.SystemPrompt)
 		if plainUsage != nil {
 			costUSD += plainUsage.Cost
+			inTokens += plainUsage.PromptTokens
+			outTokens += plainUsage.CompletionTokens
 		}
+		cfg.Trace.AddLLMCall(cfg.Model, time.Since(llmStart), errString(err))
 		fmt.Printf("[brain2] pipeline fallback: err=%v len=%d\n", err, len(plainResp))
 		if err == nil && plainResp != "" {
 			response = plainResp
@@ -174,20 +199,54 @@ func Run(cfg PipelineConfig) PipelineResult {
 
 	m.Success = response != ""
 	m.TotalLatency = time.Since(start)
+	m.Model = cfg.Model
+	m.InputTokens = inTokens
+	m.OutputTokens = outTokens
+	m.CostUSD = costUSD
 	return PipelineResult{
-		Response:  response,
-		Metrics:   m,
-		ToolsUsed: exec.ToolsUsed,
-		LastError: lastErr,
-		CostUSD:   costUSD,
-		Items:     items,
+		Response:     response,
+		Metrics:      m,
+		ToolsUsed:    exec.ToolsUsed,
+		LastError:    lastErr,
+		CostUSD:      costUSD,
+		Items:        items,
+		InputTokens:  inTokens,
+		OutputTokens: outTokens,
 	}
+}
+
+// streamingClient is satisfied by *brain.Client — token-level SSE streaming.
+type streamingClient interface {
+	CompleteStream(systemPrompt string, messages []brain.Message, cb brain.StreamCallback) (string, *brain.CompletionUsage, error)
+}
+
+// completeMaybeStream does a plain completion, streaming token deltas to
+// cfg.OnTextDelta when both the callback and a streaming-capable client are
+// present. Falls back to blocking Complete otherwise (Ollama bridge, Gemini).
+func completeMaybeStream(cfg PipelineConfig, systemPrompt string) (string, *brain.CompletionUsage, error) {
+	if cfg.OnTextDelta != nil {
+		if sc, ok := cfg.Client.(streamingClient); ok {
+			return sc.CompleteStream(systemPrompt, cfg.Messages, func(chunk string, done bool) {
+				if chunk != "" {
+					cfg.OnTextDelta(chunk)
+				}
+			})
+		}
+	}
+	return cfg.Client.Complete(systemPrompt, cfg.Messages)
+}
+
+// errString returns err.Error() or "" for nil — trace-step convenience.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // FriendlyError converts a captured LLM-client error string from a v2 turn
 // into a chat-visible message that points at the actual fix (or back at the
-// engine selector). Matches brain3.errorResponse semantics so v2 and v3 send
-// the same shape of message for the same admin-actionable failure modes.
+// engine selector).
 //
 // Returns an empty string if no friendly mapping applies — caller should
 // keep its generic fallback in that case.
@@ -200,13 +259,13 @@ func FriendlyError(msg string) string {
 		strings.Contains(strings.ToLower(msg), "invalid api key"),
 		strings.Contains(msg, "401"),
 		strings.Contains(msg, "Authentication failed"):
-		return "Brain's OpenRouter API key isn't working — OpenRouter rejected the request. An admin can re-enter the key in **Settings → Brain → API Keys**, or switch the engine to Claude in **Settings → Brain → Engine**."
+		return "Brain's OpenRouter API key isn't working — OpenRouter rejected the request. An admin can re-enter the key in **Settings → Brain → API Keys**."
 	case strings.Contains(msg, "402"),
 		strings.Contains(strings.ToLower(msg), "insufficient credits"),
 		strings.Contains(strings.ToLower(msg), "credit"):
-		return "OpenRouter account is out of credits. An admin can top up at openrouter.ai/credits, or switch the engine to Claude in **Settings → Brain → Engine**."
+		return "OpenRouter account is out of credits. An admin can top up at openrouter.ai/credits."
 	case strings.Contains(msg, "429"), strings.Contains(strings.ToLower(msg), "rate limit"):
-		return "OpenRouter is rate-limiting this workspace. Try again in a minute, or switch the engine to Claude in **Settings → Brain → Engine**."
+		return "OpenRouter is rate-limiting this workspace. Try again in a minute."
 	case strings.Contains(msg, "model_not_found"),
 		strings.Contains(strings.ToLower(msg), "no allowed providers"):
 		return "The selected OpenRouter model isn't available — pick a different one in **Settings → Brain → Models**."

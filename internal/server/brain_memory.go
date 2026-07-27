@@ -601,9 +601,16 @@ func (s *Server) handlePinMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := brain.SaveMemory(wdb.DB, id.New(), body.Type, pinContent, "pin", body.ChannelID, body.MessageID, 0); err != nil {
+	memID := id.New()
+	if err := brain.SaveMemory(wdb.DB, memID, body.Type, pinContent, "pin", body.ChannelID, body.MessageID, 0); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save")
 		return
+	}
+	// Mark as pinned so BuildPinnedMemoryContext ("always in context")
+	// actually includes it — the flag was never set before, which made the
+	// pinned-memories prompt section permanently empty.
+	if _, err := wdb.DB.Exec("UPDATE brain_memories SET pinned = TRUE WHERE id = ?", memID); err != nil {
+		logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("failed to set pinned flag")
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "pinned"})

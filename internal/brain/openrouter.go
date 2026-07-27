@@ -222,20 +222,29 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// StreamOptions mirrors the OpenAI streaming options object.
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
 // CompletionRequest is the request to OpenRouter.
 type CompletionRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Stream      bool      `json:"stream"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
-	Temperature float64   `json:"temperature,omitempty"`
+	Model    string    `json:"model"`
+	Messages []Message `json:"messages"`
+	Stream   bool      `json:"stream"`
+	// StreamOptions asks OpenAI-compatible APIs to append a final SSE chunk
+	// carrying usage (tokens + cost) when streaming. Ignored by servers
+	// that don't support it.
+	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
+	MaxTokens     int            `json:"max_tokens,omitempty"`
+	Temperature   float64        `json:"temperature,omitempty"`
 	// TopP is the nucleus-sampling parameter. We let it stay zero (omitted)
 	// for most models so the upstream default applies, but DeepSeek's docs
 	// recommend temperature=1.0, top_p=1.0 for V3+ and especially for
 	// agentic tool-calling — counter-intuitive but documented. Set per
 	// request via samplingForModel().
-	TopP       float64   `json:"top_p,omitempty"`
-	Tools      []ToolDef `json:"tools,omitempty"`
+	TopP  float64   `json:"top_p,omitempty"`
+	Tools []ToolDef `json:"tools,omitempty"`
 	// ToolChoice constrains the model's tool-calling. Possible values:
 	//   - omitted (default): "auto" — model decides
 	//   - "required": model MUST call some tool from the Tools list
@@ -292,10 +301,22 @@ type Client struct {
 	// hallucinate an external URL. Cleared after one use so subsequent
 	// calls go back to "auto".
 	NextToolChoice any
+	// MaxTokens caps output tokens per completion. Zero means the legacy
+	// default of 2048. Callers set this per-model via brain2.MaxTokensForModel
+	// so large models aren't clipped mid-answer.
+	MaxTokens          int
 	BaseURL            string // defaults to openRouterURL
 	Multimodal         bool
 	HTTPClient         *http.Client
 	FreeModelFallbacks []string // additional models to try on retryable errors
+}
+
+// maxTokens returns the configured output cap, defaulting to 2048.
+func (c *Client) maxTokens() int {
+	if c.MaxTokens > 0 {
+		return c.MaxTokens
+	}
+	return 2048
 }
 
 // endpoint returns the base URL for this client, defaulting to OpenRouter.
@@ -411,7 +432,7 @@ func (c *Client) Complete(systemPrompt string, messages []Message) (string, *Com
 			Model:       model,
 			Messages:    msgs,
 			Stream:      false,
-			MaxTokens:   2048,
+			MaxTokens:   c.maxTokens(),
 			Temperature: temp,
 			TopP:        topP,
 		}
@@ -589,7 +610,7 @@ func (c *Client) CompleteWithTools(systemPrompt string, messages []Message, tool
 			Model:       model,
 			Messages:    msgs,
 			Stream:      false,
-			MaxTokens:   2048,
+			MaxTokens:   c.maxTokens(),
 			Temperature: temp,
 			TopP:        topP,
 			Tools:       strictTools,
@@ -658,30 +679,33 @@ func (c *Client) CompleteToolResults(systemPrompt string, messages []Message) (s
 // StreamCallback is called for each chunk of a streaming response.
 type StreamCallback func(chunk string, done bool)
 
-// CompleteStream sends a streaming completion request.
-func (c *Client) CompleteStream(systemPrompt string, messages []Message, cb StreamCallback) error {
+// CompleteStream sends a streaming completion request, invoking cb for every
+// text delta. Returns the accumulated full text plus usage (tokens + cost)
+// when the API's final include_usage chunk carries it.
+func (c *Client) CompleteStream(systemPrompt string, messages []Message, cb StreamCallback) (string, *CompletionUsage, error) {
 	msgs := make([]Message, 0, len(messages)+1)
 	msgs = append(msgs, Message{Role: "system", Content: systemPrompt})
 	msgs = append(msgs, messages...)
 
 	temp, topP := samplingForModel(c.Model)
 	req := CompletionRequest{
-		Model:       c.Model,
-		Messages:    msgs,
-		Stream:      true,
-		MaxTokens:   2048,
-		Temperature: temp,
-		TopP:        topP,
+		Model:         c.Model,
+		Messages:      msgs,
+		Stream:        true,
+		StreamOptions: &StreamOptions{IncludeUsage: true},
+		MaxTokens:     c.maxTokens(),
+		Temperature:   temp,
+		TopP:          topP,
 	}
 
 	body, err := json.Marshal(req)
 	if err != nil {
-		return fmt.Errorf("marshaling request: %w", err)
+		return "", nil, fmt.Errorf("marshaling request: %w", err)
 	}
 
 	httpReq, err := http.NewRequest("POST", c.endpoint(), bytes.NewReader(body))
 	if err != nil {
-		return err
+		return "", nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
@@ -689,16 +713,21 @@ func (c *Client) CompleteStream(systemPrompt string, messages []Message, cb Stre
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("openrouter request: %w", err)
+		return "", nil, fmt.Errorf("openrouter request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		errBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("openrouter %d: %s", resp.StatusCode, string(errBody))
+		return "", nil, fmt.Errorf("openrouter %d: %s", resp.StatusCode, string(errBody))
 	}
 
+	var full strings.Builder
+	var usage *CompletionUsage
 	scanner := bufio.NewScanner(resp.Body)
+	// SSE lines can exceed bufio's 64KB default when a chunk carries a big
+	// content block; give the scanner room.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
@@ -707,22 +736,30 @@ func (c *Client) CompleteStream(systemPrompt string, messages []Message, cb Stre
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
 			cb("", true)
-			return nil
+			return full.String(), usage, nil
 		}
 
 		var chunk CompletionResponse
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
 		}
+		if chunk.Error != nil {
+			cb("", true)
+			return full.String(), usage, fmt.Errorf("openrouter stream: %s", chunk.Error.Message)
+		}
+		if chunk.Usage != nil {
+			usage = chunk.Usage
+		}
 		if len(chunk.Choices) > 0 {
 			content := chunk.Choices[0].Delta.Content
 			if content != "" {
+				full.WriteString(content)
 				cb(content, false)
 			}
 		}
 	}
 	cb("", true)
-	return scanner.Err()
+	return full.String(), usage, scanner.Err()
 }
 
 const embeddingURL = "https://openrouter.ai/api/v1/embeddings"

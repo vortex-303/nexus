@@ -477,7 +477,7 @@ var workspaceMigrations = []migration{
 	},
 	{
 		version: 12,
-		name: "mcp_servers",
+		name:    "mcp_servers",
 		sql: `
 			CREATE TABLE IF NOT EXISTS mcp_servers (
 				id TEXT PRIMARY KEY,
@@ -1232,6 +1232,14 @@ var workspaceMigrations64 = migration{
 	`,
 }
 
+var workspaceMigrations65 = migration{
+	version: 65,
+	name:    "backfill pinned flag: pin-to-memory rows never set pinned=TRUE",
+	sql: `
+		UPDATE brain_memories SET pinned = TRUE WHERE source = 'pin';
+	`,
+}
+
 var workspaceMigrations63 = migration{
 	version: 63,
 	name:    "force brain_version=v2: retire v1/v3 paths, OpenRouter-only",
@@ -1279,7 +1287,7 @@ var workspaceMigrations62 = migration{
 }
 
 func init() {
-	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55, workspaceMigrations58, workspaceMigrations59, workspaceMigrations60, workspaceMigrations61, workspaceMigrations62, workspaceMigrations63, workspaceMigrations64)
+	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55, workspaceMigrations58, workspaceMigrations59, workspaceMigrations60, workspaceMigrations61, workspaceMigrations62, workspaceMigrations63, workspaceMigrations64, workspaceMigrations65)
 }
 
 func RunGlobal(db *sql.DB) error {

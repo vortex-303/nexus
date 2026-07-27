@@ -14,12 +14,14 @@ import (
 // 3-tuple but added fields (CostUSD, Items, BudgetExceeded) made that
 // awkward; this struct keeps the surface tidy.
 type ExecutorOutput struct {
-	Results         []StepResult
-	ToolsUsed       []string
-	LastErr         string
-	CostUSD         float64
-	Items           []brain.StreamItem
-	BudgetExceeded  bool // true if MaxCostUSD aborted the loop early
+	Results        []StepResult
+	ToolsUsed      []string
+	LastErr        string
+	CostUSD        float64
+	Items          []brain.StreamItem
+	BudgetExceeded bool // true if MaxCostUSD aborted the loop early
+	InputTokens    int  // summed real prompt tokens across all LLM calls
+	OutputTokens   int  // summed real completion tokens across all LLM calls
 }
 
 // RunExecutor executes the planned steps with parallel execution, validation,
@@ -154,6 +156,8 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ExecutorOutput {
 	addUsage := func(u *brain.CompletionUsage) {
 		if u != nil {
 			out.CostUSD += u.Cost
+			out.InputTokens += u.PromptTokens
+			out.OutputTokens += u.CompletionTokens
 		}
 	}
 	overBudget := func() bool {
@@ -161,13 +165,17 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ExecutorOutput {
 	}
 
 	// Round 1: CompleteWithTools (same as v1)
+	llmStart := time.Now()
 	responseContent, toolCalls, usage, err := cfg.Client.CompleteWithTools(cfg.SystemPrompt, cfg.Messages, scopedTools)
 	addUsage(usage)
+	cfg.Trace.AddLLMCall(cfg.Model, time.Since(llmStart), errString(err))
 	if err != nil {
 		fmt.Printf("[brain2] executor CompleteWithTools error: %v\n", err)
 		// Fallback: plain completion
+		llmStart = time.Now()
 		plainResp, plainUsage, plainErr := cfg.Client.Complete(cfg.SystemPrompt, cfg.Messages)
 		addUsage(plainUsage)
+		cfg.Trace.AddLLMCall(cfg.Model, time.Since(llmStart), errString(plainErr))
 		fmt.Printf("[brain2] fallback Complete: err=%v len=%d\n", plainErr, len(plainResp))
 		if plainErr == nil && plainResp != "" {
 			out.Results = append(out.Results, StepResult{
@@ -207,13 +215,16 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ExecutorOutput {
 		// Validate before executing
 		if vErr := ValidateToolCall(call, scopedTools); vErr != nil {
 			fmt.Printf("[brain2] validation error for %s: %s\n", call.Function.Name, vErr.Error)
+			cfg.Trace.AddValidationError(call.Function.Name, vErr.Error)
 			followUp = append(followUp, brain.Message{
 				Role: "tool", Content: vErr.String(), ToolCallID: call.ID,
 			})
 			continue
 		}
 
+		toolStart := time.Now()
 		result := executeWithTimeout(cfg, call)
+		cfg.Trace.AddToolCall(call.Function.Name, call.Function.Arguments, result, "", time.Since(toolStart))
 		out.ToolsUsed = append(out.ToolsUsed, call.Function.Name)
 		out.Results = append(out.Results, StepResult{
 			StepID: call.ID, Tool: call.Function.Name, Result: result,
@@ -292,8 +303,10 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ExecutorOutput {
 		// Compress old tool results to save context (keep last 6 full)
 		compressedFollowUp := CompressOldToolResults(followUp, 6)
 
+		llmStart = time.Now()
 		roundResp, roundCalls, roundUsage, err := cfg.Client.CompleteWithTools(cfg.SystemPrompt, compressedFollowUp, scopedTools)
 		addUsage(roundUsage)
+		cfg.Trace.AddLLMCall(cfg.Model, time.Since(llmStart), errString(err))
 		if err != nil {
 			break
 		}
@@ -331,12 +344,15 @@ func executeSelfCorrectingLoop(cfg PipelineConfig, plan Plan) ExecutorOutput {
 		followUp = append(followUp, brain.Message{Role: "assistant", Content: roundResp, ToolCalls: roundCalls})
 		for _, call := range roundCalls {
 			if vErr := ValidateToolCall(call, scopedTools); vErr != nil {
+				cfg.Trace.AddValidationError(call.Function.Name, vErr.Error)
 				followUp = append(followUp, brain.Message{
 					Role: "tool", Content: vErr.String(), ToolCallID: call.ID,
 				})
 				continue
 			}
+			toolStart := time.Now()
 			result := executeWithTimeout(cfg, call)
+			cfg.Trace.AddToolCall(call.Function.Name, call.Function.Arguments, result, "", time.Since(toolStart))
 			out.ToolsUsed = append(out.ToolsUsed, call.Function.Name)
 			out.Results = append(out.Results, StepResult{
 				StepID: call.ID, Tool: call.Function.Name, Result: result,

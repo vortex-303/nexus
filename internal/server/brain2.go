@@ -1,13 +1,16 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nexus-chat/nexus/internal/brain"
 	"github.com/nexus-chat/nexus/internal/brain2"
+	"github.com/nexus-chat/nexus/internal/hub"
 	"github.com/nexus-chat/nexus/internal/id"
 	"github.com/nexus-chat/nexus/internal/logger"
 	"github.com/nexus-chat/nexus/internal/metrics"
@@ -44,7 +47,37 @@ func (s *Server) handleBrainV2(slug, channelID, parentID, senderName, content st
 // when the turn finishes (task scheduler, external-reply integrations).
 // modelOverride, if non-empty, replaces the workspace default model.
 func (s *Server) handleBrainV2Ex(slug, channelID, parentID, senderName, content string, messageTime time.Time, onComplete TaskCompletionCallback, modelOverride ...string) {
+	// Per-conversation busy lock (lifted from v3). Brain mimics human
+	// turn-taking: one reply per (channel, parent_id) at a time, parallel
+	// across conversations. If a turn is already in flight for this exact
+	// conversation, drop this mention silently — the per-channel agent
+	// indicator (broadcast by the in-flight turn) already signals Brain is
+	// busy, so the sender knows. They can re-mention once it clears.
+	busyKey := slug + "|" + channelID + "|" + parentID
+	s.brainBusyMu.Lock()
+	if s.brainBusy[busyKey] {
+		s.brainBusyMu.Unlock()
+		logger.WithCategory(logger.CatBrain).Info().
+			Str("workspace", slug).
+			Str("channel", channelID).
+			Str("parent", parentID).
+			Str("sender", senderName).
+			Msg("dropping mention — turn already in flight in this conversation")
+		if onComplete != nil {
+			onComplete("", "", fmt.Errorf("conversation busy"))
+		}
+		return
+	}
+	s.brainBusy[busyKey] = true
+	s.brainBusyMu.Unlock()
+
 	go func() {
+		defer func() {
+			s.brainBusyMu.Lock()
+			delete(s.brainBusy, busyKey)
+			s.brainBusyMu.Unlock()
+		}()
+
 		// Completion tracking for task scheduler / external-reply callbacks
 		var completionMsgID, completionResponse string
 		var completionErr error
@@ -83,7 +116,7 @@ func (s *Server) handleBrainV2Ex(slug, channelID, parentID, senderName, content 
 		// directly — zero-LLM, zero-cost bypasses (ported from v1).
 		trimmed := strings.TrimSpace(content)
 		if webQuery := extractWebSearchQuery(trimmed); webQuery != "" {
-			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", "web_search", parentID)
+			s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", humanToolLabel("web_search"), parentID)
 			defer s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "", parentID)
 			argsJSON := fmt.Sprintf(`{"query":%q}`, webQuery)
 			result := s.toolWebSearch(slug, argsJSON)
@@ -93,7 +126,7 @@ func (s *Server) handleBrainV2Ex(slug, channelID, parentID, senderName, content 
 		}
 		if strings.HasPrefix(trimmed, "/localsearch ") {
 			if query := strings.TrimSpace(strings.TrimPrefix(trimmed, "/localsearch")); query != "" {
-				s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", "search_workspace", parentID)
+				s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "tool_executing", humanToolLabel("search_workspace"), parentID)
 				defer s.broadcastAgentState(slug, channelID, brain.BrainMemberID, brain.BrainName, "idle", "", parentID)
 				argsJSON := fmt.Sprintf(`{"query":%q}`, query)
 				result := s.toolSearchMessages(slug, channelID, argsJSON)
@@ -196,6 +229,12 @@ func (s *Server) handleBrainV2Ex(slug, channelID, parentID, senderName, content 
 		resolvedModel, fallbacks := s.resolveFreeAuto(model, slug)
 		client := s.makeBrainClient(slug, apiKey, resolvedModel, fallbacks)
 
+		// Per-model output cap — large models were being clipped at the
+		// legacy flat 2048 max_tokens.
+		if orClient, ok := client.(*brain.Client); ok {
+			orClient.MaxTokens = brain2.MaxTokensForModel(resolvedModel)
+		}
+
 		// Force tool_choice on the first LLM call when the user is clearly
 		// asking for an image via Creative Director. Cheap MoE models
 		// (DeepSeek V4 Flash, Qwen3.5-Flash on certain prompts) sometimes
@@ -277,7 +316,7 @@ func (s *Server) handleBrainV2Ex(slug, channelID, parentID, senderName, content 
 		var imagePromptTag string
 		senderID := s.resolveMemberIDByName(slug, senderName)
 		wrappedExecute := func(slug2, channelID2, senderMemberID string, call brain.ToolCall) string {
-			s.broadcastAgentState(slug2, channelID2, brain.BrainMemberID, brain.BrainName, "tool_executing", call.Function.Name, parentID)
+			s.broadcastAgentState(slug2, channelID2, brain.BrainMemberID, brain.BrainName, "tool_executing", humanToolLabel(call.Function.Name), parentID)
 			if senderMemberID == "" {
 				senderMemberID = senderID
 			}
@@ -296,6 +335,28 @@ func (s *Server) handleBrainV2Ex(slug, channelID, parentID, senderName, content 
 			s.broadcastAgentState(slug2, channelID2, brain.BrainMemberID, brain.BrainName, "thinking", "", parentID)
 			return out
 		}
+
+		// Token streaming (lifted from v3, upgraded to real token SSE via
+		// OpenRouter). The message row is created lazily on the FIRST delta —
+		// that's what killed v3's streaming UX (empty bubbles when a turn
+		// errored before producing text). Deltas append via brain.chunk;
+		// finalizeBrainMessage below reconciles the streamed text with the
+		// post-processed final response via message.edited.
+		var streamMu sync.Mutex
+		var streamMsgID string
+		trace := brain2.NewTraceCollector()
+		onTextDelta := func(delta string) {
+			streamMu.Lock()
+			if streamMsgID == "" {
+				streamMsgID = s.createEmptyBrainMessage(slug, channelID, parentID)
+			}
+			msgID := streamMsgID
+			streamMu.Unlock()
+			if msgID != "" {
+				s.broadcastBrainChunk(slug, channelID, parentID, msgID, delta)
+			}
+		}
+
 		result := brain2.Run(brain2.PipelineConfig{
 			Slug:         slug,
 			ChannelID:    channelID,
@@ -309,6 +370,9 @@ func (s *Server) handleBrainV2Ex(slug, channelID, parentID, senderName, content 
 			MaxDepth:     maxDepth,
 			MaxCostUSD:   maxCostUSD,
 			ExecuteTool:  wrappedExecute,
+			Model:        resolvedModel,
+			Trace:        trace,
+			OnTextDelta:  onTextDelta,
 		})
 
 		if result.Response == "" {
@@ -356,19 +420,52 @@ func (s *Server) handleBrainV2Ex(slug, channelID, parentID, senderName, content 
 			result.Response += imagePromptTag
 		}
 
-		// Send the response
-		msgID := s.sendBrainMessage(slug, channelID, parentID, result.Response, result.ToolsUsed...)
+		// Send the response. If streaming already created the message row,
+		// finalize it (content + tools metadata + message.edited broadcast);
+		// otherwise send normally.
+		var msgID string
+		if streamMsgID != "" {
+			s.finalizeBrainMessage(slug, channelID, parentID, streamMsgID, result.Response, result.ToolsUsed)
+			msgID = streamMsgID
+		} else {
+			msgID = s.sendBrainMessage(slug, channelID, parentID, result.Response, result.ToolsUsed...)
+		}
 		completionMsgID = msgID
 		completionResponse = result.Response
 
-		// Track per-turn LLM spend so the Console → Cost subsection shows
-		// v2 turns. The pipeline already accumulates cost from each round's
-		// CompletionUsage; we just stamp it into llm_usage.
-		s.trackUsage(slug, &brain.CompletionUsage{Cost: result.CostUSD}, resolvedModel, "brain_v2", channelID, senderName)
+		// Track per-turn LLM spend + real token counts so the Console →
+		// Cost subsection shows v2 turns with tokens, not just dollars.
+		s.trackUsage(slug, &brain.CompletionUsage{
+			PromptTokens:     result.InputTokens,
+			CompletionTokens: result.OutputTokens,
+			Cost:             result.CostUSD,
+		}, resolvedModel, "brain_v2", channelID, senderName)
 
-		// Log the action
-		brain.LogAction(wdb.DB, id.New(), "brain_v2", channelID,
+		// Log the action + flush the turn trace (brain_traces tables)
+		actionID := id.New()
+		brain.LogAction(wdb.DB, actionID, "brain_v2", channelID,
 			content, result.Response, resolvedModel, result.ToolsUsed)
+		if err := trace.FlushToDB(wdb.DB, brain2.TraceRecord{
+			ID:             id.New(),
+			ActionLogID:    actionID,
+			BrainVersion:   "v2",
+			ChannelID:      channelID,
+			SenderName:     senderName,
+			TriggerText:    content,
+			Model:          resolvedModel,
+			TotalLatencyMs: result.Metrics.TotalLatency.Milliseconds(),
+			ExecLatencyMs:  result.Metrics.ExecLatency.Milliseconds(),
+			SynthLatencyMs: result.Metrics.SynthLatency.Milliseconds(),
+			ToolCalls:      len(result.ToolsUsed),
+			LLMCalls:       result.Metrics.LLMCalls,
+			InputTokens:    result.InputTokens,
+			OutputTokens:   result.OutputTokens,
+			CostUSD:        result.CostUSD,
+			Success:        result.Metrics.Success,
+			ErrorMessage:   result.LastError,
+		}); err != nil {
+			logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("trace flush failed")
+		}
 
 		// Track for memory extraction
 		s.trackMessageAndMaybeExtract(slug, channelID, msgID, result.Response, brain.BrainName)
@@ -377,6 +474,7 @@ func (s *Server) handleBrainV2Ex(slug, channelID, parentID, senderName, content 
 		if s.getBrainSetting(slug, "automations_enabled") == "true" {
 			go brain2.RunReflector(brain2.ReflectorConfig{
 				DB:            wdb.DB,
+				Client:        client,
 				Slug:          slug,
 				ChannelID:     channelID,
 				SenderName:    senderName,
@@ -400,4 +498,139 @@ func (s *Server) handleBrainV2Ex(slug, channelID, parentID, senderName, content 
 			Bool("success", result.Metrics.Success).
 			Msg("brain v2 complete")
 	}()
+}
+
+// createEmptyBrainMessage inserts an empty Brain message and broadcasts
+// message.new so clients render the bubble that brain.chunk deltas fill.
+// Returns "" on failure (callers fall back to non-streaming send).
+func (s *Server) createEmptyBrainMessage(slug, channelID, parentID string) string {
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return ""
+	}
+
+	msgID := id.New()
+	now := time.Now().UTC().Format(time.RFC3339)
+	metadata := "{}"
+
+	if parentID != "" {
+		_, err = wdb.DB.Exec(
+			"INSERT INTO messages (id, channel_id, sender_id, content, metadata, parent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			msgID, channelID, brain.BrainMemberID, "", metadata, parentID, now,
+		)
+	} else {
+		_, err = wdb.DB.Exec(
+			"INSERT INTO messages (id, channel_id, sender_id, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+			msgID, channelID, brain.BrainMemberID, "", metadata, now,
+		)
+	}
+	if err != nil {
+		logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("failed to pre-create streaming message")
+		return ""
+	}
+
+	if parentID != "" {
+		wdb.DB.Exec("UPDATE messages SET reply_count = reply_count + 1, latest_reply_at = ? WHERE id = ?", now, parentID)
+	}
+
+	h := s.hubs.Get(slug)
+	h.Broadcast(channelID, hub.MakeEnvelope(hub.TypeMessageNew, hub.MessageNewPayload{
+		ID:         msgID,
+		ChannelID:  channelID,
+		SenderID:   brain.BrainMemberID,
+		SenderName: brain.BrainName,
+		Content:    "",
+		CreatedAt:  now,
+		ParentID:   parentID,
+	}), "")
+	return msgID
+}
+
+// finalizeBrainMessage updates the streaming message's content + tools_used
+// metadata and broadcasts message.edited so any late-joining client gets the
+// final state. Idempotent — safe to call once at the end of a turn.
+func (s *Server) finalizeBrainMessage(slug, channelID, parentID, msgID, content string, toolsUsed []string) {
+	wdb, err := s.ws.Open(slug)
+	if err != nil {
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	metadata := "{}"
+	if len(toolsUsed) > 0 {
+		if metaJSON, err := json.Marshal(map[string]any{"tools_used": toolsUsed}); err == nil {
+			metadata = string(metaJSON)
+		}
+	}
+
+	if _, err := wdb.DB.Exec(
+		"UPDATE messages SET content = ?, metadata = ?, edited_at = ? WHERE id = ?",
+		content, metadata, now, msgID,
+	); err != nil {
+		logger.WithCategory(logger.CatBrain).Warn().Str("workspace", slug).Err(err).Msg("failed to finalize streaming message")
+		return
+	}
+
+	h := s.hubs.Get(slug)
+	h.Broadcast(channelID, hub.MakeEnvelope(hub.TypeMessageEdited, hub.MessageEditedPayload{
+		MessageID: msgID,
+		ChannelID: channelID,
+		Content:   content,
+		EditedAt:  now,
+	}), "")
+}
+
+// broadcastBrainChunk sends an incremental text delta for a streaming message.
+// Clients append `delta` to the message identified by msgID.
+func (s *Server) broadcastBrainChunk(slug, channelID, parentID, msgID, delta string) {
+	h := s.hubs.Get(slug)
+	h.Broadcast(channelID, hub.MakeEnvelope(hub.TypeBrainChunk, hub.BrainChunkPayload{
+		ChannelID: channelID,
+		ParentID:  parentID,
+		MessageID: msgID,
+		Delta:     delta,
+	}), "")
+}
+
+// humanToolLabels maps tool names to noun phrases that read naturally in
+// the chat indicator's "{agentName} is using {label}..." pattern (lifted
+// from v3). Anything not in the map falls through unchanged, so an MCP
+// tool like "linear__create_issue" displays as itself — accurate, just
+// less polished. generate_image is deliberately ABSENT: the frontend
+// special-cases that raw name to render the large image-gen placeholder
+// card, so it must pass through untranslated.
+var humanToolLabels = map[string]string{
+	"web_search":            "web search",
+	"search_x":              "X search",
+	"fetch_url":             "the URL fetcher",
+	"list_social_pulses":    "the social pulse history",
+	"get_social_pulse":      "social pulse data",
+	"create_task":           "task creation",
+	"list_tasks":            "the task list",
+	"update_task":           "the task editor",
+	"delete_task":           "task deletion",
+	"create_document":       "the document creator",
+	"search_messages":       "message search",
+	"search_workspace":      "workspace search",
+	"search_knowledge":      "the knowledge base",
+	"trace_knowledge":       "the knowledge tracer",
+	"create_calendar_event": "the calendar",
+	"list_calendar_events":  "the calendar",
+	"update_calendar_event": "the calendar",
+	"delete_calendar_event": "the calendar",
+	"send_email":            "email",
+	"send_telegram":         "Telegram",
+	"delegate_to_agent":     "another agent",
+	"ask_agent":             "another agent",
+	"save_memory":           "memory write",
+	"recall_memory":         "memory recall",
+}
+
+// humanToolLabel returns a chat-friendly label for a tool name, so the
+// indicator reads "Brain is using web search..." instead of the raw id.
+func humanToolLabel(toolName string) string {
+	if label, ok := humanToolLabels[toolName]; ok {
+		return label
+	}
+	return toolName
 }
