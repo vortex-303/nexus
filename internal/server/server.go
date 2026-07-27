@@ -200,13 +200,13 @@ func (s *Server) routes() {
 	// Public routes
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.Handle("GET /metrics", promhttp.Handler())
-	s.mux.HandleFunc("POST /api/workspaces", s.handleCreateWorkspace)
-	s.mux.HandleFunc("POST /api/workspaces/{slug}/join", s.handleJoinWorkspace)
-	s.mux.HandleFunc("POST /api/join", s.handleJoinByCode)
-	s.mux.HandleFunc("POST /api/auth/register", s.handleRegister)
-	s.mux.HandleFunc("POST /api/auth/login", s.handleLogin)
+	s.mux.HandleFunc("POST /api/workspaces", rateLimit(3, time.Hour, s.handleCreateWorkspace))
+	s.mux.HandleFunc("POST /api/workspaces/{slug}/join", rateLimit(10, time.Hour, s.handleJoinWorkspace))
+	s.mux.HandleFunc("POST /api/join", rateLimit(10, time.Hour, s.handleJoinByCode))
+	s.mux.HandleFunc("POST /api/auth/register", rateLimit(10, time.Hour, s.handleRegister))
+	s.mux.HandleFunc("POST /api/auth/login", rateLimit(20, 10*time.Minute, s.handleLogin))
 	s.mux.HandleFunc("GET /api/auth/config", s.handleAuthConfig)
-	s.mux.HandleFunc("POST /api/auth/forgot", s.handleForgotPassword)
+	s.mux.HandleFunc("POST /api/auth/forgot", rateLimit(5, time.Hour, s.handleForgotPassword))
 	s.mux.HandleFunc("POST /api/auth/reset", s.handleResetPassword)
 	s.mux.HandleFunc("POST /api/auth/verify", s.handleVerifyEmail)
 	s.mux.HandleFunc("GET /api/briefs/public/{token}", s.handlePublicBrief)
@@ -411,7 +411,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/workspaces/{slug}/models/free", authed(http.HandlerFunc(s.requireAdmin(s.handleSetWorkspaceFreeModels))))
 
 	// Waitlist (public)
-	s.mux.HandleFunc("POST /api/waitlist", s.handleWaitlist)
+	s.mux.HandleFunc("POST /api/waitlist", rateLimit(5, time.Hour, s.handleWaitlist))
 
 	// Announcements (public)
 	s.mux.HandleFunc("GET /api/announcements", s.handleGetAnnouncement)
