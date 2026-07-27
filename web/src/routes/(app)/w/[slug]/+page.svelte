@@ -1055,13 +1055,22 @@ You receive pre-fetched workspace data below: members, channels, tasks, document
 		// `@Brain [persona:<slug>] ` so the backend's prefix parser triggers
 		// the clean-swap path. Listed before generic commands so /<persona>
 		// is discoverable.
+		// Personas carry long operating descriptions in the DB — too much for
+		// a menu row. Reduce to the first clause ("Persona for visual /
+		// creative work — …" → "Visual / creative work").
+		const shortPersonaDesc = (p: any) => {
+			let d = (p.description || '').split('—')[0].split('.')[0].trim();
+			d = d.replace(/^persona for /i, '');
+			if (!d) return `Activate ${p.display_name}`;
+			return d.charAt(0).toUpperCase() + d.slice(1);
+		};
 		for (const p of personasList) {
 			if (!p.enabled) continue;
 			const tm = p.trigger_mode || 'both';
 			if (tm === 'keyword') continue; // not slash-invokable
 			cmds.push({
 				name: p.slug.replace(/-/g, ''), // /creative-director typed as /creativedirector
-				description: p.description || `Activate ${p.display_name}`,
+				description: shortPersonaDesc(p),
 				action: `@Brain [persona:${p.slug}] `,
 				category: 'Personas',
 			});
@@ -4914,7 +4923,14 @@ autonomy: reactive
 					</div>
 					{#each slashResults as cmd, i}
 						{#if i === 0 || cmd.category !== slashResults[i-1]?.category}
-							<div class="slash-category">{cmd.category}</div>
+							{#if cmd.category === 'Personas'}
+								<div class="slash-personas-intro">
+									<div class="slash-personas-title">Personas</div>
+									<div class="slash-personas-desc">Expert modes for Brain. Pick one and your next message is answered in that role — with its own workflow, tools, and output format.</div>
+								</div>
+							{:else}
+								<div class="slash-category">{cmd.category}</div>
+							{/if}
 						{/if}
 						<button
 							class="mention-item"
@@ -12912,9 +12928,33 @@ autonomy: reactive
 	.agent-badge.channel-count { background: var(--blue, #3b82f6); color: white; }
 	.slash-cmd {
 		font-weight: 600; color: var(--accent); font-family: monospace; font-size: 0.85rem;
-		min-width: 100px;
+		min-width: 130px;
+		flex-shrink: 0;
 	}
-	.slash-popup .mention-role { font-size: 0.75rem; }
+	.slash-popup .mention-item { gap: 16px; }
+	.slash-popup .mention-role {
+		font-size: 0.75rem;
+		text-transform: none;
+		text-align: right;
+		min-width: 0;
+	}
+	.slash-personas-intro {
+		padding: 8px 12px 4px;
+	}
+	.slash-personas-title {
+		font-size: 0.65rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-tertiary);
+	}
+	.slash-personas-desc {
+		font-size: 0.72rem;
+		color: var(--text-secondary);
+		margin-top: 3px;
+		line-height: 1.45;
+		max-width: 520px;
+	}
 	.slash-category {
 		font-size: 0.65rem;
 		font-weight: 600;
