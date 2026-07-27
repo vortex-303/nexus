@@ -1,6 +1,6 @@
 # Nexus — Status & Next Steps
 
-> Last updated: 2026-03-30
+> Last updated: 2026-07-27
 
 ## Current State
 
@@ -44,6 +44,46 @@ Nexus is a fully functional AI-native team workspace deployed at **nexusteams.de
 | Deploy | `fly deploy` from `/Users/n/nexus/` |
 | Local dev | `make dev` (builds web + Go, port 3000) |
 | Optional | Redis (Upstash) for task queue, Qdrant for vector search |
+
+---
+
+## Brain v4 Consolidation (2026-07-27)
+
+One Brain, model-agnostic. Full plan + rationale in `PLAN_BRAIN_V4.md`.
+(Context: `480af29` on 2026-05-27 had already retired v1+v3 code paths and made
+OpenRouter the only engine; v3's source of record is commit `82e1c94`.)
+
+- **Phase 1** (`eb88e2a`): v1's 2-round loop deleted; all entry points
+  (mentions, thread auto-follow, ingest, calendar) route through the single
+  self-correcting pipeline via `handleBrainV2Ex`. v1's wins ported:
+  ResultAsAnswer short-circuit, /search + /localsearch zero-LLM bypasses,
+  `[persona:slug]` prefix parsing.
+- **Phase 2** (`13be59a`): per-conversation busy lock (turn-taking), human
+  tool labels ("Brain is using web search…"), real token streaming via
+  `brain.chunk` (OpenRouter SSE, lazy message row, message.edited finalize),
+  brain_traces wired end-to-end + admin endpoints. Bugs fixed: pinned
+  memories never loaded, zero token counts in llm_usage, flat 2048
+  max_tokens, mostly-disabled reflector.
+- **Phase 3** (`37c2f33`): persistent local file memory
+  (`<dataDir>/workspaces/<slug>/brain/memory`) with 5 path-jailed tools,
+  member-profile seeding, pinned.md + sender-profile pre-injection,
+  decision dual-write into brain_memories, admin viewer endpoint, and the
+  5 workflow skills ported from v3 (decision-log, task-conventions,
+  writing-plans, executing-plans, verification-before-completion).
+  First unit tests (`go test ./internal/brain/`).
+- **Phase 5**: `brain_version='v4'` (migration 66), dead code pruned
+  (planner, DDG scrapers, plan executor), Memory Files viewer un-gated in
+  Brain Settings → Memory, docs updated.
+- **Deferred**: Phase 4 persistent per-thread sessions (evaluate after
+  living with Phase 3), package rename brain2→brain4 (cosmetic churn).
+
+### Next Up
+
+1. Live-test v4 end-to-end (streaming, memory writes, busy lock) with a
+   real OpenRouter key.
+2. Resume `DISTRIBUTION_PLAN.md`: GHCR workflow → Litestream → deploy
+   buttons (cron + bleve search already done). Then deploy to Fly.
+3. Decide fate of untracked `packages/nexus-bridge-mac/` Swift package.
 
 ---
 

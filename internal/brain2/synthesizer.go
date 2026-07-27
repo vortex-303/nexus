@@ -60,27 +60,6 @@ func RunSynthesizer(cfg PipelineConfig, plan Plan, results []StepResult) (string
 	return response, usage
 }
 
-// BuildToolResultMessages converts step results to brain.Message format
-// for appending to the conversation history.
-func BuildToolResultMessages(results []StepResult) []brain.Message {
-	var msgs []brain.Message
-	for _, r := range results {
-		if r.Tool == "_response" {
-			continue
-		}
-		content := r.Result
-		if r.Error != "" {
-			content = r.Error
-		}
-		msgs = append(msgs, brain.Message{
-			Role:       "tool",
-			Content:    content,
-			ToolCallID: r.StepID,
-		})
-	}
-	return msgs
-}
-
 func truncateResult(s string, maxLen int) string {
 	if len(s) > maxLen {
 		return s[:maxLen] + "\n[...truncated]"

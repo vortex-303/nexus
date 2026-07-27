@@ -446,16 +446,16 @@ func (s *Server) handleBrainV2Ex(slug, channelID, parentID, senderName, content 
 			PromptTokens:     result.InputTokens,
 			CompletionTokens: result.OutputTokens,
 			Cost:             result.CostUSD,
-		}, resolvedModel, "brain_v2", channelID, senderName)
+		}, resolvedModel, "brain_v4", channelID, senderName)
 
 		// Log the action + flush the turn trace (brain_traces tables)
 		actionID := id.New()
-		brain.LogAction(wdb.DB, actionID, "brain_v2", channelID,
+		brain.LogAction(wdb.DB, actionID, "brain_v4", channelID,
 			content, result.Response, resolvedModel, result.ToolsUsed)
 		if err := trace.FlushToDB(wdb.DB, brain2.TraceRecord{
 			ID:             id.New(),
 			ActionLogID:    actionID,
-			BrainVersion:   "v2",
+			BrainVersion:   "v4",
 			ChannelID:      channelID,
 			SenderName:     senderName,
 			TriggerText:    content,
@@ -496,14 +496,14 @@ func (s *Server) handleBrainV2Ex(slug, channelID, parentID, senderName, content 
 
 		logger.WithCategory(logger.CatBrain).Info().
 			Str("workspace", slug).
-			Str("version", "v2").
+			Str("version", "v4").
 			Int("tools", result.Metrics.ToolCalls).
 			Dur("total", result.Metrics.TotalLatency).
 			Dur("plan", result.Metrics.PlanLatency).
 			Dur("exec", result.Metrics.ExecLatency).
 			Dur("synth", result.Metrics.SynthLatency).
 			Bool("success", result.Metrics.Success).
-			Msg("brain v2 complete")
+			Msg("brain v4 complete")
 	}()
 }
 

@@ -73,8 +73,7 @@ type PipelineConfig struct {
 	SystemPrompt  string
 	Messages      []brain.Message
 	AllTools      []brain.ToolDef
-	Client        LLMClient // main model (synthesizer)
-	PlannerClient LLMClient // fast model (planner) — nil means use Client
+	Client        LLMClient // main model
 	MaxDepth      int       // max tool-calling iterations (default 5)
 	// MaxCostUSD aborts the tool loop once cumulative LLM spend on this
 	// turn (sum of every CompleteWithTools / Complete usage.cost) crosses
@@ -126,7 +125,7 @@ type PipelineResult struct {
 // This is the main entry point called from server/brain2.go.
 func Run(cfg PipelineConfig) PipelineResult {
 	start := time.Now()
-	m := Metrics{Version: "v2", Model: "unknown", Success: false}
+	m := Metrics{Version: "v4", Model: "unknown", Success: false}
 
 	if cfg.MaxDepth == 0 {
 		cfg.MaxDepth = 5

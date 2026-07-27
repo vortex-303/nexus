@@ -1097,7 +1097,7 @@ func (s *Server) handleUpdateBrainSettings(w http.ResponseWriter, r *http.Reques
 		// engine additions plug in here cleanly.
 		if k == "engine" && v == "openrouter" {
 			_, _ = wdb.DB.Exec(
-				"INSERT INTO brain_settings (key, value) VALUES ('brain_version', 'v2') ON CONFLICT(key) DO UPDATE SET value = 'v2'",
+				"INSERT INTO brain_settings (key, value) VALUES ('brain_version', 'v4') ON CONFLICT(key) DO UPDATE SET value = 'v4'",
 			)
 			_, _ = wdb.DB.Exec(
 				"INSERT INTO brain_settings (key, value) VALUES ('ollama_enabled', 'false') ON CONFLICT(key) DO UPDATE SET value = 'false'",

@@ -1232,6 +1232,15 @@ var workspaceMigrations64 = migration{
 	`,
 }
 
+var workspaceMigrations66 = migration{
+	version: 66,
+	name:    "brain_version=v4: the consolidated single Brain pipeline",
+	sql: `
+		UPDATE brain_settings SET value = 'v4'
+			WHERE key = 'brain_version' AND value IN ('v1', 'v2', 'v3');
+	`,
+}
+
 var workspaceMigrations65 = migration{
 	version: 65,
 	name:    "backfill pinned flag: pin-to-memory rows never set pinned=TRUE",
@@ -1287,7 +1296,7 @@ var workspaceMigrations62 = migration{
 }
 
 func init() {
-	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55, workspaceMigrations58, workspaceMigrations59, workspaceMigrations60, workspaceMigrations61, workspaceMigrations62, workspaceMigrations63, workspaceMigrations64, workspaceMigrations65)
+	workspaceMigrations = append(workspaceMigrations, workspaceMigrations46, workspaceMigrations47, workspaceMigrations48, workspaceMigrations49, workspaceMigrations50, workspaceMigrations51, workspaceMigrations52, workspaceMigrations53, workspaceMigrations54, workspaceMigrations55, workspaceMigrations58, workspaceMigrations59, workspaceMigrations60, workspaceMigrations61, workspaceMigrations62, workspaceMigrations63, workspaceMigrations64, workspaceMigrations65, workspaceMigrations66)
 }
 
 func RunGlobal(db *sql.DB) error {

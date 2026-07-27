@@ -539,12 +539,13 @@ export interface V3Memory {
 	updated_at: string;
 }
 export interface V3MemoryResponse {
-	memory_store_id: string;
 	mount_path: string;
 	memories: V3Memory[];
 }
+// Brain's local memory filesystem (v4) — the viewer keeps the legacy
+// function name to avoid churn in the workspace page imports.
 export async function getV3Memory(slug: string): Promise<V3MemoryResponse> {
-	return request('GET', `/api/workspaces/${slug}/brain/v3/memory`);
+	return request('GET', `/api/workspaces/${slug}/brain/memory/files`);
 }
 
 // Living Briefs

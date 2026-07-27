@@ -635,7 +635,6 @@
 	let v3MemoryMountPath = $state('');
 	let v3MemoryExpanded = $state<Record<string, boolean>>({});
 	async function loadV3Memory() {
-		if (brainVersion !== 'v3') return;
 		v3MemoryLoading = true;
 		try {
 			const res = await getV3Memory(slug);
@@ -8292,13 +8291,12 @@ autonomy: reactive
 			{/if}
 
 			{:else if brainTab === 'memory'}
-			{#if brainVersion === 'v3'}
 			<div class="brain-section" style="margin-bottom: 16px;">
-				<h3 class="brain-section-title">Memory Store <span style="font-size: 0.7rem; color: var(--text-secondary); font-weight: normal;">· v3 · {v3MemoryMountPath}</span></h3>
+				<h3 class="brain-section-title">Memory Files <span style="font-size: 0.7rem; color: var(--text-secondary); font-weight: normal;">· {v3MemoryMountPath}</span></h3>
 				{#if v3MemoryLoading}
-					<p class="brain-hint">Loading memory_store…</p>
+					<p class="brain-hint">Loading memory files…</p>
 				{:else if v3Memory.length === 0}
-					<p class="brain-hint">Empty. Memory store fills in as Brain v3 writes decisions, profiles, and notes during conversations.</p>
+					<p class="brain-hint">Empty. Memory fills in as Brain writes decisions, profiles, and notes during conversations.</p>
 				{:else}
 					{@const groupedV3 = (() => {
 						const groups: Record<string, typeof v3Memory> = {};
@@ -8335,9 +8333,8 @@ autonomy: reactive
 					</div>
 					<button class="btn btn-ghost btn-sm" style="margin-top: 12px;" onclick={loadV3Memory}>Refresh</button>
 				{/if}
-				<span class="brain-hint" style="margin-top: 8px; display: block;">Files are FUSE-mounted at <code>{v3MemoryMountPath || '/mnt/memory/…'}</code> inside the agent's session container. Brain reads/writes them with its file tools. Decisions also dual-write to the brain_memories list below (with source=v3) so they surface in the existing memory feed.</span>
+				<span class="brain-hint" style="margin-top: 8px; display: block;">Stored locally under the workspace data directory. Brain reads/writes these with its memory tools (read_memory, write_memory, edit_memory, glob_memory, grep_memory). Decisions also dual-write to the memory feed below so they surface there too.</span>
 			</div>
-			{/if}
 			<div class="brain-section">
 				{#if currentMemories.length > 0}
 				<div class="memory-month-stats">

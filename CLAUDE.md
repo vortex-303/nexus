@@ -3,7 +3,7 @@
 ## Build Commands
 
 ```bash
-make dev        # Build web + Go, run on :3000 (dev mode)
+make dev        # Build web + Go, run on :8080 (dev mode)
 make build      # Build web + Go binary (./nexus)
 make web        # Build frontend only (web/build/)
 make clean      # Remove build artifacts + data dir
@@ -50,14 +50,15 @@ fly deploy                # Deploy to Fly.io (production)
 - `//go:embed all:build` (not `build/*`) — the `all:` prefix is required to include `_app/` directory
 - SvelteKit app routes live under `(app)/` layout group with `ssr = false`
 - Landing page is plain HTML at `web/static/landing.html` — completely decoupled from SvelteKit
-- Brain tools execute in a 2-round loop: LLM → tool calls → results → final response
+- Brain runs ONE pipeline (v4, in `internal/brain2/` + `internal/server/brain2.go`): a self-correcting tool loop (validation, timeouts, loop detection, cost cap, up to 10 rounds) + synthesizer with token streaming over `brain.chunk` WS events. Model-agnostic via OpenRouter/Gemini/Ollama/xAI (`makeBrainClient`)
+- Brain has a persistent file memory at `<dataDir>/workspaces/<slug>/brain/memory` — five path-jailed tools (read/write/edit/glob/grep_memory), pinned.md + sender profile pre-injected each turn
 - MCP managers are per-workspace, lazily initialized, stored in `sync.Map`
 - WebSocket auth is via `?token=` query parameter
-- Superadmin is currently hardcoded to `nruggieri@gmail.com` in migrations
+- Superadmin comes from the `SUPERADMIN_EMAIL` env var (first-user-is-admin fallback; `nexus admin promote <email>` CLI)
 
 ## Testing
 
-No test suite exists yet. Verify manually:
+`go test ./internal/brain/` covers the memory filesystem (path jail, round-trip). Otherwise verify manually:
 1. `make dev` — builds and runs
 2. Create workspace → send message → upload file → create task → create doc
 3. Add OpenRouter key → @Brain in chat → verify tool calling works
