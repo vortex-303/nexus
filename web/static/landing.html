@@ -1637,7 +1637,7 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
             <li data-i18n="privacy.nexus.i2">You choose the AI model and provider, or run locally</li>
             <li data-i18n="privacy.nexus.i3">Zero telemetry, zero analytics, zero tracking</li>
             <li data-i18n="privacy.nexus.i4">Your conversations are never used for training</li>
-            <li data-i18n="privacy.nexus.i5">Full data export and one-click delete, always</li>
+            <li data-i18n="privacy.nexus.i5">Full workspace export, always &mdash; take everything and leave</li>
             <li data-i18n="privacy.nexus.i6">Open source &mdash; audit every line of code yourself</li>
           </ul>
           <div class="data-flow-quote" data-i18n="privacy.nexus.quote">Self-hosted Nexus means it is mathematically impossible for us to access your data. We don't have the keys. We don't have the server. We don't even know you're running it.</div>
@@ -1650,9 +1650,9 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           </div>
           <h3 data-i18n="privacy.card1.title">Portable workspace</h3>
-          <p data-i18n="privacy.card1.desc">Download your entire workspace as a single file. Messages, tasks, documents, files, Brain memory &mdash; everything. Import it on any Nexus instance. Your workspace is a file, not a subscription. One-click kill switch to permanently erase everything &mdash; instant, irreversible.</p>
+          <p data-i18n="privacy.card1.desc">Download your entire workspace as a single file. Messages, tasks, documents, files, Brain memory &mdash; everything. Import it on any Nexus instance. Your workspace is a file, not a subscription &mdash; and self-hosted, erasing it is as final as deleting the folder. No retention, no request forms.</p>
           <div class="card-footer">
-            <code>workspace.nexus &middot; one file &middot; kill switch</code>
+            <code>workspace.nexus &middot; export &middot; import</code>
           </div>
         </div>
         <div class="card card-accent-top reveal">
@@ -1688,7 +1688,7 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
         </div>
         <div class="privacy-extra">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-          <span data-i18n="privacy.extra3">No registration required</span>
+          <span data-i18n="privacy.extra3">No registration required (self-host)</span>
         </div>
         <div class="privacy-extra">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -2179,7 +2179,7 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
           </div>
           <h3 data-i18n="features.f6.title">Roles &amp; Permissions</h3>
-          <p data-i18n="features.f6.desc">9 roles from guest to super admin, 22 granular permissions, and an org chart. Control exactly who sees what, who can invite, and who manages agents.</p>
+          <p data-i18n="features.f6.desc">Guest, member, and admin roles plus a super admin, 33 granular permissions, and an org chart. Control exactly who sees what, who can invite, and who manages agents.</p>
         </div>
       </div>
     </div>
@@ -2508,7 +2508,7 @@ thead .col-nexus { background: rgba(249, 115, 22, 0.08); color: var(--accent) !i
         </div>
         <div class="pill-item">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-          <span data-i18n="deploy.pill4">MIT licensed</span>
+          <span data-i18n="deploy.pill4">AGPL-3.0 licensed</span>
         </div>
       </div>
     </div>
@@ -2948,12 +2948,12 @@ var translations = {
     'privacy.nexus.i2': 'T\u00fa eliges el modelo y proveedor de IA, o ejecuta localmente',
     'privacy.nexus.i3': 'Cero telemetr\u00eda, cero anal\u00edtica, cero rastreo',
     'privacy.nexus.i4': 'Tus conversaciones nunca se usan para entrenar modelos',
-    'privacy.nexus.i5': 'Exportaci\u00f3n completa y borrado con un clic, siempre',
+    'privacy.nexus.i5': 'Exportaci\u00f3n completa siempre \u2014 ll\u00e9vate todo y vete cuando quieras',
     'privacy.nexus.i6': 'C\u00f3digo abierto \u2014 audita cada l\u00ednea t\u00fa mismo',
     'privacy.nexus.quote': 'Nexus autoalojado significa que es matem\u00e1ticamente imposible que accedamos a tus datos. No tenemos las claves. No tenemos el servidor. Ni siquiera sabemos que lo est\u00e1s ejecutando.',
 
     'privacy.card1.title': 'Espacio de trabajo port\u00e1til',
-    'privacy.card1.desc': 'Descarga tu espacio de trabajo completo como un solo archivo. Mensajes, tareas, documentos, archivos, memoria del Brain \u2014 todo. Imp\u00f3rtalo en cualquier instancia de Nexus. Tu espacio de trabajo es un archivo, no una suscripci\u00f3n. Bot\u00f3n de borrado total para eliminar todo permanentemente \u2014 instant\u00e1neo e irreversible.',
+    'privacy.card1.desc': 'Descarga tu espacio de trabajo completo como un solo archivo. Mensajes, tareas, documentos, archivos, memoria del Brain \u2014 todo. Imp\u00f3rtalo en cualquier instancia de Nexus. Tu espacio de trabajo es un archivo, no una suscripci\u00f3n \u2014 y autoalojado, borrarlo es tan definitivo como eliminar la carpeta. Sin retenci\u00f3n, sin formularios.',
     'privacy.card2.title': 'Transparencia de red',
     'privacy.card2.desc': 'Un panel integrado muestra cada conexi\u00f3n saliente de tu instancia. Qu\u00e9 servidor, cu\u00e1ndo, por qu\u00e9. Nexus autoalojado contacta exactamente un servicio externo: el proveedor de IA que elegiste. Verif\u00edcalo t\u00fa mismo.',
     'privacy.card3.title': 'Transparencia de costos',
@@ -2961,7 +2961,7 @@ var translations = {
 
     'privacy.extra1': 'Sin anal\u00edtica ni rastreo',
     'privacy.extra2': 'Sin compartir datos con terceros',
-    'privacy.extra3': 'Sin registro obligatorio',
+    'privacy.extra3': 'Sin registro obligatorio (autoalojado)',
     'privacy.extra4': 'C\u00f3digo abierto \u2014 aud\u00edtalo t\u00fa mismo',
     'privacy.extra5': 'M\u00e1s de 200 modelos de IA \u00b7 local o nube',
     'privacy.extra6': 'Un solo binario \u00b7 sin dependencias',
@@ -3075,7 +3075,7 @@ var translations = {
     'features.f5.title': 'Herramientas MCP',
     'features.f5.desc': 'Extiende agentes con servidores del Model Context Protocol. B\u00fasqueda web, calendarios, bases de datos, APIs \u2014 si hay un servidor MCP para eso, Nexus puede usarlo.',
     'features.f6.title': 'Roles y permisos',
-    'features.f6.desc': '9 roles desde invitado hasta super admin, 22 permisos granulares y un organigrama. Controla exactamente qui\u00e9n ve qu\u00e9, qui\u00e9n puede invitar y qui\u00e9n administra agentes.',
+    'features.f6.desc': 'Roles de invitado, miembro y admin m\u00e1s un super admin, 33 permisos granulares y un organigrama. Controla exactamente qui\u00e9n ve qu\u00e9, qui\u00e9n puede invitar y qui\u00e9n administra agentes.',
 
     // Pricing
     'pricing.eyebrow': 'Precios',
@@ -3168,7 +3168,7 @@ var translations = {
 
     'deploy.pill1': 'Un solo binario',
     'deploy.pill2': 'SQLite, sin configuraci\u00f3n',
-    'deploy.pill4': 'Licencia MIT',
+    'deploy.pill4': 'Licencia AGPL-3.0',
 
     // CTA
     'cta.title': '\u00bfListo para darle a tu equipo<br>un cerebro?',

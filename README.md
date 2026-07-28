@@ -22,11 +22,11 @@ Chat, tasks, docs, and an AI Brain that remembers everything — in a single bin
 
 - **Real-time chat** — Channels, DMs, markdown, file sharing, @mentions
 - **AI Brain** — Persistent memory, tool calling, knowledge base, heartbeat scheduler
-- **Custom agents** — 9 templates or define your own in markdown. Each gets tools, skills, and a role
+- **Custom agents** — 8 templates or define your own in markdown. Each gets tools, skills, and a role
 - **Tasks** — Create from conversations, assign, track. Brain follows up on deadlines
 - **Documents** — Rich editor with code blocks, checklists, and auto-save
 - **MCP tools** — Extend with web search, databases, APIs — any MCP server
-- **Roles & permissions** — 9 roles, 31 permissions, org chart with hierarchy
+- **Roles & permissions** — guest to super admin, 33 granular permissions, org chart with hierarchy
 - **Integrations** — Webhooks, inbound email (SMTP), Telegram bot
 - **English + Español** — first-class in the product and docs
 
